@@ -1,0 +1,124 @@
+# ============================================================================
+# Node / pnpm / Turborepo
+# ============================================================================
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.turbo/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# ============================================================================
+# Next.js
+# ============================================================================
+.next/
+out/
+next-env.d.ts
+
+# ============================================================================
+# NestJS
+# ============================================================================
+.nest/
+
+# ============================================================================
+# Drizzle
+# ============================================================================
+# generated migration metadata; the SQL files themselves are committed
+packages/db/drizzle/meta/_journal.json.bak
+
+# ============================================================================
+# Env / secrets
+# ============================================================================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.staging
+.env.test
+!.env.example
+*.pem
+!docs/**/*.pem
+*.key
+*.crt
+.dankdash-secrets/
+
+# ============================================================================
+# Logs / dumps
+# ============================================================================
+logs/
+*.log
+*.dump
+*.sqlite
+*.sqlite3
+
+# ============================================================================
+# IDE / editor
+# ============================================================================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================================
+# OS
+# ============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============================================================================
+# Xcode (consumer + driver iOS apps)
+# ============================================================================
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.xccheckout
+*.moved-aside
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+.swiftpm/
+Package.resolved
+
+# Carthage / CocoaPods (not currently used — guard anyway)
+Carthage/Build/
+Pods/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# ============================================================================
+# Docker / local infra state
+# ============================================================================
+.docker-data/
+docker-compose.override.yml
+
+# ============================================================================
+# CI / coverage uploads
+# ============================================================================
+.nyc_output/
+junit.xml
+test-results/
+
+# ============================================================================
+# Project-local scratch
+# ============================================================================
+.claude/scratch/
+BLOCKED.md

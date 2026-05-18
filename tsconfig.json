@@ -1,0 +1,18 @@
+{
+  "extends": "./packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [],
+  "references": [
+    { "path": "./packages/config/tsconfig.build.json" },
+    { "path": "./packages/types/tsconfig.build.json" },
+    { "path": "./packages/compliance/tsconfig.build.json" },
+    { "path": "./packages/db/tsconfig.build.json" },
+    { "path": "./packages/test-utils/tsconfig.build.json" },
+    { "path": "./packages/ui/tsconfig.build.json" },
+    { "path": "./apps/api/tsconfig.build.json" },
+    { "path": "./apps/realtime/tsconfig.build.json" },
+    { "path": "./apps/workers/tsconfig.build.json" }
+  ]
+}
