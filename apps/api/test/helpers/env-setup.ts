@@ -12,13 +12,24 @@
  * never go through this path. Services that need real signing/keying for
  * a given test override locally.
  */
+import { generateKeyPairSync } from 'node:crypto';
+
+// AuthJwtModule decodes JWT_*_KEY_BASE64 at boot and rejects anything that
+// is not a real PEM block. A throwaway 2048-bit RSA keypair is fast to
+// generate (~50ms) and lets AppModule wire up without faking the module.
+const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+
 const DEFAULTS: Record<string, string> = {
   NODE_ENV: 'test',
   LOG_LEVEL: 'fatal',
   DATABASE_URL: 'postgres://test:test@localhost:5432/test',
   REDIS_URL: 'redis://localhost:6379',
-  JWT_PRIVATE_KEY_BASE64: Buffer.from('test-private-key-placeholder').toString('base64'),
-  JWT_PUBLIC_KEY_BASE64: Buffer.from('test-public-key-placeholder').toString('base64'),
+  JWT_PRIVATE_KEY_BASE64: Buffer.from(
+    privateKey.export({ type: 'pkcs1', format: 'pem' }).toString(),
+  ).toString('base64'),
+  JWT_PUBLIC_KEY_BASE64: Buffer.from(
+    publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  ).toString('base64'),
   PASSWORD_PEPPER: 'a'.repeat(32),
   COLUMN_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 1).toString('base64'),
   R2_ACCOUNT_ID: 'test',

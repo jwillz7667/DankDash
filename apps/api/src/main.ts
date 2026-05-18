@@ -16,7 +16,7 @@
 import { loadEnv } from '@dankdash/config';
 import helmet from '@fastify/helmet';
 import { Logger } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module.js';
@@ -25,6 +25,8 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor.js';
 import { ZodValidationPipe } from './common/pipes/zod-validation.pipe.js';
 import { resolveLogger } from './infrastructure/logger.js';
+import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
+import { JwtService } from './modules/auth/jwt/jwt.service.js';
 
 async function bootstrap(): Promise<void> {
   // Validate env early — fail fast on a misconfigured deployment before
@@ -45,6 +47,10 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     bufferLogs: true,
     abortOnError: false,
+    // Required for the Persona webhook controller — HMAC verification must
+    // run against the unmodified incoming bytes, so the JSON parser cannot
+    // be the only path that sees the body.
+    rawBody: true,
   });
 
   app.useLogger(new Logger());
@@ -59,6 +65,14 @@ async function bootstrap(): Promise<void> {
   app.useGlobalPipes(new ZodValidationPipe());
   app.useGlobalFilters(new GlobalExceptionFilter(logger));
   app.useGlobalInterceptors(new RequestIdInterceptor(), new LoggingInterceptor(logger));
+
+  // Bind JwtAuthGuard globally so deny-by-default applies: any new route is
+  // authenticated unless it carries @Public. Resolve the dependencies from
+  // the DI container so the guard shares the same JwtService + Reflector as
+  // the rest of the app — never instantiate guards manually with `new`.
+  const reflector = app.get(Reflector);
+  const jwtService = app.get(JwtService);
+  app.useGlobalGuards(new JwtAuthGuard(reflector, jwtService));
 
   const swagger = new DocumentBuilder()
     .setTitle('DankDash API')
