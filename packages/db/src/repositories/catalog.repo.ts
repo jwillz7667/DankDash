@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, exists, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, exists, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   dispensaryListings,
   productCategories,
@@ -56,6 +56,18 @@ export class ProductsRepository extends BaseRepository {
   async findById(id: string): Promise<Product | null> {
     const [row] = await this.db.select().from(products).where(eq(products.id, id)).limit(1);
     return row ?? null;
+  }
+
+  /**
+   * Bulk lookup by id. The cart and checkout services hydrate every cart
+   * line into a compliance CartLine and need productType / thcMgPerUnit /
+   * weightGramsPerUnit / thcMgPerServing / servingCount — all fields the
+   * dispensary_listings row does not carry — so this fetches them in one
+   * round trip rather than N findById calls.
+   */
+  async findManyByIds(ids: readonly string[]): Promise<readonly Product[]> {
+    if (ids.length === 0) return [];
+    return this.db.select().from(products).where(inArray(products.id, ids));
   }
 
   async listByCategory(categoryId: string): Promise<readonly Product[]> {
@@ -418,6 +430,38 @@ export class DispensaryListingsRepository extends BaseRepository {
       )
       .returning({ id: dispensaryListings.id });
     return row !== undefined;
+  }
+
+  /**
+   * Bulk lookup keyed by id, no lock. Used by the cart service to refresh
+   * line prices on every read and by the compliance preview to build the
+   * evaluation context — neither needs serialization with concurrent
+   * writers since both are advisory reads.
+   */
+  async findManyByIds(ids: readonly string[]): Promise<readonly DispensaryListing[]> {
+    if (ids.length === 0) return [];
+    return this.db.select().from(dispensaryListings).where(inArray(dispensaryListings.id, ids));
+  }
+
+  /**
+   * Bulk SELECT ... FOR UPDATE on a set of listings. The checkout
+   * transaction calls this after locking the cart row so a concurrent
+   * checkout of a cart that overlaps on any listing waits for the
+   * in-flight one to commit (and decrement inventory) before re-reading
+   * `quantityAvailable`. The pairing of cart lock → listings lock is the
+   * primary defense against a "two carts, both pass the inventory check,
+   * both decrement, total goes negative" race.
+   *
+   * MUST be called inside a transaction. Returned order is unspecified —
+   * callers join back to their cart-line list by id, not by position.
+   */
+  async findManyByIdsForUpdate(ids: readonly string[]): Promise<readonly DispensaryListing[]> {
+    if (ids.length === 0) return [];
+    return this.db
+      .select()
+      .from(dispensaryListings)
+      .where(inArray(dispensaryListings.id, ids))
+      .for('update');
   }
 
   /**

@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
 import {
   orderEvents,
@@ -47,6 +47,25 @@ export class OrdersRepository extends BaseRepository {
       .where(eq(orders.shortCode, shortCode))
       .limit(1);
     return row ?? null;
+  }
+
+  /**
+   * Collision check for the short-code generator. Asks only about the live
+   * 30-day window (the spec's collision-uniqueness scope) so the index hit
+   * is on `orders_placed_at` rather than a sequential scan of every
+   * `short_code` ever issued. `orders.short_code` carries a UNIQUE index
+   * so an exact-match probe is a single index lookup either way; the
+   * `placed_at >= since` clause keeps the result honest about the time
+   * window in case a future archival strategy moves cold orders to a
+   * separate table and the UNIQUE index narrows with it.
+   */
+  async shortCodeExistsSince(shortCode: string, since: Date): Promise<boolean> {
+    const [row] = await this.db
+      .select({ one: sql<number>`1` })
+      .from(orders)
+      .where(and(eq(orders.shortCode, shortCode), gte(orders.placedAt, since)))
+      .limit(1);
+    return row !== undefined;
   }
 
   async listForUser(userId: string, limit = 50): Promise<readonly Order[]> {

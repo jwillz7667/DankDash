@@ -1,7 +1,7 @@
 export { BaseRepository, newId } from './base.js';
 
 export { AuditLogRepository } from './audit.repo.js';
-export { CartItemsRepository, CartsRepository } from './cart.repo.js';
+export { CartItemsRepository, CartsRepository, CART_TTL_MS } from './cart.repo.js';
 export {
   DispensaryListingsRepository,
   ProductCategoriesRepository,
