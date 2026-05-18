@@ -31,6 +31,8 @@
 import assert from 'node:assert/strict';
 import { NotFoundError, ValidationError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
+import { MemoryCatalogCacheStore } from '../../catalog-cache/catalog-cache-store.js';
+import { CatalogCacheService } from '../../catalog-cache/catalog-cache.service.js';
 import {
   VendorListingsService,
   type ScopedRepos,
@@ -241,7 +243,8 @@ function makeRig(): Rig {
     listings: listings as unknown as DispensaryListingsRepository,
     products: products as unknown as ProductsRepository,
   });
-  const service = new VendorListingsService(fakeDb, reposFor);
+  const cache = new CatalogCacheService(new MemoryCatalogCacheStore());
+  const service = new VendorListingsService(fakeDb, reposFor, cache);
   return { service, listings, products };
 }
 

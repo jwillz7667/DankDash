@@ -21,6 +21,8 @@
 import assert from 'node:assert/strict';
 import { ConflictError, NotFoundError, RepositoryError, ValidationError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
+import { MemoryCatalogCacheStore } from '../../catalog-cache/catalog-cache-store.js';
+import { CatalogCacheService } from '../../catalog-cache/catalog-cache.service.js';
 import { AdminDispensariesService } from './admin-dispensaries.service.js';
 import type { CreateDispensaryRequest } from './dto/index.js';
 import type {
@@ -243,9 +245,11 @@ interface Rig {
 function makeRig(): Rig {
   const dispensaries = new FakeDispensariesRepo();
   const staff = new FakeStaffRepo();
+  const cache = new CatalogCacheService(new MemoryCatalogCacheStore());
   const service = new AdminDispensariesService(
     dispensaries as unknown as DispensariesRepository,
     staff as unknown as DispensaryStaffRepository,
+    cache,
   );
   return { service, dispensaries, staff };
 }

@@ -16,6 +16,8 @@
  */
 import { NotFoundError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
+import { MemoryCatalogCacheStore } from '../catalog-cache/catalog-cache-store.js';
+import { CatalogCacheService } from '../catalog-cache/catalog-cache.service.js';
 import { DispensariesService } from './dispensaries.service.js';
 import type {
   Dispensary,
@@ -199,9 +201,11 @@ interface TestRig {
 function makeRig(): TestRig {
   const dispensaries = new FakeDispensariesRepo();
   const listings = new FakeListingsRepo();
+  const cache = new CatalogCacheService(new MemoryCatalogCacheStore());
   const service = new DispensariesService(
     dispensaries as unknown as DispensariesRepository,
     listings as unknown as DispensaryListingsRepository,
+    cache,
   );
   return { service, dispensaries, listings };
 }

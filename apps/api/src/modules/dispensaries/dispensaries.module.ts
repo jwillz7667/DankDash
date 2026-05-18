@@ -27,6 +27,7 @@ import {
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { CatalogCacheService } from '../catalog-cache/catalog-cache.service.js';
 import { AdminDispensariesController } from './admin/admin-dispensaries.controller.js';
 import { AdminDispensariesService } from './admin/admin-dispensaries.service.js';
 import { DispensariesController } from './dispensaries.controller.js';
@@ -52,20 +53,22 @@ const staffRepoProvider: FactoryProvider<DispensaryStaffRepository> = {
 
 const dispensariesServiceProvider: FactoryProvider<DispensariesService> = {
   provide: DispensariesService,
-  inject: [DispensariesRepository, DispensaryListingsRepository],
+  inject: [DispensariesRepository, DispensaryListingsRepository, CatalogCacheService],
   useFactory: (
     dispensaries: DispensariesRepository,
     listings: DispensaryListingsRepository,
-  ): DispensariesService => new DispensariesService(dispensaries, listings),
+    cache: CatalogCacheService,
+  ): DispensariesService => new DispensariesService(dispensaries, listings, cache),
 };
 
 const adminDispensariesServiceProvider: FactoryProvider<AdminDispensariesService> = {
   provide: AdminDispensariesService,
-  inject: [DispensariesRepository, DispensaryStaffRepository],
+  inject: [DispensariesRepository, DispensaryStaffRepository, CatalogCacheService],
   useFactory: (
     dispensaries: DispensariesRepository,
     staff: DispensaryStaffRepository,
-  ): AdminDispensariesService => new AdminDispensariesService(dispensaries, staff),
+    cache: CatalogCacheService,
+  ): AdminDispensariesService => new AdminDispensariesService(dispensaries, staff, cache),
 };
 
 @Module({

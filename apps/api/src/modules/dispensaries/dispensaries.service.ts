@@ -36,6 +36,7 @@ import {
 } from '@dankdash/dispensaries';
 import { NotFoundError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
+import { CatalogCacheService } from '../catalog-cache/catalog-cache.service.js';
 import type {
   DispensaryResponse,
   ListDispensariesQuery,
@@ -49,14 +50,26 @@ export class DispensariesService {
   constructor(
     private readonly dispensaries: DispensariesRepository,
     private readonly listings: DispensaryListingsRepository,
+    private readonly cache: CatalogCacheService,
   ) {}
 
   async list(
     query: ListDispensariesQuery,
     now: Date = new Date(),
   ): Promise<readonly DispensaryResponse[]> {
-    const rows = await this.fetchListRows(query);
-    return rows.map((row) => projectDispensary(row, now));
+    // Geo-filtered queries have unbounded key cardinality (lat/lng to 6
+    // decimal places ≈ 11 cm precision) so caching them would just churn
+    // the store. The PostGIS GIST index already keeps the geo path fast.
+    // The unfiltered feed is the discovery-screen hot path — that's what
+    // earns a cache slot.
+    const fetch = async (): Promise<readonly DispensaryResponse[]> => {
+      const rows = await this.fetchListRows(query);
+      return rows.map((row) => projectDispensary(row, now));
+    };
+    if (query.lat !== undefined && query.lng !== undefined) {
+      return fetch();
+    }
+    return this.cache.getDispensaryFeed(fetch);
   }
 
   async getById(id: string, now: Date = new Date()): Promise<DispensaryResponse> {
@@ -73,13 +86,17 @@ export class DispensariesService {
 
   async getMenu(id: string, now: Date = new Date()): Promise<MenuResponse> {
     // 404 the dispensary first so a non-public store cannot be inferred from
-    // a `{ items: [] }` response — keeps tombstones unprobeable.
+    // a `{ items: [] }` response — keeps tombstones unprobeable. The 404
+    // path runs the loader (no menu cache write) so a transient tombstone
+    // does not poison the cache for 60s; only successful reads cache.
     await this.getById(id, now);
-    const lines = await this.listings.listMenuForDispensary(id);
-    return {
-      dispensaryId: id,
-      items: lines.map((line) => projectMenuItem(line.listing, line.product)),
-    };
+    return this.cache.getDispensaryMenu(id, async (): Promise<MenuResponse> => {
+      const lines = await this.listings.listMenuForDispensary(id);
+      return {
+        dispensaryId: id,
+        items: lines.map((line) => projectMenuItem(line.listing, line.product)),
+      };
+    });
   }
 
   private fetchListRows(query: ListDispensariesQuery): Promise<readonly Dispensary[]> {

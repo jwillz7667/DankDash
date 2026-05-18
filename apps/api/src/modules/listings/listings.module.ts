@@ -31,6 +31,7 @@ import { DispensaryListingsRepository, ProductsRepository, type Database } from 
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { CatalogCacheService } from '../catalog-cache/catalog-cache.service.js';
 import { DispensariesModule } from '../dispensaries/dispensaries.module.js';
 import { VendorContextGuard } from './vendor/vendor-context.guard.js';
 import { VendorListingsController } from './vendor/vendor-listings.controller.js';
@@ -38,14 +39,15 @@ import { VendorListingsService, type ScopedRepos } from './vendor/vendor-listing
 
 const vendorListingsServiceProvider: FactoryProvider<VendorListingsService> = {
   provide: VendorListingsService,
-  inject: [DRIZZLE_DB],
-  useFactory: (db: Database): VendorListingsService =>
+  inject: [DRIZZLE_DB, CatalogCacheService],
+  useFactory: (db: Database, cache: CatalogCacheService): VendorListingsService =>
     new VendorListingsService(
       db,
       (scopedDb): ScopedRepos => ({
         listings: new DispensaryListingsRepository(scopedDb),
         products: new ProductsRepository(scopedDb),
       }),
+      cache,
     ),
 };
 

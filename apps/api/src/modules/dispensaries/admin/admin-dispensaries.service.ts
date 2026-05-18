@@ -47,6 +47,7 @@ import {
 } from '@dankdash/dispensaries';
 import { ConflictError, NotFoundError, RepositoryError, ValidationError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
+import { CatalogCacheService } from '../../catalog-cache/catalog-cache.service.js';
 import type { DispensaryResponse } from '../dto/index.js';
 import type { CreateDispensaryRequest, PatchDispensaryRequest } from './dto/index.js';
 
@@ -55,6 +56,7 @@ export class AdminDispensariesService {
   constructor(
     private readonly dispensaries: DispensariesRepository,
     private readonly staff: DispensaryStaffRepository,
+    private readonly cache: CatalogCacheService,
   ) {}
 
   async create(body: CreateDispensaryRequest, now: Date = new Date()): Promise<DispensaryResponse> {
@@ -150,6 +152,10 @@ export class AdminDispensariesService {
     };
     const updated = await this.dispensaries.update(id, patchInput);
     if (updated === null) throw new NotFoundError('Dispensary', id);
+    // Hours edits change `isOpenNow` in the feed projection; brand fields
+    // change feed copy; the dispensary's menu key drops too so a future
+    // hours-narrowing edit doesn't surface as "open" via a stale cache.
+    await this.cache.invalidateDispensary(id);
     return projectDispensary(updated, now);
   }
 
@@ -191,6 +197,8 @@ export class AdminDispensariesService {
     if (updated === null) {
       throw new RepositoryError(`dispensaries ${id} vanished mid-activate`);
     }
+    // Activation makes the row visible in the feed for the first time.
+    await this.cache.invalidateDispensary(id);
     return projectDispensary(updated, now);
   }
 
@@ -212,6 +220,8 @@ export class AdminDispensariesService {
     if (updated === null) {
       throw new RepositoryError(`dispensaries ${id} vanished mid-suspend`);
     }
+    // Suspension removes the row from the active feed.
+    await this.cache.invalidateDispensary(id);
     return projectDispensary(updated, now);
   }
 }

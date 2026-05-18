@@ -61,6 +61,7 @@ import {
 } from '@dankdash/db';
 import { ConflictError, NotFoundError, ValidationError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
+import { CatalogCacheService } from '../../catalog-cache/catalog-cache.service.js';
 import type {
   CreateListingRequest,
   ListingListResponse,
@@ -81,6 +82,7 @@ export class VendorListingsService {
   constructor(
     private readonly db: Database,
     private readonly reposFor: ScopedReposFactory,
+    private readonly cache: CatalogCacheService,
   ) {}
 
   async list(ctx: VendorContext): Promise<ListingListResponse> {
@@ -91,7 +93,7 @@ export class VendorListingsService {
   }
 
   async create(ctx: VendorContext, body: CreateListingRequest): Promise<ListingResponse> {
-    return this.withScope(ctx, async ({ listings, products }) => {
+    const result = await this.withScope(ctx, async ({ listings, products }) => {
       const product = await products.findById(body.productId);
       if (product?.deletedAt !== null || !product.isActive) {
         throw new ValidationError(
@@ -120,13 +122,18 @@ export class VendorListingsService {
       });
       return projectListing(row);
     });
+    // Invalidate after the tx commits — a write that rolls back leaves the
+    // cache untouched, which is correct. The menu projection is the only
+    // public surface a listing edit reaches; the feed key is unaffected.
+    await this.cache.invalidateListing(ctx.dispensaryId);
+    return result;
   }
 
   async patch(ctx: VendorContext, id: string, body: PatchListingRequest): Promise<ListingResponse> {
     if (Object.keys(body).length === 0) {
       throw new ValidationError('Patch body must include at least one field', { listingId: id });
     }
-    return this.withScope(ctx, async ({ listings }) => {
+    const result = await this.withScope(ctx, async ({ listings }) => {
       const existing = await listings.findByIdForDispensary(id, ctx.dispensaryId);
       if (existing === null) {
         throw new NotFoundError('Listing', id);
@@ -171,6 +178,8 @@ export class VendorListingsService {
       }
       return projectListing(updated);
     });
+    await this.cache.invalidateListing(ctx.dispensaryId);
+    return result;
   }
 
   async delete(ctx: VendorContext, id: string): Promise<void> {
@@ -183,6 +192,7 @@ export class VendorListingsService {
       // "belongs to another vendor".
       throw new NotFoundError('Listing', id);
     }
+    await this.cache.invalidateListing(ctx.dispensaryId);
   }
 
   /**

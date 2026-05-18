@@ -5,6 +5,9 @@
  *   - EncryptionModule   (@Global; AES-256-GCM column-encryption service)
  *   - RedisModule        (@Global; shared ioredis client + lifecycle)
  *   - RateLimitModule    (@Global; binds the RateLimitStore the guard reads)
+ *   - CatalogCacheModule (@Global; Redis-backed read-through cache for the
+ *                         public dispensary feed + per-dispensary menu, 60s
+ *                         TTL with versioned keys + explicit invalidation)
  *   - HealthModule       (k8s/Railway liveness + readiness probes, public)
  *   - AuthModule         (register, login, refresh, logout, MFA — mounted /v1)
  *   - IdentityModule     (/me + Persona KYC start + webhook — mounted /v1)
@@ -26,6 +29,7 @@ import { EncryptionModule } from './infrastructure/encryption.module.js';
 import { RedisModule } from './infrastructure/redis.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
+import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module.js';
 import { DispensariesModule } from './modules/dispensaries/dispensaries.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
@@ -43,6 +47,7 @@ import { SearchModule } from './modules/search/search.module.js';
     EncryptionModule,
     RedisModule,
     RateLimitModule,
+    CatalogCacheModule,
     HealthModule,
     AuthModule,
     IdentityModule,
