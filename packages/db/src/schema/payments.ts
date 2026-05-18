@@ -72,6 +72,7 @@ export const paymentTransactions = pgTable(
     authorizedAt: timestamp('authorized_at', { withTimezone: true, mode: 'date' }),
     settledAt: timestamp('settled_at', { withTimezone: true, mode: 'date' }),
     failedAt: timestamp('failed_at', { withTimezone: true, mode: 'date' }),
+    canceledAt: timestamp('canceled_at', { withTimezone: true, mode: 'date' }),
     rawResponse: jsonb('raw_response'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),

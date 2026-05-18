@@ -191,7 +191,13 @@ export class PaymentTransactionsRepository extends BaseRepository {
     patch: Partial<
       Pick<
         NewPaymentTransaction,
-        'authorizedAt' | 'settledAt' | 'failedAt' | 'failureCode' | 'failureReason' | 'rawResponse'
+        | 'authorizedAt'
+        | 'settledAt'
+        | 'failedAt'
+        | 'canceledAt'
+        | 'failureCode'
+        | 'failureReason'
+        | 'rawResponse'
       >
     > = {},
   ): Promise<PaymentTransaction | null> {

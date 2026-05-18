@@ -15,6 +15,13 @@
       "when": 1747584000000,
       "tag": "0001_session_families",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1747670400000,
+      "tag": "0002_payment_canceled",
+      "breakpoints": true
     }
   ]
 }
