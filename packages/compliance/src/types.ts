@@ -151,7 +151,13 @@ export type RuleId =
   | 'hours'
   | 'delivery_geofence'
   | 'per_transaction_limit'
-  | 'product_provenance';
+  | 'product_provenance'
+  /**
+   * Sentinel emitted by `evaluateCart` when an internal exception escapes a
+   * rule. Never produced by an individual rule — its presence in a snapshot
+   * means the engine itself failed and the cart was rejected fail-closed.
+   */
+  | 'evaluation';
 
 /**
  * Structured detail map attached to each rule result. Always JSON-serializable
