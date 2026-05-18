@@ -59,6 +59,25 @@ export class PaymentMethodsRepository extends BaseRepository {
     return row ?? null;
   }
 
+  /**
+   * Locate a payment method by its Aeropay-issued bank account ref. Used by
+   * the webhook handler to upsert the row when `bank_account.linked` /
+   * `bank_account.failed` arrive after the link-session redirect — the row
+   * may already exist if a prior delivery created it.
+   *
+   * Returns deleted rows too so a re-link of a soft-deleted bank account
+   * is detected and surfaces as a domain conflict instead of silently
+   * creating a duplicate row.
+   */
+  async findByAeropayRef(aeropayRef: string): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(eq(paymentMethods.aeropayPaymentMethodRef, aeropayRef))
+      .limit(1);
+    return row ?? null;
+  }
+
   async create(
     input: Omit<NewPaymentMethod, 'id'> & { readonly id?: string },
   ): Promise<PaymentMethod> {
@@ -87,6 +106,25 @@ export class PaymentMethodsRepository extends BaseRepository {
     const [row] = await this.db
       .update(paymentMethods)
       .set({ status, updatedAt: new Date() })
+      .where(eq(paymentMethods.id, id))
+      .returning();
+    return row ?? null;
+  }
+
+  /**
+   * Rewrite the Aeropay-linked metadata on a row in one statement — used by
+   * the `bank_account.linked` webhook to swap the link-session id for the
+   * bank-account id and attach bank name + last 4 in the same UPDATE.
+   * Splitting into status + metadata updates would race with concurrent
+   * webhook deliveries; one statement keeps the row consistent.
+   */
+  async updateBankAccountDetails(
+    id: string,
+    patch: Pick<PaymentMethod, 'aeropayPaymentMethodRef' | 'bankName' | 'last4' | 'status'>,
+  ): Promise<PaymentMethod | null> {
+    const [row] = await this.db
+      .update(paymentMethods)
+      .set({ ...patch, updatedAt: new Date() })
       .where(eq(paymentMethods.id, id))
       .returning();
     return row ?? null;
