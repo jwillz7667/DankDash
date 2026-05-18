@@ -25,11 +25,81 @@
  * the test pool — the seed deliberately avoids "test-specific" rows so
  * the catalog stays a realistic baseline.
  */
+import {
+  type AeropayPayment,
+  type AeropayPaymentStatus,
+  type CreatePaymentInput,
+} from '@dankdash/aeropay';
 import { stableUuid } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { AEROPAY_CLIENT, type AeropayClientLike } from '../../src/modules/payments/tokens.js';
 import { buildTestApp } from '../helpers/build-app.js';
 import { SEED_IDS, bearer, getPool, seedFixtures, signTokenFor } from './setup.js';
+
+/**
+ * Wrap an arbitrary thrown value in an Error so `Promise.reject` always
+ * receives an Error instance (avoids @typescript-eslint/no-base-to-string
+ * on raw `String(unknown)` and prefer-promise-reject-errors).
+ */
+function coerceToError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  try {
+    return new Error(typeof value === 'string' ? value : JSON.stringify(value));
+  } catch {
+    return new Error('Non-serializable thrown value');
+  }
+}
+
+/**
+ * In-test Aeropay client. Records every call so assertions can inspect
+ * the idempotency key + bank-account ref the checkout service forwarded,
+ * and returns a synthetic `pay_test_*` id with the configured next-status
+ * (defaults to `initiated`). Keeps the integration suite hermetic — no
+ * outbound network to api.aeropay.com — while still exercising the real
+ * NestJS DI graph, real Postgres transaction, and real
+ * payment_transactions persistence.
+ */
+class FakeAeropayClient implements AeropayClientLike {
+  public readonly createCalls: CreatePaymentInput[] = [];
+  public nextStatus: AeropayPaymentStatus = 'initiated';
+  public nextThrow: unknown = null;
+  private idSeq = 1;
+
+  createPayment = (input: CreatePaymentInput): Promise<AeropayPayment> => {
+    this.createCalls.push(input);
+    if (this.nextThrow !== null) {
+      const err = this.nextThrow;
+      this.nextThrow = null;
+      return Promise.reject(coerceToError(err));
+    }
+    return Promise.resolve({
+      id: `pay_test_${String(this.idSeq++).padStart(6, '0')}`,
+      status: this.nextStatus,
+      amountCents: input.amountCents,
+      bankAccountId: input.bankAccountId,
+      customerRef: input.customerRef,
+      orderRef: input.orderRef,
+      createdAt: new Date(),
+    });
+  };
+
+  // Webhook + payment-method paths aren't exercised by /v1/carts/:id/checkout
+  // — they have their own integration tests. Reject loudly if anything in
+  // checkout calls them so we notice the change rather than silently no-op.
+  linkBankAccount = (): Promise<never> =>
+    Promise.reject(new Error('FakeAeropayClient.linkBankAccount: not used in checkout flow'));
+  getBankAccount = (): Promise<never> =>
+    Promise.reject(new Error('FakeAeropayClient.getBankAccount: not used in checkout flow'));
+  getPayment = (): Promise<never> =>
+    Promise.reject(new Error('FakeAeropayClient.getPayment: not used in checkout flow'));
+  cancelPayment = (): Promise<never> =>
+    Promise.reject(new Error('FakeAeropayClient.cancelPayment: not used in checkout flow'));
+  refundPayment = (): Promise<never> =>
+    Promise.reject(new Error('FakeAeropayClient.refundPayment: not used in checkout flow'));
+  createPayout = (): Promise<never> =>
+    Promise.reject(new Error('FakeAeropayClient.createPayout: not used in checkout flow'));
+}
 
 const ALICE_ADDRESS_ID = stableUuid('address', 'addr-alice-home');
 const MPLS_DARK_CHOCOLATE_LISTING_ID = stableUuid('listing', 'mpls-p-edible-nl-1');
@@ -87,9 +157,13 @@ interface ErrorBody {
 
 describe('/v1/carts/:id/checkout — atomic transaction', () => {
   let app: NestFastifyApplication;
+  let aeropay: FakeAeropayClient;
 
   beforeAll(async () => {
-    app = await buildTestApp();
+    aeropay = new FakeAeropayClient();
+    app = await buildTestApp({
+      overrides: [{ token: AEROPAY_CLIENT, value: aeropay }],
+    });
   }, 120_000);
 
   afterAll(async () => {
@@ -99,9 +173,13 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
   beforeEach(async () => {
     await seedFixtures();
     await force24HourHours();
+    // Reset the fake between tests so per-test next* config doesn't bleed.
+    aeropay.createCalls.length = 0;
+    aeropay.nextStatus = 'initiated';
+    aeropay.nextThrow = null;
   });
 
-  it('happy path — creates order, decrements inventory, deletes cart, writes balanced ledger, stubs payment intent', async () => {
+  it('happy path — creates order, decrements inventory, deletes cart, writes balanced ledger, charges Aeropay with idempotency key', async () => {
     const token = signTokenFor(app, { userId: SEED_IDS.user.customer1, role: 'customer' });
     const cart = await buildCart(app, token, [
       { listingId: MPLS_NORTHERN_LIGHTS_LISTING_ID, quantity: 2 },
@@ -130,8 +208,20 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
     expect(body.order.driverTipCents).toBe(500);
     expect(body.order.items).toHaveLength(1);
     expect(body.paymentIntent.provider).toBe('aeropay');
-    expect(body.paymentIntent.providerRef).toBe(`pi_stub_${body.order.shortCode}`);
+    // Real Aeropay payment id, persisted as payment_transactions.provider_ref.
+    // The synthetic `pay_test_*` shape comes from the FakeAeropayClient
+    // overriding AEROPAY_CLIENT in buildTestApp.
+    expect(body.paymentIntent.providerRef).toMatch(/^pay_test_\d{6}$/);
     expect(body.paymentIntent.amountCents).toBe(body.order.totalCents);
+    // The checkout service must have forwarded the local
+    // payment_transactions.id as Aeropay's idempotency key so a network
+    // retry coalesces to the same upstream charge.
+    const aeropayCall = aeropay.createCalls.at(-1);
+    expect(aeropayCall?.idempotencyKey).toBe(body.paymentIntent.id);
+    expect(aeropayCall?.bankAccountId).toBe('aeropay-pm-alice');
+    expect(aeropayCall?.amountCents).toBe(body.order.totalCents);
+    expect(aeropayCall?.customerRef).toBe(SEED_IDS.user.customer1);
+    expect(aeropayCall?.orderRef).toBe(body.order.id);
     expect(body.complianceCheck.passed).toBe(true);
     const subtotal = body.order.subtotalCents;
     const computedTotal =
@@ -171,10 +261,10 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
     expect(totalDebits).toBe(totalCredits);
     expect(totalDebits).toBe(body.order.totalCents);
 
-    // Payment transaction stub persisted with the expected provider ref.
+    // Payment transaction row persisted with the Aeropay payment id.
     const intentRows = await fetchPaymentTransactionsForOrder(body.order.id);
     expect(intentRows).toHaveLength(1);
-    expect(intentRows[0]?.provider_ref).toBe(`pi_stub_${body.order.shortCode}`);
+    expect(intentRows[0]?.provider_ref).toBe(body.paymentIntent.providerRef);
     expect(intentRows[0]?.status).toBe('initiated');
   });
 
