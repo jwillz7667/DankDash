@@ -15,6 +15,8 @@
  *   - CatalogModule      (products, categories, lab results — /v1 + /v1/admin)
  *   - ListingsModule     (vendor-scoped listings with RLS — /v1/vendor)
  *   - SearchModule       (product search + dispensary discovery feed — /v1)
+ *   - CartModule         (consumer cart CRUD, user-owned, dispensary-scoped — /v1)
+ *   - CheckoutModule     (POST /v1/carts/:id/checkout — the atomic checkout txn)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -28,8 +30,10 @@ import { DrizzleModule } from './infrastructure/drizzle.module.js';
 import { EncryptionModule } from './infrastructure/encryption.module.js';
 import { RedisModule } from './infrastructure/redis.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
+import { CartModule } from './modules/cart/cart.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module.js';
+import { CheckoutModule } from './modules/checkout/checkout.module.js';
 import { DispensariesModule } from './modules/dispensaries/dispensaries.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
@@ -55,6 +59,8 @@ import { SearchModule } from './modules/search/search.module.js';
     CatalogModule,
     ListingsModule,
     SearchModule,
+    CartModule,
+    CheckoutModule,
   ],
 })
 export class AppModule {}
