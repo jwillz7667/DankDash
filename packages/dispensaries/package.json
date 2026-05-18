@@ -1,8 +1,8 @@
 {
-  "name": "@dankdash/compliance",
+  "name": "@dankdash/dispensaries",
   "version": "0.0.0",
   "private": true,
-  "description": "Minnesota cannabis compliance engine — pure functions that evaluate carts and orders against statutory rules. Fleshed out in Phase 3.",
+  "description": "Dispensary domain logic — hours of operation arithmetic (state-cap intersection, cross-midnight, DST-aware) shared by the compliance engine and the menu/listing surfaces.",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,17 +24,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@dankdash/dispensaries": "workspace:*",
-    "@dankdash/types": "workspace:*",
-    "decimal.js": "^10.6.0",
     "luxon": "^3.5.0"
   },
   "devDependencies": {
-    "@types/geojson": "^7946.0.16",
     "@types/luxon": "^3.4.2",
     "@types/node": "^22.10.2",
     "@vitest/coverage-v8": "^2.1.9",
-    "fast-check": "^3.23.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

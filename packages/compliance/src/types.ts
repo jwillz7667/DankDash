@@ -13,6 +13,7 @@
  * as JSONB and downstream consumers (auditors, the iOS receipt view) only
  * read those numbers, never re-aggregate them.
  */
+import type { DispensaryHours } from '@dankdash/dispensaries';
 import type { Decimal } from 'decimal.js';
 import type { Polygon } from 'geojson';
 
@@ -71,27 +72,13 @@ export interface CartLine {
 // ---------------------------------------------------------------------------
 
 /**
- * 3-letter lowercase weekday keys, matching the format luxon produces
- * via `DateTime.weekdayLong.slice(0, 3).toLowerCase()`. Stored as a closed
- * union so a `Record<Weekday, ...>` is exhaustive without an index
- * signature.
+ * Hours-of-operation types live in `@dankdash/dispensaries` — the same
+ * package owns the arithmetic that the sale-hours rule and the listings
+ * surface both call. Re-exported here so external consumers of the
+ * compliance public surface (notably the iOS preview client) can keep
+ * importing `DispensaryHours` from `@dankdash/compliance`.
  */
-export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-
-/**
- * Open/close pair for a single day in the dispensary's local time.
- * Format: `HH:MM` 24-hour. A close time may exceed 24:00 (e.g. `26:00`)
- * to denote a next-day close consistent with `MN_SALES_HOURS.latestClose`.
- * The hours rule parses these defensively and fails closed on malformed
- * values.
- */
-export interface DayHours {
-  readonly open: string;
-  readonly close: string;
-}
-
-/** Full weekly schedule. `null` for any day the dispensary is closed. */
-export type DispensaryHours = Readonly<Record<Weekday, DayHours | null>>;
+export type { DayHours, DispensaryHours, Weekday } from '@dankdash/dispensaries';
 
 // ---------------------------------------------------------------------------
 // Cart totals — used internally by rules; converted to plain numbers in

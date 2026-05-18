@@ -207,6 +207,9 @@ importers:
 
   packages/compliance:
     dependencies:
+      '@dankdash/dispensaries':
+        specifier: workspace:*
+        version: link:../dispensaries
       '@dankdash/types':
         specifier: workspace:*
         version: link:../types
@@ -306,6 +309,28 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.22.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/dispensaries:
+    dependencies:
+      luxon:
+        specifier: ^3.5.0
+        version: 3.7.2
+    devDependencies:
+      '@types/luxon':
+        specifier: ^3.4.2
+        version: 3.7.1
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.19.19))
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
