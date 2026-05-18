@@ -194,5 +194,14 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
     },
   },
+  // NestJS module classes are intentionally empty marker classes that exist
+  // to attach @Module() metadata for the DI container. The no-extraneous-class
+  // rule is wrong for them but valuable everywhere else.
+  {
+    files: ['**/*.module.ts'],
+    rules: {
+      '@typescript-eslint/no-extraneous-class': 'off',
+    },
+  },
   prettier,
 );
