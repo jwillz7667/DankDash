@@ -14,6 +14,43 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 3 — Compliance Engine
+
+_Status: complete (2026-05-18). Commit range: `35e30ac..acb1a6a` (12 commits)._
+
+What landed:
+
+- **`@dankdash/compliance` package scaffold** — pure-function module, no NestJS / no Drizzle / no HTTP. Inputs: an `EvaluationContext` (user, dispensary, delivery location, cart, optional `now`). Output: a `ComplianceEvaluation` snapshot suitable for `orders.compliance_check_payload`. Same engine runs in three places: server checkout transaction (authoritative), API preview endpoint (UX hint), iOS `ComplianceClient` (offline preview).
+- **MN statutory constants** (`src/constants.ts`) — one source of truth, every value carries a Minn. Stat. § 342 citation. `MN_PER_TRANSACTION_LIMITS` (56.7 g flower / 8 g concentrate / 800 mg edible THC) are `Decimal` instances built from strings so cap equality holds exactly. `MN_SALES_HOURS.latestClose` is encoded as `26:00` to denote next-day close without wrapping the hour field. Beverage caps (`≤10 mg/serving`, `≤2 servings/container`), `MN_MINIMUM_AGE_YEARS = 21`, `MN_DEFAULT_TIMEZONE = 'America/Chicago'`, and `COMPLIANCE_EVALUATION_VERSION` (date-stamped) round out the public constants.
+- **Domain types** (`src/types.ts`) — framework-free. `CartLine.weightGramsPerUnit` and `thcMgPerUnit` are `Decimal` (never `number`). `Weekday` is a closed union so `Record<Weekday, DayHours|null>` is exhaustive without an index signature. `RuleId` includes an `'evaluation'` sentinel reserved for the fail-closed path (no individual rule may emit it). `ComplianceEvaluation` exposes plain `number` totals/limits because the persisted JSONB snapshot is read-only audit data, never re-aggregated downstream.
+- **Cart aggregation** (`src/cart-math.ts`) — `PRODUCT_CAP` maps every `ProductType` to one of four buckets (`flower`/`concentrate`/`edibleThc`/`exempt`); pre-rolls and infused pre-rolls roll into flower, vape carts into concentrate, beverages and tinctures into edible THC. `computeCartTotals` accumulates with `Decimal.plus()` and rounds to 3 dp (the MN OCM reporting precision). `totalsToSnapshot` converts to plain numbers at the persistence boundary.
+- **Point-in-polygon geofence fallback** (`src/geo.ts`) — standard ray-cast crossing-number, with explicit boundary semantics (west/south edges inside, north/east edges outside) and hole subtraction (inner GeoJSON rings exclude inside points). Production callers run `ST_Contains` at the repo layer; this exists for the iOS preview path and engine unit tests where Postgres is not available.
+- **Identity rules** — `checkAge` distinguishes `dob_missing`, `future_dob`, and under-21 (year diff via luxon). `checkKyc` is a single null check on `kycVerifiedAt`. `checkLicense` is a half-open boundary: a license expiring exactly at `now` fails.
+- **Sale-hours rule** (`src/rules/check-hours.ts`) — the most subtle file in the engine. Builds BOTH today's and yesterday's effective windows so a query at 01:30 AM resolves against the previous day's `09:00–02:00` window. `anchorAt` uses `dayStart.set({hour, minute})` for hour<24 (wall-clock anchored, DST-aware) and `dayStart.plus({days:1}).set(...)` for hour≥24 — `.set({hour:26})` would normalize and lose the day. State cap intersected with declared hours; dispensary windows narrow but never widen. Spring-forward and fall-back Sundays in America/Chicago are pinned in the test suite.
+- **Geofence + per-transaction-limit + provenance rules** — `checkGeofence` delegates to `pointInPolygon`. `checkPerTransactionLimits` compares Decimal totals against Decimal limits (`>` would mis-fire on 56.701 with float64) and reports every violation in a single pass. `checkProductProvenance` walks beverage lines, distinguishing "value present and over cap" from "value missing" (the spec reference impl's `?? 0` would silently let a null beverage pass; this one fails closed).
+- **`evaluateCart` composer** — resolves `now = ctx.now ?? new Date()` once at top, runs every rule in fixed order, aggregates the cart for the snapshot, and on any thrown exception captures it as an `evaluation` sentinel rule with `passed: false`. Rule order is identity → license → time → place → cart contents for snapshot readability; outcome is independent of order.
+- **Test suite: 133 tests across 12 files** — per-rule unit tests cover every case from spec §3.5 (07:59/08:00/01:59/02:00 hours edges, 56.7g exact / 56.701g over, 8g/8.001g, 800mg/801mg, beverage `10mg/2 servings` cap edges, all four neighbouring-state geofence fails, half-open license boundary, DST transitions both directions); direct unit tests on `cart-math` and `geo`; composite tests on `evaluateCart` (happy path, single-rule fail with others still evaluated, multi-fail, empty cart, fail-closed exception, snapshot JSON-roundtrip, version stamping, 1000-iteration determinism); property tests via fast-check (per-transaction-limit ↔ cap-arithmetic equivalence over 500 random carts, order invariance, partition associativity, exempt-product neutrality, interstate-always-fails, JSON determinism); 50-line performance gate that asserts p99 < 5 ms.
+- **100% line / branch / function / statement coverage** on the compliance package — the four genuinely unreachable branches that TypeScript's `noUncheckedIndexedAccess` and strict-narrowing force us to write are marked with `/* c8 ignore */` comments explaining why. Vitest gate (`thresholds: { lines: 100, statements: 100, functions: 100, branches: 100 }`) blocks any future regression.
+
+Definition-of-Done verification:
+
+- `pnpm typecheck` — 15/15 tasks succeed.
+- `pnpm lint` — 11/11 tasks succeed, zero warnings.
+- `pnpm test` — 15/15 tasks succeed (133/133 compliance tests pass; 234/234 api tests pass; 43/43 db tests pass).
+- `pnpm --filter @dankdash/compliance build` — produces `dist/index.js` + `dist/index.d.ts` plus per-module entry points.
+- Coverage: 100% across all metrics on the compliance package, gated in `vitest.config.ts`.
+- 50-line `evaluateCart` perf: p50=0.18 ms, p95=0.29 ms, p99=1.14 ms (budget 5 ms p99) on the local dev machine.
+- Branch `phase/03-compliance` pushed; PR opened against `phase/02-auth`.
+
+Deferred:
+
+- **Integration tests through the checkout endpoint** — Phase 4 (Dispensaries + Catalog) and Phase 5 (Cart + Checkout) wire the engine into HTTP routes against a real Postgres; until then, the engine is unit-covered in isolation.
+- **Metrc reconciliation gate** — Phase 11 (Compliance + Audit ops) layers the nightly reconciliation worker on top of this engine; the per-order Metrc tag emission lives there, not here.
+- **iOS `ComplianceClient` parity** — Phase 12 (iOS rewrite) consumes the generated TS types from `@dankdash/types` to build a Swift mirror; the contract is locked but the Swift port has not been written.
+- **Compliance preview endpoint** — Phase 5 exposes `POST /v1/cart/preview-compliance` for the iOS client; the route handler is one line (call `evaluateCart` + serialize) and belongs with the cart routes, not the engine package.
+
+---
+
 ## Phase 2 — Auth & Identity
 
 _Status: complete (2026-05-18). Commit range: `bdb2a95..684208f` (33 commits)._
