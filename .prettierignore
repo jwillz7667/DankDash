@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+.next
+.turbo
+coverage
+pnpm-lock.yaml
+*.generated.*
+DankDash.xcodeproj
+DankDash/Assets.xcassets
+docs/spec/architecture-sketch.png
