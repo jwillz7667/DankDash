@@ -132,6 +132,7 @@ export const PaymentIntentResponseSchema = z
       'authorized',
       'settled',
       'failed',
+      'canceled',
       'refunded',
       'partially_refunded',
     ]),

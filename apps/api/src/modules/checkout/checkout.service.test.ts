@@ -28,10 +28,17 @@
  *     listing, dangling product, inventory decrement returned null
  */
 import {
+  type AeropayPayment,
+  type AeropayPaymentStatus,
+  type CreatePaymentInput,
+} from '@dankdash/aeropay';
+import {
   DomainError,
   ComplianceError,
+  ExternalServiceError,
   InventoryError,
   NotFoundError,
+  PaymentError,
   RepositoryError,
   ValidationError,
 } from '@dankdash/types';
@@ -42,6 +49,7 @@ import {
   type CheckoutScopedRepos,
   type CheckoutScopedReposFactory,
 } from './checkout.service.js';
+import type { AeropayClientLike } from '../payments/tokens.js';
 import type {
   Cart,
   CartItem,
@@ -566,6 +574,7 @@ class FakePaymentTransactionsRepo implements Pick<PaymentTransactionsRepository,
       authorizedAt: input.authorizedAt ?? null,
       settledAt: input.settledAt ?? null,
       failedAt: input.failedAt ?? null,
+      canceledAt: input.canceledAt ?? null,
       rawResponse: input.rawResponse ?? null,
       createdAt: input.createdAt ?? now,
       updatedAt: input.updatedAt ?? now,
@@ -615,6 +624,60 @@ class FakeLedgerEntriesRepo implements Pick<LedgerEntriesRepository, 'recordTran
   }
 }
 
+/**
+ * Coerce an arbitrary thrown value into an Error so we can pass it
+ * through `Promise.reject(...)` without tripping the eslint
+ * `prefer-promise-reject-errors` / `no-base-to-string` rules. Tests use
+ * this to simulate the SDK throwing a non-Error value (e.g. a plain
+ * string from a fetch shim) while keeping the rejected reason a real
+ * Error subclass for the checkout service's `instanceof DomainError`
+ * branch.
+ */
+function coerceToError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (typeof value === 'string') return new Error(value);
+  try {
+    return new Error(JSON.stringify(value));
+  } catch {
+    return new Error('non-serializable rejection value');
+  }
+}
+
+class FakeAeropayClient implements AeropayClientLike {
+  public createCalls: CreatePaymentInput[] = [];
+  /** Synchronous result that the next `createPayment` returns. Tests
+   *  override this when they need to simulate an authorize/settle/fail. */
+  public nextStatus: AeropayPaymentStatus = 'initiated';
+  /** Set to throw on the next `createPayment` (network / 5xx simulation). */
+  public nextThrow: unknown = null;
+  private idSeq = 1;
+
+  createPayment = (input: CreatePaymentInput): Promise<AeropayPayment> => {
+    this.createCalls.push(input);
+    if (this.nextThrow !== null) {
+      const err = this.nextThrow;
+      this.nextThrow = null;
+      return Promise.reject(coerceToError(err));
+    }
+    return Promise.resolve({
+      id: `pay_test_${String(this.idSeq++).padStart(6, '0')}`,
+      status: this.nextStatus,
+      amountCents: input.amountCents,
+      bankAccountId: input.bankAccountId,
+      customerRef: input.customerRef,
+      orderRef: input.orderRef,
+      createdAt: new Date(PINNED_NOW),
+    });
+  };
+
+  linkBankAccount = (): Promise<never> => Promise.reject(new Error('not used in checkout'));
+  getBankAccount = (): Promise<never> => Promise.reject(new Error('not used in checkout'));
+  getPayment = (): Promise<never> => Promise.reject(new Error('not used in checkout'));
+  cancelPayment = (): Promise<never> => Promise.reject(new Error('not used in checkout'));
+  refundPayment = (): Promise<never> => Promise.reject(new Error('not used in checkout'));
+  createPayout = (): Promise<never> => Promise.reject(new Error('not used in checkout'));
+}
+
 interface Rig {
   readonly service: CheckoutService;
   readonly carts: FakeCartsRepo;
@@ -630,6 +693,7 @@ interface Rig {
   readonly paymentMethods: FakePaymentMethodsRepo;
   readonly paymentTransactions: FakePaymentTransactionsRepo;
   readonly ledgerEntries: FakeLedgerEntriesRepo;
+  readonly aeropay: FakeAeropayClient;
 }
 
 function makeRig(): Rig {
@@ -646,6 +710,7 @@ function makeRig(): Rig {
   const paymentMethods = new FakePaymentMethodsRepo();
   const paymentTransactions = new FakePaymentTransactionsRepo();
   const ledgerEntries = new FakeLedgerEntriesRepo();
+  const aeropay = new FakeAeropayClient();
   const fakeDb = {
     transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
   } as unknown as Database;
@@ -666,7 +731,7 @@ function makeRig(): Rig {
       ledgerEntries,
     }) as unknown as CheckoutScopedRepos;
   return {
-    service: new CheckoutService(fakeDb, factory),
+    service: new CheckoutService(fakeDb, factory, aeropay),
     carts,
     items,
     listings,
@@ -680,11 +745,14 @@ function makeRig(): Rig {
     paymentMethods,
     paymentTransactions,
     ledgerEntries,
+    aeropay,
   };
 }
 
 /** Seeds the rig with the default happy-path graph (one cart, one
- *  2-unit flower line). Individual tests can re-seed selectively. */
+ *  2-unit flower line, plus the user's default linked bank account so
+ *  the new Aeropay charge step has a funding source). Individual tests
+ *  can re-seed selectively. */
 function seedHappyPath(rig: Rig): void {
   rig.carts.seed(makeCart());
   rig.dispensaries.seed(makeDispensary());
@@ -693,6 +761,7 @@ function seedHappyPath(rig: Rig): void {
   rig.listings.seed(makeListing({ quantityAvailable: 10 }));
   rig.products.seed(makeProduct());
   rig.items.seed(makeCartItem({ quantity: 2 }));
+  rig.paymentMethods.seed(makePaymentMethod());
 }
 
 describe('CheckoutService.checkout — happy path', () => {
@@ -773,7 +842,7 @@ describe('CheckoutService.checkout — happy path', () => {
     expect(line?.cbdMgTotal).toBe('0.2');
   });
 
-  it('returns an aeropay-stub payment intent for the order total', async () => {
+  it('returns an Aeropay payment intent referencing the real upstream payment id', async () => {
     const res = await rig.service.checkout(USER_ID, CART_ID, {
       deliveryAddressId: ADDRESS_ID,
       driverTipCents: 0,
@@ -781,7 +850,8 @@ describe('CheckoutService.checkout — happy path', () => {
 
     expect(res.paymentIntent.provider).toBe('aeropay');
     expect(res.paymentIntent.status).toBe('initiated');
-    expect(res.paymentIntent.providerRef).toBe(`pi_stub_${res.order.shortCode}`);
+    expect(res.paymentIntent.providerRef).toMatch(/^pay_test_\d{6}$/);
+    expect(res.paymentIntent.providerRef).toBe(rig.paymentTransactions.rows[0]?.providerRef);
     expect(res.paymentIntent.amountCents).toBe(res.order.totalCents);
     expect(res.paymentIntent.clientSecret).toBeNull();
   });
@@ -1082,8 +1152,7 @@ describe('CheckoutService.checkout — payment method resolution', () => {
   });
 
   it('uses the supplied paymentMethodId when it belongs to the user', async () => {
-    rig.paymentMethods.seed(makePaymentMethod());
-
+    // seedHappyPath already seeded the default method.
     await rig.service.checkout(USER_ID, CART_ID, {
       deliveryAddressId: ADDRESS_ID,
       driverTipCents: 0,
@@ -1094,8 +1163,7 @@ describe('CheckoutService.checkout — payment method resolution', () => {
   });
 
   it('falls back to the user default when no paymentMethodId is supplied', async () => {
-    rig.paymentMethods.seed(makePaymentMethod({ id: PAYMENT_METHOD_ID, isDefault: true }));
-
+    // seedHappyPath already seeded the default method.
     await rig.service.checkout(USER_ID, CART_ID, {
       deliveryAddressId: ADDRESS_ID,
       driverTipCents: 0,
@@ -1104,13 +1172,70 @@ describe('CheckoutService.checkout — payment method resolution', () => {
     expect(rig.paymentTransactions.rows[0]?.paymentMethodId).toBe(PAYMENT_METHOD_ID);
   });
 
-  it('stores null when no method supplied and the user has none on file', async () => {
-    await rig.service.checkout(USER_ID, CART_ID, {
+  it('rejects 402 PaymentError when no method supplied and the user has none on file', async () => {
+    rig.paymentMethods.rows.clear();
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
       deliveryAddressId: ADDRESS_ID,
       driverTipCents: 0,
     });
+    await expect(promise).rejects.toBeInstanceOf(PaymentError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_INVALID',
+      statusCode: 402,
+      details: { userId: USER_ID },
+    });
+    // No Aeropay call should have been made — we bailed before that.
+    expect(rig.aeropay.createCalls).toHaveLength(0);
+    expect(rig.paymentTransactions.rows).toHaveLength(0);
+  });
 
-    expect(rig.paymentTransactions.rows[0]?.paymentMethodId).toBeNull();
+  it('rejects 402 PaymentError when the default method is pending (link still in flight)', async () => {
+    rig.paymentMethods.rows.clear();
+    rig.paymentMethods.seed(
+      makePaymentMethod({ status: 'pending', aeropayPaymentMethodRef: null }),
+    );
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+    await expect(promise).rejects.toBeInstanceOf(PaymentError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_INVALID',
+      statusCode: 402,
+      details: { paymentMethodId: PAYMENT_METHOD_ID, status: 'pending' },
+    });
+  });
+
+  it('rejects 402 PaymentError when the default method status is failed', async () => {
+    rig.paymentMethods.rows.clear();
+    rig.paymentMethods.seed(makePaymentMethod({ status: 'failed' }));
+
+    await expect(
+      rig.service.checkout(USER_ID, CART_ID, {
+        deliveryAddressId: ADDRESS_ID,
+        driverTipCents: 0,
+      }),
+    ).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_INVALID',
+      statusCode: 402,
+    });
+  });
+
+  it('rejects 402 PaymentError when the active method has no aeropayPaymentMethodRef', async () => {
+    rig.paymentMethods.rows.clear();
+    rig.paymentMethods.seed(makePaymentMethod({ aeropayPaymentMethodRef: null }));
+
+    await expect(
+      rig.service.checkout(USER_ID, CART_ID, {
+        deliveryAddressId: ADDRESS_ID,
+        driverTipCents: 0,
+      }),
+    ).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_INVALID',
+      statusCode: 402,
+    });
   });
 
   it('rejects 422 ValidationError when the supplied paymentMethodId belongs to another user', async () => {
@@ -1128,6 +1253,7 @@ describe('CheckoutService.checkout — payment method resolution', () => {
   });
 
   it('rejects 422 ValidationError when the supplied paymentMethodId is soft-deleted', async () => {
+    rig.paymentMethods.rows.clear();
     rig.paymentMethods.seed(
       makePaymentMethod({ deletedAt: new Date(PINNED_NOW.getTime() - 60_000) }),
     );
@@ -1142,6 +1268,8 @@ describe('CheckoutService.checkout — payment method resolution', () => {
   });
 
   it('rejects 422 ValidationError when the supplied paymentMethodId does not exist', async () => {
+    rig.paymentMethods.rows.clear();
+
     await expect(
       rig.service.checkout(USER_ID, CART_ID, {
         deliveryAddressId: ADDRESS_ID,
@@ -1149,6 +1277,175 @@ describe('CheckoutService.checkout — payment method resolution', () => {
         paymentMethodId: PAYMENT_METHOD_ID,
       }),
     ).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe('CheckoutService.checkout — Aeropay charge', () => {
+  let rig: Rig;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(PINNED_NOW);
+    rig = makeRig();
+    seedHappyPath(rig);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('forwards the local payment_transactions.id as the Aeropay idempotency key', async () => {
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(rig.aeropay.createCalls).toHaveLength(1);
+    const [call] = rig.aeropay.createCalls;
+    expect(call?.idempotencyKey).toBe(res.paymentIntent.id);
+    expect(call?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('passes the linked bank-account ref + amount + customer/order refs to Aeropay', async () => {
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 250,
+    });
+
+    expect(rig.aeropay.createCalls).toHaveLength(1);
+    const [call] = rig.aeropay.createCalls;
+    expect(call?.bankAccountId).toBe('apm_abc123');
+    expect(call?.amountCents).toBe(res.order.totalCents);
+    expect(call?.customerRef).toBe(USER_ID);
+    expect(call?.orderRef).toBe(res.order.id);
+  });
+
+  it('persists status=authorized + authorizedAt set + settledAt null on sync-authorize', async () => {
+    rig.aeropay.nextStatus = 'authorized';
+
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(res.paymentIntent.status).toBe('authorized');
+    const row = rig.paymentTransactions.rows[0];
+    expect(row?.status).toBe('authorized');
+    expect(row?.authorizedAt).toEqual(PINNED_NOW);
+    expect(row?.settledAt).toBeNull();
+    expect(row?.failedAt).toBeNull();
+    expect(row?.canceledAt).toBeNull();
+  });
+
+  it('persists status=settled + both authorizedAt and settledAt on sync-settle', async () => {
+    rig.aeropay.nextStatus = 'settled';
+
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(res.paymentIntent.status).toBe('settled');
+    const row = rig.paymentTransactions.rows[0];
+    expect(row?.status).toBe('settled');
+    expect(row?.authorizedAt).toEqual(PINNED_NOW);
+    expect(row?.settledAt).toEqual(PINNED_NOW);
+  });
+
+  it('persists raw response payload with the Aeropay payment id, status, and bank ref', async () => {
+    await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    const row = rig.paymentTransactions.rows[0];
+    const raw = row?.rawResponse as {
+      aeropayPaymentId: string;
+      aeropayStatus: AeropayPaymentStatus;
+      bankAccountId: string;
+    };
+    expect(raw.aeropayPaymentId).toMatch(/^pay_test_\d{6}$/);
+    expect(raw.aeropayStatus).toBe('initiated');
+    expect(raw.bankAccountId).toBe('apm_abc123');
+  });
+
+  it('throws 402 PaymentError and skips ledger writes when Aeropay returns failed on createPayment', async () => {
+    rig.aeropay.nextStatus = 'failed';
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+    await expect(promise).rejects.toBeInstanceOf(PaymentError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'PAYMENT_DECLINED',
+      statusCode: 402,
+      details: { aeropayStatus: 'failed' },
+    });
+
+    // Aeropay was called once, then the throw aborted subsequent steps.
+    // The fake `db.transaction` is a passthrough so prior in-memory writes
+    // are not undone; the assertions here verify the throw fired between
+    // steps 16 and 17 (no payment_transactions row, no ledger entries).
+    // In production the surrounding transaction rollback also undoes the
+    // order / order_items / inventory / cart-delete writes.
+    expect(rig.aeropay.createCalls).toHaveLength(1);
+    expect(rig.paymentTransactions.rows).toHaveLength(0);
+    expect(rig.ledgerEntries.rows).toHaveLength(0);
+  });
+
+  it('throws 402 PaymentError when Aeropay returns canceled on createPayment', async () => {
+    rig.aeropay.nextStatus = 'canceled';
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+    await expect(promise).rejects.toBeInstanceOf(PaymentError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'PAYMENT_DECLINED',
+      statusCode: 402,
+      details: { aeropayStatus: 'canceled' },
+    });
+  });
+
+  it('wraps a non-DomainError throw from Aeropay as ExternalServiceError(502)', async () => {
+    rig.aeropay.nextThrow = new Error('ECONNRESET');
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+    await expect(promise).rejects.toBeInstanceOf(ExternalServiceError);
+    await expect(promise).rejects.toMatchObject({
+      statusCode: 502,
+      details: { service: 'aeropay' },
+    });
+    expect(rig.paymentTransactions.rows).toHaveLength(0);
+    expect(rig.ledgerEntries.rows).toHaveLength(0);
+  });
+
+  it('re-throws a DomainError from Aeropay unchanged (no ExternalServiceError wrapping)', async () => {
+    const domainThrow = new PaymentError('PAYMENT_DECLINED', 'manual fixture', {});
+    rig.aeropay.nextThrow = domainThrow;
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+    await expect(promise).rejects.toBe(domainThrow);
+  });
+
+  it('treats Aeropay returning refunded on createPayment as ExternalServiceError (contract violation)', async () => {
+    rig.aeropay.nextStatus = 'refunded';
+
+    const promise = rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+    await expect(promise).rejects.toBeInstanceOf(ExternalServiceError);
+    await expect(promise).rejects.toMatchObject({
+      statusCode: 502,
+      details: { service: 'aeropay' },
+    });
   });
 });
 

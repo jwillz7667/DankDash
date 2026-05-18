@@ -57,25 +57,34 @@
  *       decrement is race-free; a null return here means the FOR UPDATE
  *       lock failed to serialize (a bug), so we raise RepositoryError.
  *   15. Delete the cart (`cart_items` cascades).
- *   16. Insert the payment_transactions row (provider='aeropay', status=
- *       'initiated'). Phase 5 stubs the providerRef as
- *       `pi_stub_<short_code>` — Phase 6 will replace this with the
- *       real Aeropay session id. The stub is unique-per-order and the
- *       `payment_transactions_provider_ref_uq` UNIQUE constraint will
- *       reject a duplicate that would otherwise be created by a racing
- *       checkout (defense in depth).
+ *   16. Resolve the user's funding source and run the real Aeropay
+ *       charge. The payment_method must be `active` and carry an
+ *       `aeropay_payment_method_ref` (the upstream bank-account id). A
+ *       UUIDv7 for the payment_transactions row is pre-generated so we
+ *       can pass it as the Aeropay idempotency key — a network retry of
+ *       the same checkout reuses the same key and Aeropay coalesces to
+ *       the same payment, avoiding double-charging. The row is then
+ *       persisted with `provider_ref = aeropayPayment.id` and the
+ *       lifecycle timestamps Aeropay returned (authorizedAt on a
+ *       sync-authorized payment, settledAt on the rare sync-settle).
+ *       The `payment_transactions_provider_ref_uq` UNIQUE constraint
+ *       guards against duplicate persistence of the same Aeropay id.
  *   17. Record balanced double-entry ledger entries for the order
  *       placement: customer account DEBIT and `aeropay_clearing` account
  *       CREDIT, both for the order total. The repo's
  *       `recordTransaction` validates debits=credits before insert; an
  *       imbalance is a programmer error and rolls back the whole txn.
  *
- * Phase 5 explicitly stubs the Aeropay side of the payment intent. Phase
- * 6's payments module will replace the stub with the real Aeropay
- * client and the additional ledger entries that move money from
- * `aeropay_clearing` to dispensary/driver accounts on settlement and
- * delivery.
+ * Aeropay sync-failure semantics: a `failed` or `canceled` AeropayPayment
+ * returned by `createPayment` is surfaced as a `PaymentError` so the
+ * entire checkout transaction rolls back — no order, no inventory
+ * decrement, no cart deletion. The customer sees a clean retryable
+ * error rather than a half-committed state. The webhook handlers in
+ * `PaymentMethodsService` handle the much-more-common async failure
+ * path where the payment was initially accepted but later failed at
+ * the bank (NSF, account closed, etc.).
  */
+import { type AeropayPayment, type AeropayPaymentStatus } from '@dankdash/aeropay';
 import {
   evaluateCart,
   MN_DEFAULT_TIMEZONE,
@@ -85,6 +94,7 @@ import {
   type EvaluationContext,
 } from '@dankdash/compliance';
 import {
+  newId,
   type CartItem,
   type CartItemsRepository,
   type CartsRepository,
@@ -98,7 +108,9 @@ import {
   type OrderItem,
   type OrderItemsRepository,
   type OrdersRepository,
+  type PaymentMethod,
   type PaymentMethodsRepository,
+  type PaymentStatus,
   type PaymentTransaction,
   type PaymentTransactionsRepository,
   type Product,
@@ -112,14 +124,17 @@ import { computeOrderTotals, type PricingLine } from '@dankdash/pricing';
 import {
   ComplianceError,
   DomainError,
+  ExternalServiceError,
   InventoryError,
   NotFoundError,
+  PaymentError,
   RepositoryError,
   ValidationError,
 } from '@dankdash/types';
 import { generateShortCode, withCollisionRetry } from '@dankdash/utils';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Decimal } from 'decimal.js';
+import { AEROPAY_CLIENT, type AeropayClientLike } from '../payments/tokens.js';
 import type {
   CheckoutRequest,
   CheckoutResponse,
@@ -161,6 +176,7 @@ export class CheckoutService {
   constructor(
     private readonly db: Database,
     private readonly reposFor: CheckoutScopedReposFactory,
+    @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
   ) {}
 
   async checkout(userId: string, cartId: string, body: CheckoutRequest): Promise<CheckoutResponse> {
@@ -369,24 +385,39 @@ export class CheckoutService {
       // Step 15: delete the cart (cart_items cascades).
       await scoped.carts.deleteById(cart.id);
 
-      // Step 16: payment-method resolution + transaction insert. Phase 5
-      // stubs the Aeropay side. If the caller supplied a paymentMethodId
-      // we verify it belongs to them; otherwise we look up their default
-      // method, or fall back to a null payment-method-id row (Aeropay's
-      // hosted-iframe flow can create the method on the fly in Phase 6).
-      const paymentMethodId = await this.resolvePaymentMethodId(scoped, userId, body);
-      const paymentIntent = await scoped.paymentTransactions.create({
+      // Step 16: payment-method resolution + real Aeropay charge. The
+      // resolved method must be `active` and carry a linked bank
+      // account; a missing or unlinked method fails the checkout (we
+      // cannot complete payment without one). The payment_transactions
+      // id is generated up front so we can pass it as the Aeropay
+      // idempotency key — retries coalesce to the same charge.
+      const paymentMethod = await this.resolveActiveAeropayMethod(scoped, userId, body);
+      const paymentTransactionId = newId();
+      const aeropayPayment = await this.chargeAeropay({
+        paymentTransactionId,
+        paymentMethod,
+        userId,
         orderId: order.id,
-        paymentMethodId: paymentMethodId,
-        provider: 'aeropay',
-        providerRef: `pi_stub_${order.shortCode}`,
         amountCents: pricing.totals.totalCents,
-        status: 'initiated',
+      });
+      const paymentIntent = await scoped.paymentTransactions.create({
+        id: paymentTransactionId,
+        orderId: order.id,
+        paymentMethodId: paymentMethod.id,
+        provider: 'aeropay',
+        providerRef: aeropayPayment.id,
+        amountCents: pricing.totals.totalCents,
+        status: aeropayPaymentStatusToLocal(aeropayPayment.status),
         initiatedAt: now,
+        authorizedAt:
+          aeropayPayment.status === 'authorized' || aeropayPayment.status === 'settled'
+            ? now
+            : null,
+        settledAt: aeropayPayment.status === 'settled' ? now : null,
         rawResponse: {
-          stub: true,
-          phase: 5,
-          note: 'Phase 6 will replace this stub with a real Aeropay session',
+          aeropayPaymentId: aeropayPayment.id,
+          aeropayStatus: aeropayPayment.status,
+          bankAccountId: aeropayPayment.bankAccountId,
         },
         createdAt: now,
         updatedAt: now,
@@ -516,34 +547,115 @@ export class CheckoutService {
   }
 
   /**
-   * Resolves the payment-method id to attach to the transaction row.
+   * Resolve the funding source for this checkout. Returns the full
+   * PaymentMethod row (not just the id) so the caller has the Aeropay
+   * bank-account ref needed for `createPayment`.
    *
-   *   - Caller supplied: verify it exists, belongs to the user, and is
-   *     not soft-deleted. Cross-user / missing → ValidationError (422)
-   *     with details identifying the offending field. The repo's
-   *     findById does not filter by user, so we filter here.
-   *   - Not supplied: look up the user's default method. Return its id
-   *     or `null` (Aeropay's flow may create the method on the fly in
-   *     Phase 6; `payment_transactions.payment_method_id` is nullable
-   *     for exactly this case).
+   *   - Caller supplied a `paymentMethodId`: verify it exists, belongs
+   *     to the user, is not soft-deleted, is `active`, and carries an
+   *     `aeropayPaymentMethodRef`. Cross-user / missing / soft-deleted
+   *     surfaces as ValidationError(422) — the iOS client should have
+   *     shown only valid methods, so this is a client bug. A method
+   *     that is `pending` or `failed` (link still in flight or failed)
+   *     surfaces as PaymentError(`PAYMENT_METHOD_INVALID`, 402).
+   *   - Not supplied: look up the user's default method and apply the
+   *     same active+linked checks. No default → PaymentError
+   *     (`PAYMENT_METHOD_INVALID`, 402) — the user has no way to pay.
    */
-  private async resolvePaymentMethodId(
+  private async resolveActiveAeropayMethod(
     scoped: CheckoutScopedRepos,
     userId: string,
     body: CheckoutRequest,
-  ): Promise<string | null> {
+  ): Promise<PaymentMethod & { readonly aeropayPaymentMethodRef: string }> {
+    let method: PaymentMethod | null = null;
     if (body.paymentMethodId !== undefined) {
-      const method = await scoped.paymentMethods.findById(body.paymentMethodId);
-      if (method?.userId !== userId || method.deletedAt !== null) {
+      const candidate = await scoped.paymentMethods.findById(body.paymentMethodId);
+      if (candidate?.userId !== userId || candidate.deletedAt !== null) {
         throw new ValidationError(
           'paymentMethodId references a payment method that does not exist for this user',
           { paymentMethodId: body.paymentMethodId },
         );
       }
-      return method.id;
+      method = candidate;
+    } else {
+      method = await scoped.paymentMethods.findDefaultForUser(userId);
+      if (method === null) {
+        throw new PaymentError(
+          'PAYMENT_METHOD_INVALID',
+          'No default payment method on file; link a bank account before checking out',
+          { userId },
+        );
+      }
     }
-    const fallback = await scoped.paymentMethods.findDefaultForUser(userId);
-    return fallback === null ? null : fallback.id;
+    if (method.status !== 'active' || method.aeropayPaymentMethodRef === null) {
+      throw new PaymentError(
+        'PAYMENT_METHOD_INVALID',
+        'Payment method is not linked to an active bank account',
+        { paymentMethodId: method.id, status: method.status },
+      );
+    }
+    return { ...method, aeropayPaymentMethodRef: method.aeropayPaymentMethodRef };
+  }
+
+  /**
+   * Run the Aeropay charge for the order. Wraps `createPayment` to map
+   * upstream sync failures into `PaymentError` so the surrounding DB
+   * transaction rolls back cleanly, and to mask non-domain throws
+   * (network errors, response-validation errors) as
+   * `ExternalServiceError(502)`.
+   *
+   * Idempotency: `paymentTransactionId` is the local row id (UUIDv7),
+   * pre-generated by the caller. We forward it as Aeropay's
+   * idempotency key so a network-retry of the same checkout coalesces
+   * to the same upstream payment instead of double-charging.
+   */
+  private async chargeAeropay(input: {
+    readonly paymentTransactionId: string;
+    readonly paymentMethod: PaymentMethod & { readonly aeropayPaymentMethodRef: string };
+    readonly userId: string;
+    readonly orderId: string;
+    readonly amountCents: number;
+  }): Promise<AeropayPayment> {
+    let payment: AeropayPayment;
+    try {
+      payment = await this.aeropay.createPayment({
+        bankAccountId: input.paymentMethod.aeropayPaymentMethodRef,
+        amountCents: input.amountCents,
+        customerRef: input.userId,
+        orderRef: input.orderId,
+        idempotencyKey: input.paymentTransactionId,
+      });
+    } catch (e) {
+      if (e instanceof DomainError) throw e;
+      throw new ExternalServiceError(
+        'aeropay',
+        'Aeropay createPayment call failed',
+        { paymentMethodId: input.paymentMethod.id, orderId: input.orderId },
+        e,
+      );
+    }
+    if (payment.status === 'failed' || payment.status === 'canceled') {
+      throw new PaymentError(
+        'PAYMENT_DECLINED',
+        `Aeropay declined the payment (status=${payment.status})`,
+        {
+          paymentMethodId: input.paymentMethod.id,
+          orderId: input.orderId,
+          aeropayPaymentId: payment.id,
+          aeropayStatus: payment.status,
+        },
+      );
+    }
+    if (payment.status === 'refunded') {
+      // Refunded on creation is impossible per Aeropay's lifecycle; if
+      // we see one we treat it as an upstream contract violation.
+      throw new ExternalServiceError(
+        'aeropay',
+        'Aeropay returned an unexpected `refunded` status on createPayment',
+        { paymentMethodId: input.paymentMethod.id, aeropayPaymentId: payment.id },
+      );
+    }
+    return payment;
   }
 }
 
@@ -693,10 +805,37 @@ function projectPaymentIntent(intent: PaymentTransaction): PaymentIntentResponse
     providerRef: intent.providerRef,
     status: intent.status,
     amountCents: intent.amountCents,
-    // The stub does not issue a client-secret; Phase 6's Aeropay client
-    // will populate this with the hosted-iframe token when applicable.
+    // Aeropay's bank-account flow does not return a client-secret —
+    // the bank account was linked in the prior /v1/payment-methods
+    // session, so there is no in-iframe step at checkout. The field
+    // stays in the schema (nullable) so a future card-on-file flow
+    // that uses an iframe token can populate it without a wire change.
     clientSecret: null,
   };
+}
+
+/**
+ * Map Aeropay's payment lifecycle status to our local `payment_status`
+ * enum. The lifecycles match value-for-value for the states we expect
+ * on `createPayment` success (`initiated`, `authorized`, `settled`);
+ * `failed` / `canceled` / `refunded` are pre-screened by the caller and
+ * never reach this mapper.
+ */
+function aeropayPaymentStatusToLocal(status: AeropayPaymentStatus): PaymentStatus {
+  switch (status) {
+    case 'initiated':
+      return 'initiated';
+    case 'authorized':
+      return 'authorized';
+    case 'settled':
+      return 'settled';
+    case 'failed':
+      return 'failed';
+    case 'canceled':
+      return 'canceled';
+    case 'refunded':
+      return 'refunded';
+  }
 }
 
 /**

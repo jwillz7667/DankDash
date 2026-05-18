@@ -33,13 +33,15 @@ import {
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { PaymentsModule } from '../payments/payments.module.js';
+import { AEROPAY_CLIENT, type AeropayClientLike } from '../payments/tokens.js';
 import { CheckoutController } from './checkout.controller.js';
 import { CheckoutService, type CheckoutScopedRepos } from './checkout.service.js';
 
 const checkoutServiceProvider: FactoryProvider<CheckoutService> = {
   provide: CheckoutService,
-  inject: [DRIZZLE_DB],
-  useFactory: (db: Database): CheckoutService =>
+  inject: [DRIZZLE_DB, AEROPAY_CLIENT],
+  useFactory: (db: Database, aeropay: AeropayClientLike): CheckoutService =>
     new CheckoutService(
       db,
       (scopedDb): CheckoutScopedRepos => ({
@@ -57,11 +59,12 @@ const checkoutServiceProvider: FactoryProvider<CheckoutService> = {
         paymentMethods: new PaymentMethodsRepository(scopedDb),
         ledgerEntries: new LedgerEntriesRepository(scopedDb),
       }),
+      aeropay,
     ),
 };
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, PaymentsModule],
   controllers: [CheckoutController],
   providers: [checkoutServiceProvider],
   exports: [CheckoutService],
