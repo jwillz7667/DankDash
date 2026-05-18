@@ -14,6 +14,44 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 2 — Auth & Identity
+
+_Status: complete (2026-05-18). Commit range: `bdb2a95..684208f` (33 commits)._
+
+What landed:
+
+- **NestJS bootstrap on Fastify** — `apps/api` scaffolded with `@nestjs/platform-fastify` + `rawBody: true` (Persona HMAC verification requires the exact request bytes). Bootstrap chain wires `@fastify/helmet`, request-id propagation, structured pino logging, the global `ZodValidationPipe`, `LoggingInterceptor`, and `GlobalExceptionFilter` that renders the `openapi-excerpt.yaml` envelope. Smoke suite at `test/bootstrap.test.ts` instantiates the app once per file via a shared factory and pins the `/healthz` + `/readyz` shape.
+- **Password service** — argon2id over an HMAC-SHA512 pre-hash with a `PASSWORD_PEPPER` secret. The HMAC step makes a database-only compromise insufficient for offline cracking (the pepper lives in Railway secrets, not the DB). Rotates the pepper via `verify-and-rehash` on the next successful login; runbook lives at `docs/runbooks/password-pepper-rotation.md`.
+- **JWT issuance** — RS256 with explicit algorithm-confusion defence (`alg: 'RS256'` is asserted before `jwt.verify` and after, so a forged `alg: 'none'` token never reaches signature validation). Key rotation via a `kid` header that maps to `JWKS` entries; `verifyAccessToken` rejects unknown kids before parsing claims. Access tokens carry `{ sub, sid, role, iss, aud, iat, exp, kid }` only — no PII.
+- **Refresh-token family rotation** — `RefreshTokenService.rotate` is OWASP-style: each rotation issues a successor in the same family, the parent row is marked `rotated_at`, and a presented-but-already-rotated token cascades `family_revoked_at` across the whole family (anomaly detection). Storage uses sha256-hashed tokens — plaintext never lands in Postgres. Schema delta `b08b7cf` adds `session_family_id`, `parent_session_id`, `rotated_at`, `family_revoked_at` columns + the reuse-detection migration; repo extension at `f816a96` adds `rotate` + `revokeFamily`.
+- **MFA TOTP** — speakeasy-backed `MfaService` with 30-second windows ±1 step. Secrets are AES-256-GCM-encrypted at the column layer (envelope-wrapped DEK under `COLUMN_ENC_MASTER_KEY`) so DB-only access never yields plaintext secrets. `disableMfa` requires a current code so a stolen access token alone cannot strip the second factor.
+- **Persona KYC** — `PersonaService.createInquiry` posts to `withpersona.com/api/v1/inquiries`; `handleWebhook` verifies the `Persona-Signature` header (`t=…,v1=…`) with HMAC-SHA256 + a ±300s replay window + constant-time comparison, parses the JSON:API envelope through Zod, and dispatches `inquiry.completed`/`failed`/`expired` to discriminated-union outcomes. Age gate (MN Stat. § 342.46 minimum 21) is enforced at the completion outcome — under-21 raises `KYC_AGE_UNDER_MINIMUM` rather than silently completing.
+- **Identity service** — `IdentityService.getMe`/`updateMe`/`startKyc`/`applyKycOutcome` orchestrate the user-facing flows. `applyKycOutcome` is the only place that flips `users.status=active` + stamps `kyc_verified_at` + persists the Persona-verified DOB over the client-typed value.
+- **Auth + Identity controllers (9 endpoints)** — `/v1/auth/{register,login,refresh,logout,mfa/setup,mfa/confirm,mfa/verify,mfa/disable}` + `/v1/me` (GET + PATCH) + `/v1/identity/kyc/start` + `/v1/identity/kyc/webhook`. Public/protected boundary enforced by a global `JwtAuthGuard` (deny-by-default) with `@Public` as the opt-out, and `RolesGuard` (allow-list) for role-restricted routes — surfacing `@Public + @Roles` controller mistakes as 403 rather than silently letting them through.
+- **Zod DTOs (`nestjs-zod`)** — single `.strict()` schema per endpoint serves the request DTO, response type, and (future) OpenAPI generation. Login uses a discriminated-union response (`status: 'authenticated' | 'mfa_required'`) so the two-step MFA flow is type-safe end-to-end. The KYC webhook DTO is documentation-only; the controller uses `@RawBody()` because re-serializing a Zod-parsed object would invalidate the HMAC.
+- **Column encryption** — `EncryptionService` provides AES-256-GCM envelope encryption with a 32-byte DEK per encryption call wrapped by `COLUMN_ENC_MASTER_KEY` (loaded from Railway secrets); ciphertext layout is `version(1) | wrapped_dek(60) | iv(12) | tag(16) | payload(N)` so future master-key rotation is a wrap-only re-encryption pass. Used by MfaService for `mfa_secret_enc`.
+- **Rate limiting** — `RateLimitGuard` keyed on a sha256-truncated tracker (`ip`, `user`, `email-from-body`, `refresh-from-body`) backed by Redis `INCR + PEXPIRE NX + PTTL` pipeline (fixed window, one round trip). Multi-tracker `@RateLimit` decorator: `/auth/login` is `5/min per-IP AND 10/hour per-email` simultaneously. `MemoryRateLimitStore` provides a Redis-free fallback for `NODE_ENV=test`. RateLimitError details carry `retryAfterSeconds` for client back-off.
+- **234 unit tests, 16 files** — covers password (20), jwt (9), refresh-token (22), mfa (20), persona (32), encryption helper, auth.service (17), identity.service (15), auth.controller (9), identity.controller (7), jwt-auth.guard (7), roles.guard (6), rate-limit.guard (12), zod-validation.pipe (5), DTO schemas (auth 34 + identity 13), bootstrap smoke (6). All instantiate components directly with hand-rolled fakes — Nest container is only spun in the bootstrap smoke suite.
+- **Eight new error classes in `@dankdash/types`** — `PasswordError`, `EncryptionError`, `ConfigError`, `KycError`, plus expansions to `AuthError` (`UNAUTHENTICATED`, `MFA_CODE_INVALID`). Every controller-reachable failure now has a stable code; the global filter maps these to HTTP statuses without leaking internals.
+
+Definition-of-Done verification:
+
+- `pnpm typecheck` — 15/15 tasks succeed.
+- `pnpm lint` — 11/11 tasks succeed, zero warnings.
+- `pnpm test` — 15/15 tasks succeed (234/234 api tests pass).
+- `pnpm --filter @dankdash/api build` — produces `dist/main.js` and module entry points.
+- API coverage: **97.25% stmts / 91.51% branch / 80.59% funcs / 97.25% lines** against the 80/70/80/80 thresholds in `apps/api/vitest.config.ts`.
+- Branch `phase/02-auth` pushed; PR opened against `phase/01-database`.
+
+Deferred:
+
+- **Integration suite (`test/integration/auth.routes.test.ts`)** — guards/pipes/filters are unit-covered but not end-to-end exercised against a real HTTP server + Postgres. Wait for Phase 3 (compliance) to land so the integration suite can use the same `seedScenario('default')` fixture both phases share.
+- **JWKS rotation runbook** — current `JwtService` accepts a `kid → key` map at construction; ops procedure for rotating without dropping in-flight tokens (publish new kid, hold for 1× access TTL, retire old kid) belongs in `docs/runbooks/` once Phase 12 ships the secrets-rotation harness.
+- **Persona inquiry resumption** — re-starting `/kyc/start` mints a new inquiry rather than resuming an open one. Persona supports `resume-inquiry-id`, but the iOS flow doesn't yet detect the resumable case; revisit alongside Phase 13's checkout-web KYC hand-off.
+- **Refresh-token reuse-detection metrics** — `RefreshTokenService.rotate` revokes the family on reuse but doesn't emit a metric; Phase 14 observability adds the Prometheus counter so security can alert on rising reuse-detection rates without DB query.
+
+---
+
 ## Phase 1 — Database & Migrations
 
 _Status: complete (2026-05-18). Commit range: `ffc09d7..91b08da` (12 commits)._
