@@ -1,0 +1,102 @@
+import { sql } from 'drizzle-orm';
+import {
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { complianceCheckType, metrcStatus, verificationContext } from './enums.js';
+import { users } from './identity.js';
+import { orders } from './orders.js';
+
+export const complianceChecks = pgTable(
+  'compliance_checks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    checkType: complianceCheckType('check_type').notNull(),
+    subjectType: text('subject_type').notNull(),
+    subjectId: uuid('subject_id').notNull(),
+    passed: boolean('passed').notNull(),
+    details: jsonb('details')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    performedAt: timestamp('performed_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+    performedBy: uuid('performed_by').references(() => users.id),
+  },
+  (table) => [
+    index('compliance_checks_subject_idx').on(
+      table.subjectType,
+      table.subjectId,
+      table.performedAt,
+    ),
+    index('compliance_checks_failures_idx')
+      .on(table.performedAt)
+      .where(sql`${table.passed} = false`),
+  ],
+);
+
+export const metrcTransactions = pgTable(
+  'metrc_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orderId: uuid('order_id')
+      .notNull()
+      .unique()
+      .references(() => orders.id, { onDelete: 'restrict' }),
+    metrcReceiptId: text('metrc_receipt_id'),
+    packageTags: text('package_tags').array().notNull(),
+    reportedAt: timestamp('reported_at', { withTimezone: true, mode: 'date' }),
+    status: metrcStatus('status').notNull().default('pending'),
+    retryCount: integer('retry_count').notNull().default(0),
+    responsePayload: jsonb('response_payload'),
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('metrc_transactions_status_idx')
+      .on(table.status)
+      .where(sql`${table.status} != 'reconciled'`),
+  ],
+);
+
+export const ageVerifications = pgTable(
+  'age_verifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    context: verificationContext('context').notNull(),
+    orderId: uuid('order_id').references(() => orders.id),
+    provider: text('provider').notNull(),
+    providerSessionId: text('provider_session_id').notNull(),
+    passed: boolean('passed').notNull(),
+    passedAt: timestamp('passed_at', { withTimezone: true, mode: 'date' }),
+    failureReason: text('failure_reason'),
+    scanImageKey: text('scan_image_key'),
+    selfieImageKey: text('selfie_image_key'),
+    documentDobValue: date('document_dob_value'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('age_verifications_user_idx').on(table.userId, table.createdAt),
+    index('age_verifications_order_idx')
+      .on(table.orderId)
+      .where(sql`${table.orderId} IS NOT NULL`),
+  ],
+);
+
+export type ComplianceCheck = typeof complianceChecks.$inferSelect;
+export type NewComplianceCheck = typeof complianceChecks.$inferInsert;
+export type MetrcTransaction = typeof metrcTransactions.$inferSelect;
+export type NewMetrcTransaction = typeof metrcTransactions.$inferInsert;
+export type AgeVerification = typeof ageVerifications.$inferSelect;
+export type NewAgeVerification = typeof ageVerifications.$inferInsert;
