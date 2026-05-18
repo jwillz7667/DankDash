@@ -79,7 +79,11 @@ export const EnvSchema = z
     ENABLE_PERSONA: booleanFromString.default(true),
     ENABLE_VERIFF: booleanFromString.default(true),
   })
-  .strict();
+  // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
+  // VSCODE_*, etc. The validator should care about *required* keys, not
+  // forbid unknown ones; passthrough preserves them in the parsed object
+  // for libraries (Sentry, OTEL) that read directly from process.env.
+  .passthrough();
 
 export type Env = z.infer<typeof EnvSchema>;
 
