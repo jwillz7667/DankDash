@@ -83,6 +83,7 @@ export function checkHours(ctx: EvaluationContext, now: Date): RuleResult {
 
 function lookupHours(ctx: EvaluationContext, dayStart: DateTime): DayHours | null {
   const weekday = WEEKDAY_BY_LUXON[dayStart.weekday];
+  /* c8 ignore next -- luxon's `weekday` is always 1..7; only TypeScript's noUncheckedIndexedAccess demands this */
   if (weekday === undefined) return null;
   return ctx.dispensary.hoursJson[weekday];
 }
@@ -105,6 +106,7 @@ function buildEffectiveWindow(dayStart: DateTime, hours: DayHours | null): Windo
 
   const openAt = anchorAt(dayStart, openMinutes);
   const closeAt = anchorAt(dayStart, closeMinutes);
+  /* c8 ignore next -- parseHourMinute clamps to hour 0..30 / minute 0..59; luxon set() never returns invalid for these */
   if (!openAt.isValid || !closeAt.isValid) return null;
 
   const stateEarliest = anchorAt(
@@ -150,6 +152,7 @@ function parseHourMinute(value: string): { hour: number; minute: number } | null
   if (match === null) return null;
   const hour = Number(match[1]);
   const minute = Number(match[2]);
+  /* c8 ignore next -- regex `\d{1,2}:\d{2}` only matches digit strings; Number() always yields integers here */
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (hour < 0 || hour > 30) return null;
   if (minute < 0 || minute >= 60) return null;

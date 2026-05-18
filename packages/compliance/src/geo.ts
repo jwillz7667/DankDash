@@ -72,6 +72,7 @@ function isInsideRing(point: Coordinate, ring: ReadonlyArray<ReadonlyArray<numbe
     const current = ring[i];
     const previous = ring[j];
     j = i;
+    /* c8 ignore next -- bounded loop indices; only TypeScript's noUncheckedIndexedAccess demands this */
     if (current === undefined || previous === undefined) continue;
     const xi = current[0];
     const yi = current[1];
