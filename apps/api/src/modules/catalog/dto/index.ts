@@ -6,6 +6,7 @@ export {
 } from './category.dto.js';
 export {
   LabResultResponseSchema,
+  NUMERIC_STRING,
   ProductResponseSchema,
   ProductTypeSchema,
   StrainTypeSchema,

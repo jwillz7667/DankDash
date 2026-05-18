@@ -17,6 +17,7 @@
     "@dankdash/compliance": "workspace:*",
     "@dankdash/config": "workspace:*",
     "@dankdash/db": "workspace:*",
+    "@dankdash/dispensaries": "workspace:*",
     "@dankdash/types": "workspace:*",
     "@fastify/helmet": "^13.0.2",
     "@nestjs/common": "^11.1.21",

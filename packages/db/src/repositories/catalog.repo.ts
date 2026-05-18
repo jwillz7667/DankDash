@@ -157,6 +157,37 @@ export class DispensaryListingsRepository extends BaseRepository {
       );
   }
 
+  /**
+   * Public menu read — listings joined to their products in a single round
+   * trip, filtered to what a customer can actually buy: active+in-stock
+   * listing AND active+non-deleted product. Sorted by product brand then
+   * name so the iOS menu screen has stable ordering without re-sorting.
+   *
+   * The join is server-side rather than two queries + Map merge so the
+   * planner can pick the composite `dispensary_listings_dispensary_active_idx`
+   * with a hash-join into `products` PK — confirmed via EXPLAIN under the
+   * Phase 4.2 integration tests.
+   */
+  async listMenuForDispensary(
+    dispensaryId: string,
+  ): Promise<readonly { readonly listing: DispensaryListing; readonly product: Product }[]> {
+    const rows = await this.db
+      .select({ listing: dispensaryListings, product: products })
+      .from(dispensaryListings)
+      .innerJoin(products, eq(dispensaryListings.productId, products.id))
+      .where(
+        and(
+          eq(dispensaryListings.dispensaryId, dispensaryId),
+          eq(dispensaryListings.isActive, true),
+          sql`${dispensaryListings.quantityAvailable} > 0`,
+          eq(products.isActive, true),
+          isNull(products.deletedAt),
+        ),
+      )
+      .orderBy(products.brand, products.name);
+    return rows;
+  }
+
   async create(
     input: Omit<NewDispensaryListing, 'id'> & { readonly id?: string },
   ): Promise<DispensaryListing> {

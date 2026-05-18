@@ -74,6 +74,9 @@ importers:
       '@dankdash/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@dankdash/dispensaries':
+        specifier: workspace:*
+        version: link:../../packages/dispensaries
       '@dankdash/types':
         specifier: workspace:*
         version: link:../../packages/types

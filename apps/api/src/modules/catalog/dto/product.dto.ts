@@ -22,7 +22,15 @@
  */
 import { z } from 'zod';
 
-const NUMERIC_STRING = z.string().regex(/^-?\d+(\.\d+)?$/u, 'must be a decimal numeric string');
+/**
+ * Decimal numeric strings — exported because every catalog/menu DTO that
+ * surfaces a money or cannabis-weight field uses the same shape. Keeping a
+ * single regex avoids the drift-by-copy bug where one DTO permits a leading
+ * `+` and another doesn't.
+ */
+export const NUMERIC_STRING = z
+  .string()
+  .regex(/^-?\d+(\.\d+)?$/u, 'must be a decimal numeric string');
 
 export const ProductTypeSchema = z.enum([
   'flower',
