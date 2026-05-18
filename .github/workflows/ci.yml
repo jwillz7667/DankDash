@@ -1,0 +1,152 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_OPTIONS: "--max-old-space-size=4096"
+  TURBO_TELEMETRY_DISABLED: "1"
+  HUSKY: "0"
+  # Lets Turbo dedupe pipeline outputs across PRs that touch the same packages.
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+jobs:
+  verify:
+    name: typecheck / lint / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20"]
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: dankdash
+          POSTGRES_PASSWORD: dankdash
+          POSTGRES_DB: dankdash_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dankdash -d dankdash_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://dankdash:dankdash@localhost:5432/dankdash_test
+      DATABASE_URL_TEST: postgresql://dankdash:dankdash@localhost:5432/dankdash_test
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bootstrap extensions in postgres service
+        env:
+          PGPASSWORD: dankdash
+        run: |
+          for ext in postgis pg_trgm pgcrypto citext "uuid-ossp" btree_gin; do
+            psql -h localhost -U dankdash -d dankdash_test -c "CREATE EXTENSION IF NOT EXISTS \"${ext}\";"
+          done
+
+      - name: Restore Turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ github.ref_name }}-
+            turbo-${{ runner.os }}-main-
+            turbo-${{ runner.os }}-
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test -- --coverage
+        env:
+          # Compliance package targets 100% coverage; vitest exits non-zero if missed.
+          NODE_ENV: test
+
+      - name: Build (API)
+        run: pnpm --filter @dankdash/api build
+
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          flags: unit
+          slug: jwillz7667/DankDash
+
+  compliance-gate:
+    name: compliance suite (blocks deploy)
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run compliance tests
+        # The @dankdash/compliance package is the existential gate — its tests
+        # must pass before any merge to main or any deploy. Implementation
+        # lives under packages/compliance and is scaffolded in Phase 3.
+        run: pnpm --filter @dankdash/compliance test
