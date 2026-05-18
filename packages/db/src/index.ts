@@ -24,3 +24,12 @@ export {
 } from './migrate.js';
 export * from './repositories/index.js';
 export { seed, stableUuid, type SeedOptions, type SeedSummary } from './seed.js';
+export {
+  createEncryptionService,
+  createEncryptionServiceFromBase64,
+  generateMasterKeyBase64,
+  ENCRYPTION_CONTEXT,
+  type CreateEncryptionServiceOptions,
+  type EncryptionContext,
+  type EncryptionService,
+} from './encryption.js';
