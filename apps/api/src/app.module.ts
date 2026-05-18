@@ -8,6 +8,10 @@
  *   - HealthModule       (k8s/Railway liveness + readiness probes, public)
  *   - AuthModule         (register, login, refresh, logout, MFA — mounted /v1)
  *   - IdentityModule     (/me + Persona KYC start + webhook — mounted /v1)
+ *   - DispensariesModule (public dispensary list/read + admin CRUD — /v1)
+ *   - CatalogModule      (products, categories, lab results — /v1 + /v1/admin)
+ *   - ListingsModule     (vendor-scoped listings with RLS — /v1/vendor)
+ *   - SearchModule       (product search + dispensary discovery feed — /v1)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -21,8 +25,12 @@ import { DrizzleModule } from './infrastructure/drizzle.module.js';
 import { EncryptionModule } from './infrastructure/encryption.module.js';
 import { RedisModule } from './infrastructure/redis.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
+import { CatalogModule } from './modules/catalog/catalog.module.js';
+import { DispensariesModule } from './modules/dispensaries/dispensaries.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
+import { ListingsModule } from './modules/listings/listings.module.js';
+import { SearchModule } from './modules/search/search.module.js';
 
 @Module({
   imports: [
@@ -38,6 +46,10 @@ import { IdentityModule } from './modules/identity/identity.module.js';
     HealthModule,
     AuthModule,
     IdentityModule,
+    DispensariesModule,
+    CatalogModule,
+    ListingsModule,
+    SearchModule,
   ],
 })
 export class AppModule {}
