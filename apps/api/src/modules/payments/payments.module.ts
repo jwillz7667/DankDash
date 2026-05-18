@@ -30,7 +30,12 @@ import {
   createUndiciDispatcher,
   type TokenCache,
 } from '@dankdash/aeropay';
-import { PaymentMethodsRepository, type Database } from '@dankdash/db';
+import {
+  OrdersRepository,
+  PaymentMethodsRepository,
+  PaymentTransactionsRepository,
+  type Database,
+} from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
@@ -95,22 +100,43 @@ const webhookVerifierProvider: FactoryProvider<AeropayWebhookVerifier> = {
     }),
 };
 
-const repositoryProvider: FactoryProvider<PaymentMethodsRepository> = {
+const paymentMethodsRepoProvider: FactoryProvider<PaymentMethodsRepository> = {
   provide: PaymentMethodsRepository,
   inject: [DRIZZLE_DB],
   useFactory: (db: Database): PaymentMethodsRepository => new PaymentMethodsRepository(db),
 };
 
+const paymentTransactionsRepoProvider: FactoryProvider<PaymentTransactionsRepository> = {
+  provide: PaymentTransactionsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): PaymentTransactionsRepository =>
+    new PaymentTransactionsRepository(db),
+};
+
+const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
+  provide: OrdersRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): OrdersRepository => new OrdersRepository(db),
+};
+
 // Service is wired through a FactoryProvider rather than a class-token so we
 // don't depend on SWC emitting `design:paramtypes` for the constructor.
-// Symbol-token deps (AEROPAY_CLIENT) and class-token deps
-// (PaymentMethodsRepository) are passed positionally to the constructor in
-// the order the class declares them.
+// Symbol-token deps (AEROPAY_CLIENT) and class-token deps are passed
+// positionally to the constructor in the order the class declares them.
 const serviceProvider: FactoryProvider<PaymentMethodsService> = {
   provide: PaymentMethodsService,
-  inject: [PaymentMethodsRepository, AEROPAY_CLIENT],
-  useFactory: (repo: PaymentMethodsRepository, client: AeropayClient): PaymentMethodsService =>
-    new PaymentMethodsService(repo, client),
+  inject: [
+    PaymentMethodsRepository,
+    PaymentTransactionsRepository,
+    OrdersRepository,
+    AEROPAY_CLIENT,
+  ],
+  useFactory: (
+    repo: PaymentMethodsRepository,
+    paymentTransactions: PaymentTransactionsRepository,
+    orders: OrdersRepository,
+    client: AeropayClient,
+  ): PaymentMethodsService => new PaymentMethodsService(repo, paymentTransactions, orders, client),
 };
 
 const providers: Provider[] = [
@@ -119,7 +145,9 @@ const providers: Provider[] = [
   authProvider,
   clientProvider,
   webhookVerifierProvider,
-  repositoryProvider,
+  paymentMethodsRepoProvider,
+  paymentTransactionsRepoProvider,
+  ordersRepoProvider,
   serviceProvider,
 ];
 

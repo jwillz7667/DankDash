@@ -31,7 +31,13 @@
  * PATCH endpoint; until then there is no implicit default promotion.
  */
 import { type AeropayBankAccount, type AeropayWebhookOutcome } from '@dankdash/aeropay';
-import { type PaymentMethod, type PaymentMethodsRepository } from '@dankdash/db';
+import {
+  type OrdersRepository,
+  type PaymentMethod,
+  type PaymentMethodsRepository,
+  type PaymentTransaction,
+  type PaymentTransactionsRepository,
+} from '@dankdash/db';
 import { ConflictError, NotFoundError, PaymentError } from '@dankdash/types';
 import { Inject, Injectable } from '@nestjs/common';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
@@ -45,6 +51,8 @@ import type {
 export class PaymentMethodsService {
   constructor(
     private readonly repo: PaymentMethodsRepository,
+    private readonly paymentTransactions: PaymentTransactionsRepository,
+    private readonly orders: OrdersRepository,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
   ) {}
 
@@ -129,28 +137,56 @@ export class PaymentMethodsService {
    * here the signature, timestamp, and envelope shape are all known
    * good, and we trust the typed outcome.
    *
-   * Behavior matrix for this phase (payment.* events come in Phase 6.3):
-   *   - `bank_account.linked`   → flip the pending row to `active`,
-   *                                enrich with bank metadata, and
-   *                                rewrite `aeropay_payment_method_ref`
-   *                                to the upstream bank-account id.
-   *   - `bank_account.failed`   → flip to `failed` so the iOS UI can
-   *                                show a retry CTA.
-   *   - anything else            → noop. Returns silently so the
-   *                                controller can 204 the request.
+   * Behavior matrix:
+   *   - `bank_account.linked`    → flip the pending payment_methods row
+   *                                 to `active`, enrich with bank
+   *                                 metadata, and rewrite
+   *                                 `aeropay_payment_method_ref` to the
+   *                                 upstream bank-account id.
+   *   - `bank_account.failed`    → flip the pending payment_methods row
+   *                                 to `failed` so the iOS UI can show a
+   *                                 retry CTA.
+   *   - `payment.authorized`     → flip the payment_transactions row to
+   *                                 `authorized` and stamp authorizedAt.
+   *                                 Unlocks vendor-accept on the order.
+   *   - `payment.settled`        → flip the payment_transactions row to
+   *                                 `settled` and stamp settledAt. Phase
+   *                                 6.4 layers the distribution ledger
+   *                                 writes onto this hook.
+   *   - `payment.failed`         → flip the payment_transactions row to
+   *                                 `failed` and stamp failedAt; also
+   *                                 transition the parent order to
+   *                                 `payment_failed` so the vendor /
+   *                                 customer see the failure surface.
+   *   - `payment.canceled`       → flip the payment_transactions row to
+   *                                 `canceled` and stamp canceledAt. The
+   *                                 order stays in `placed` — explicit
+   *                                 order cancellation is a separate
+   *                                 flow with its own auditing.
+   *   - `payment.refunded` / `payout.*` → noop here. Phase 6.5 / 6.6
+   *                                 handle refunds and payouts on their
+   *                                 dedicated controllers. The 204 the
+   *                                 controller still returns drains
+   *                                 Aeropay's retry queue.
+   *   - `ignored` / unknown      → noop.
    *
-   * Idempotency: re-receiving the same `bank_account.linked` after the
-   * row is already `active` is a no-op. The webhook hardening pass in
-   * 6.7 introduces a `webhook_events_processed` table that dedupes at
-   * the controller layer; this method tolerates dupes regardless.
+   * Idempotency: re-receiving the same event after the row is already in
+   * the target state is a no-op. The webhook hardening pass in 6.7
+   * introduces a `webhook_events_processed` table that dedupes at the
+   * controller layer; this method tolerates dupes regardless.
    *
-   * Row lookup: the `data.object.id` on `bank_account.linked` is the
-   * Aeropay bank-account id, NOT the link-session id we persisted.
-   * We resolve via `getBankAccount` whose response includes the
-   * `customer_ref` (== our userId) — and the in-flight pending row is
-   * the one we keyed by the link-session id. Two-step is unavoidable
-   * because Aeropay does not echo the originating session in the
-   * webhook payload.
+   * Bank-account row lookup: the `data.object.id` on
+   * `bank_account.linked` is the Aeropay bank-account id, NOT the
+   * link-session id we persisted. We resolve via `getBankAccount` whose
+   * response includes the `customer_ref` (== our userId) — and the
+   * in-flight pending row is the one we keyed by the link-session id.
+   * Two-step is unavoidable because Aeropay does not echo the
+   * originating session in the webhook payload.
+   *
+   * Payment row lookup: `data.object.id` on `payment.*` is the Aeropay
+   * payment id; we persisted that same id as
+   * `payment_transactions.provider_ref` at checkout time, so a single
+   * `findByProviderRef('aeropay', objectId)` resolves the row.
    */
   async applyWebhook(outcome: AeropayWebhookOutcome): Promise<void> {
     if (outcome.type === 'bank_account.linked') {
@@ -161,10 +197,26 @@ export class PaymentMethodsService {
       await this.handleBankAccountFailed(outcome.objectId);
       return;
     }
-    // payment.* and payout.* events land in this method during Phase 6.3
-    // and 6.6 respectively. Until then, every non-bank-account event is
-    // a noop — the controller still 204s so Aeropay drains its retry
-    // queue.
+    if (outcome.type === 'payment.authorized') {
+      await this.handlePaymentAuthorized(outcome.objectId, outcome.occurredAt);
+      return;
+    }
+    if (outcome.type === 'payment.settled') {
+      await this.handlePaymentSettled(outcome.objectId, outcome.occurredAt);
+      return;
+    }
+    if (outcome.type === 'payment.failed') {
+      await this.handlePaymentFailed(outcome.objectId, outcome.occurredAt, outcome.raw);
+      return;
+    }
+    if (outcome.type === 'payment.canceled') {
+      await this.handlePaymentCanceled(outcome.objectId, outcome.occurredAt);
+      return;
+    }
+    // payment.refunded, payout.* and `ignored` land here as a noop.
+    // Refunds get their own admin-gated controller in Phase 6.5; payouts
+    // get a cron job in 6.6. Returning silently lets the controller 204
+    // so Aeropay drains its retry queue.
   }
 
   private async handleBankAccountLinked(bankAccountId: string): Promise<void> {
@@ -222,6 +274,100 @@ export class PaymentMethodsService {
     const all = await this.repo.listForUser(account.customerRef);
     return all.find((m) => m.type === 'aeropay_ach' && m.status === 'pending') ?? null;
   }
+
+  private async handlePaymentAuthorized(aeropayPaymentId: string, occurredAt: Date): Promise<void> {
+    const tx = await this.findPaymentTransaction(aeropayPaymentId);
+    if (tx === null) return;
+    if (tx.status === 'authorized' || tx.status === 'settled') return;
+    // Settled → authorized would regress; only forward transitions out
+    // of `initiated` are allowed. Reaching this branch (status was
+    // 'failed' or 'canceled' before authorized arrives) means Aeropay
+    // delivered events out of order — the safer choice is to ignore
+    // the late event and keep the terminal state.
+    if (tx.status !== 'initiated') return;
+    await this.paymentTransactions.updateStatus(tx.id, 'authorized', {
+      authorizedAt: occurredAt,
+    });
+  }
+
+  private async handlePaymentSettled(aeropayPaymentId: string, occurredAt: Date): Promise<void> {
+    const tx = await this.findPaymentTransaction(aeropayPaymentId);
+    if (tx === null) return;
+    if (tx.status === 'settled') return;
+    // ACH settlement is the natural end state for a non-refunded
+    // payment. We accept it from either 'initiated' (rare: Aeropay
+    // collapsed authorize+settle into one event) or 'authorized'
+    // (normal T+1..T+3 path). Refunded / failed / canceled rows do not
+    // re-settle — drop a late settle silently to avoid clobbering the
+    // terminal state.
+    if (tx.status !== 'initiated' && tx.status !== 'authorized') return;
+    await this.paymentTransactions.updateStatus(tx.id, 'settled', {
+      settledAt: occurredAt,
+    });
+    // Phase 6.4 lands the distribution ledger writes here:
+    //   DR customer / CR dispensary + platform_revenue + cannabis_tax
+    //   + sales_tax + driver. Until then, the only ledger movement is
+    //   the placement entries written by CheckoutService (customer DR /
+    //   aeropay_clearing CR), which already exist.
+  }
+
+  private async handlePaymentFailed(
+    aeropayPaymentId: string,
+    occurredAt: Date,
+    raw: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const tx = await this.findPaymentTransaction(aeropayPaymentId);
+    if (tx === null) return;
+    if (tx.status === 'failed') return;
+    // Once money has settled we will not unwind via a failure event —
+    // that is a refund path, and Aeropay sends a different event for
+    // it. Same logic for already-canceled rows.
+    if (tx.status === 'settled' || tx.status === 'canceled') return;
+
+    const { failureCode, failureReason } = extractFailureDetails(raw);
+    await this.paymentTransactions.updateStatus(tx.id, 'failed', {
+      failedAt: occurredAt,
+      failureCode,
+      failureReason,
+    });
+    // Transition the order so the vendor/customer surfaces reflect the
+    // failure. `transitionStatus` wraps the order UPDATE and the
+    // `payment_failed` event in one transaction so the audit trail
+    // cannot disagree with current state.
+    await this.orders.transitionStatus({
+      orderId: tx.orderId,
+      toStatus: 'payment_failed',
+      eventType: 'payment_failed',
+      payload: {
+        paymentTransactionId: tx.id,
+        aeropayPaymentId,
+        failureCode,
+        failureReason,
+      },
+    });
+  }
+
+  private async handlePaymentCanceled(aeropayPaymentId: string, occurredAt: Date): Promise<void> {
+    const tx = await this.findPaymentTransaction(aeropayPaymentId);
+    if (tx === null) return;
+    if (tx.status === 'canceled') return;
+    // Same terminal-state guards as `payment.failed` — once a payment
+    // has actually moved money we don't quietly mark it canceled.
+    if (tx.status === 'settled' || tx.status === 'failed') return;
+    await this.paymentTransactions.updateStatus(tx.id, 'canceled', {
+      canceledAt: occurredAt,
+    });
+    // The order intentionally stays in `placed`. A customer-initiated
+    // payment cancellation is distinct from an order cancellation —
+    // the explicit POST /v1/orders/:id/cancel surface (later phase)
+    // does the order-side transition with the right actor recorded.
+  }
+
+  private async findPaymentTransaction(
+    aeropayPaymentId: string,
+  ): Promise<PaymentTransaction | null> {
+    return this.paymentTransactions.findByProviderRef('aeropay', aeropayPaymentId);
+  }
 }
 
 function toResponse(row: PaymentMethod): PaymentMethodResponse {
@@ -244,4 +390,29 @@ function extractLast4(masked: string): string | null {
   // we record null rather than truncating an unexpected value.
   const match = /(\d{4})$/.exec(masked);
   return match === null ? null : (match[1] ?? null);
+}
+
+/**
+ * Pull failureCode / failureReason out of the verified webhook envelope.
+ * Aeropay nests these under `data.object.failure_code` / `failure_reason`
+ * on `payment.failed` events; either may be absent for soft declines
+ * where the upstream provider does not return a reason. We narrow with
+ * runtime type checks because the verifier exposes the envelope as
+ * `Record<string, unknown>` — by design — and we do not want to widen
+ * `string | null` to `unknown` in the persisted row.
+ */
+function extractFailureDetails(raw: Readonly<Record<string, unknown>>): {
+  readonly failureCode: string | null;
+  readonly failureReason: string | null;
+} {
+  const data = raw['data'];
+  if (data === null || typeof data !== 'object') return { failureCode: null, failureReason: null };
+  const object = (data as Record<string, unknown>)['object'];
+  if (object === null || typeof object !== 'object') {
+    return { failureCode: null, failureReason: null };
+  }
+  const obj = object as Record<string, unknown>;
+  const failureCode = typeof obj['failure_code'] === 'string' ? obj['failure_code'] : null;
+  const failureReason = typeof obj['failure_reason'] === 'string' ? obj['failure_reason'] : null;
+  return { failureCode, failureReason };
 }

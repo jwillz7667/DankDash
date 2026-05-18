@@ -9,9 +9,10 @@
  *   - delete() refuses cross-user access (NotFoundError), refuses
  *     already-deleted rows, and calls softDelete on the happy path.
  *   - applyWebhook() handles bank_account.linked / bank_account.failed,
- *     ignores unrelated events, handles missing rows gracefully, dedupes
- *     replays, and surfaces the missing-row PaymentError when an UPDATE
- *     returns null mid-flight.
+ *     payment.authorized / settled / failed / canceled, ignores unrelated
+ *     events, handles missing rows gracefully, dedupes replays, and
+ *     surfaces the missing-row PaymentError when a bank UPDATE returns
+ *     null mid-flight.
  *
  * Fakes are explicit classes (not `vi.fn()`) so the call shapes are
  * inspectable as plain arrays — easier to assert on than mock records.
@@ -23,17 +24,41 @@ import {
 } from '@dankdash/aeropay';
 import {
   type NewPaymentMethod,
+  type NewPaymentTransaction,
+  type Order,
+  type OrdersRepository,
+  type OrderStatusTransitionInput,
   type PaymentMethod,
   type PaymentMethodsRepository,
+  type PaymentStatus,
+  type PaymentTransaction,
+  type PaymentTransactionsRepository,
 } from '@dankdash/db';
-type UpsertPatch = Pick<PaymentMethod, 'aeropayPaymentMethodRef' | 'bankName' | 'last4' | 'status'>;
 import { ConflictError, NotFoundError, PaymentError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
 import { PaymentMethodsService } from './payment-methods.service.js';
 import type { AeropayClientLike } from './tokens.js';
 
+type UpsertPatch = Pick<PaymentMethod, 'aeropayPaymentMethodRef' | 'bankName' | 'last4' | 'status'>;
+type TxStatusPatch = Partial<
+  Pick<
+    NewPaymentTransaction,
+    | 'authorizedAt'
+    | 'settledAt'
+    | 'failedAt'
+    | 'canceledAt'
+    | 'failureCode'
+    | 'failureReason'
+    | 'rawResponse'
+  >
+>;
+
 const USER_ID = '01935f3d-0000-7000-8000-000000000001';
 const OTHER_USER_ID = '01935f3d-0000-7000-8000-000000000002';
+const ORDER_ID = '01935f3d-0000-7000-8000-0000000000d1';
+const PAYMENT_TX_ID = '01935f3d-0000-7000-8000-0000000000e1';
+const AEROPAY_PAYMENT_ID = 'pay_aeropay_abc123';
+const WEBHOOK_OCCURRED_AT = new Date('2026-05-02T12:00:00.000Z');
 
 function makeMethod(overrides: Partial<PaymentMethod> = {}): PaymentMethod {
   return {
@@ -48,6 +73,29 @@ function makeMethod(overrides: Partial<PaymentMethod> = {}): PaymentMethod {
     createdAt: new Date('2026-05-01T00:00:00.000Z'),
     updatedAt: new Date('2026-05-01T00:00:00.000Z'),
     deletedAt: null,
+    ...overrides,
+  };
+}
+
+function makePaymentTransaction(overrides: Partial<PaymentTransaction> = {}): PaymentTransaction {
+  return {
+    id: PAYMENT_TX_ID,
+    orderId: ORDER_ID,
+    paymentMethodId: null,
+    provider: 'aeropay',
+    providerRef: AEROPAY_PAYMENT_ID,
+    amountCents: 4000,
+    status: 'initiated',
+    failureCode: null,
+    failureReason: null,
+    initiatedAt: new Date('2026-05-01T00:00:00.000Z'),
+    authorizedAt: null,
+    settledAt: null,
+    failedAt: null,
+    canceledAt: null,
+    rawResponse: null,
+    createdAt: new Date('2026-05-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-01T00:00:00.000Z'),
     ...overrides,
   };
 }
@@ -164,25 +212,87 @@ class FakeAeropayClient implements AeropayClientLike {
     return Promise.resolve(account);
   };
 
-  // Stubs for the surface PaymentMethodsService doesn't use yet — present
-  // so AeropayClientLike conformance is enforced at compile time and tests
-  // catch a future drift in the interface.
-  createPayment = (): Promise<never> => Promise.reject(new Error('not used in 6.2'));
-  getPayment = (): Promise<never> => Promise.reject(new Error('not used in 6.2'));
-  cancelPayment = (): Promise<never> => Promise.reject(new Error('not used in 6.2'));
-  refundPayment = (): Promise<never> => Promise.reject(new Error('not used in 6.2'));
-  createPayout = (): Promise<never> => Promise.reject(new Error('not used in 6.2'));
+  // Stubs for the surface PaymentMethodsService doesn't drive directly —
+  // checkout owns createPayment, the refunds/payouts services own the
+  // rest. Presence forces AeropayClientLike conformance at compile time
+  // so a future interface change does not silently bypass these tests.
+  createPayment = (): Promise<never> => Promise.reject(new Error('not used in payment-methods'));
+  getPayment = (): Promise<never> => Promise.reject(new Error('not used in payment-methods'));
+  cancelPayment = (): Promise<never> => Promise.reject(new Error('not used in payment-methods'));
+  refundPayment = (): Promise<never> => Promise.reject(new Error('not used in payment-methods'));
+  createPayout = (): Promise<never> => Promise.reject(new Error('not used in payment-methods'));
+}
+
+interface UpdateTxStatusCall {
+  readonly id: string;
+  readonly status: PaymentStatus;
+  readonly patch: TxStatusPatch;
+}
+
+class FakePaymentTransactionsRepo {
+  rows: PaymentTransaction[] = [];
+  findByProviderRefCalls: Array<{ provider: string; providerRef: string }> = [];
+  updateStatusCalls: UpdateTxStatusCall[] = [];
+
+  findByProviderRef = (
+    provider: string,
+    providerRef: string,
+  ): Promise<PaymentTransaction | null> => {
+    this.findByProviderRefCalls.push({ provider, providerRef });
+    return Promise.resolve(
+      this.rows.find((r) => r.provider === provider && r.providerRef === providerRef) ?? null,
+    );
+  };
+
+  updateStatus = (
+    id: string,
+    status: PaymentStatus,
+    patch: TxStatusPatch = {},
+  ): Promise<PaymentTransaction | null> => {
+    this.updateStatusCalls.push({ id, status, patch });
+    const row = this.rows.find((r) => r.id === id);
+    if (row === undefined) return Promise.resolve(null);
+    row.status = status;
+    if (patch.authorizedAt !== undefined) row.authorizedAt = patch.authorizedAt;
+    if (patch.settledAt !== undefined) row.settledAt = patch.settledAt;
+    if (patch.failedAt !== undefined) row.failedAt = patch.failedAt;
+    if (patch.canceledAt !== undefined) row.canceledAt = patch.canceledAt;
+    if (patch.failureCode !== undefined) row.failureCode = patch.failureCode;
+    if (patch.failureReason !== undefined) row.failureReason = patch.failureReason;
+    row.updatedAt = new Date('2026-05-02T13:00:00.000Z');
+    return Promise.resolve(row);
+  };
+}
+
+class FakeOrdersRepo {
+  transitionStatusCalls: OrderStatusTransitionInput[] = [];
+
+  transitionStatus = (input: OrderStatusTransitionInput): Promise<Order> => {
+    this.transitionStatusCalls.push(input);
+    // Service discards the return value; the cast keeps the signature
+    // honest without forcing every test to assemble a full Order row.
+    return Promise.resolve({ id: input.orderId, status: input.toStatus } as unknown as Order);
+  };
 }
 
 function build(): {
   service: PaymentMethodsService;
   repo: FakePaymentMethodsRepo;
+  txRepo: FakePaymentTransactionsRepo;
+  ordersRepo: FakeOrdersRepo;
   aeropay: FakeAeropayClient;
 } {
   const repo = new FakePaymentMethodsRepo();
+  const txRepo = new FakePaymentTransactionsRepo();
+  const ordersRepo = new FakeOrdersRepo();
   const aeropay = new FakeAeropayClient();
-  const service = new PaymentMethodsService(repo as unknown as PaymentMethodsRepository, aeropay);
-  return { service, repo, aeropay };
+  const service = new PaymentMethodsService(
+    repo as unknown as PaymentMethodsRepository,
+    txRepo as unknown as PaymentTransactionsRepository,
+    ordersRepo as unknown as OrdersRepository,
+    aeropay,
+  );
+  return { service, repo, txRepo, ordersRepo, aeropay };
 }
 
 describe('PaymentMethodsService.list', () => {
@@ -517,18 +627,499 @@ describe('PaymentMethodsService.applyWebhook', () => {
     expect(repo.updateBankAccountDetailsCalls).toHaveLength(0);
   });
 
-  it('noops on a payment.* event (those land in Phase 6.3)', async () => {
-    const { service, repo, aeropay } = build();
+  it('noops on payment.refunded (handled by the refunds service in 6.5)', async () => {
+    const { service, repo, txRepo, ordersRepo, aeropay } = build();
 
     await service.applyWebhook({
-      type: 'payment.authorized',
+      type: 'payment.refunded',
       eventId: 'evt_test_10',
-      objectId: 'pi_test_1',
+      objectId: 'pay_test_refunded',
       occurredAt: new Date('2026-05-01T00:00:00.000Z'),
       raw: {},
     });
 
     expect(aeropay.getBankAccountCalls).toHaveLength(0);
     expect(repo.updateStatusCalls).toHaveLength(0);
+    expect(txRepo.findByProviderRefCalls).toHaveLength(0);
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+
+  it('noops on payout.* events (handled by the payouts cron in 6.6)', async () => {
+    const { service, repo, txRepo, ordersRepo } = build();
+
+    await service.applyWebhook({
+      type: 'payout.paid',
+      eventId: 'evt_test_11',
+      objectId: 'po_test_1',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+    await service.applyWebhook({
+      type: 'payout.failed',
+      eventId: 'evt_test_12',
+      objectId: 'po_test_2',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+
+    expect(txRepo.findByProviderRefCalls).toHaveLength(0);
+    expect(repo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.authorized', () => {
+  it('flips an initiated payment row to authorized and stamps authorizedAt', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook({
+      type: 'payment.authorized',
+      eventId: 'evt_pay_auth_1',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.findByProviderRefCalls).toEqual([
+      { provider: 'aeropay', providerRef: AEROPAY_PAYMENT_ID },
+    ]);
+    expect(txRepo.updateStatusCalls).toEqual([
+      {
+        id: PAYMENT_TX_ID,
+        status: 'authorized',
+        patch: { authorizedAt: WEBHOOK_OCCURRED_AT },
+      },
+    ]);
+  });
+
+  it('is a no-op when the row is already authorized (replay)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+
+    await service.applyWebhook({
+      type: 'payment.authorized',
+      eventId: 'evt_pay_auth_2',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('is a no-op when the row is already settled (do not regress)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook({
+      type: 'payment.authorized',
+      eventId: 'evt_pay_auth_3',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing when the late event arrives on a terminal failed row', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'failed' }));
+
+    await service.applyWebhook({
+      type: 'payment.authorized',
+      eventId: 'evt_pay_auth_4',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing when no payment_transactions row matches the provider ref', async () => {
+    const { service, txRepo, ordersRepo } = build();
+
+    await service.applyWebhook({
+      type: 'payment.authorized',
+      eventId: 'evt_pay_auth_5',
+      objectId: 'pay_unknown_999',
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.findByProviderRefCalls).toEqual([
+      { provider: 'aeropay', providerRef: 'pay_unknown_999' },
+    ]);
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
+  it('flips an authorized row to settled and stamps settledAt', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(
+      makePaymentTransaction({
+        status: 'authorized',
+        authorizedAt: new Date('2026-05-02T10:00:00.000Z'),
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_pay_settled_1',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toEqual([
+      {
+        id: PAYMENT_TX_ID,
+        status: 'settled',
+        patch: { settledAt: WEBHOOK_OCCURRED_AT },
+      },
+    ]);
+  });
+
+  it('also accepts a settle that arrives without an intermediate authorize', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_pay_settled_2',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toEqual([
+      {
+        id: PAYMENT_TX_ID,
+        status: 'settled',
+        patch: { settledAt: WEBHOOK_OCCURRED_AT },
+      },
+    ]);
+  });
+
+  it('is a no-op when the row is already settled (replay)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_pay_settled_3',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('refuses to re-settle a row that is already failed (terminal guard)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'failed' }));
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_pay_settled_4',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('refuses to settle a canceled row (terminal guard)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'canceled' }));
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_pay_settled_5',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing when no payment_transactions row matches', async () => {
+    const { service, txRepo } = build();
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_pay_settled_6',
+      objectId: 'pay_unknown_settle',
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
+  it('marks the payment failed and transitions the parent order to payment_failed', async () => {
+    const { service, txRepo, ordersRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_1',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {
+        data: {
+          object: {
+            failure_code: 'insufficient_funds',
+            failure_reason: 'The bank account has insufficient funds.',
+          },
+        },
+      },
+    });
+
+    expect(txRepo.updateStatusCalls).toEqual([
+      {
+        id: PAYMENT_TX_ID,
+        status: 'failed',
+        patch: {
+          failedAt: WEBHOOK_OCCURRED_AT,
+          failureCode: 'insufficient_funds',
+          failureReason: 'The bank account has insufficient funds.',
+        },
+      },
+    ]);
+    expect(ordersRepo.transitionStatusCalls).toEqual([
+      {
+        orderId: ORDER_ID,
+        toStatus: 'payment_failed',
+        eventType: 'payment_failed',
+        payload: {
+          paymentTransactionId: PAYMENT_TX_ID,
+          aeropayPaymentId: AEROPAY_PAYMENT_ID,
+          failureCode: 'insufficient_funds',
+          failureReason: 'The bank account has insufficient funds.',
+        },
+      },
+    ]);
+  });
+
+  it('records null failure details when the envelope omits them', async () => {
+    const { service, txRepo, ordersRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_2',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls[0]?.patch).toEqual({
+      failedAt: WEBHOOK_OCCURRED_AT,
+      failureCode: null,
+      failureReason: null,
+    });
+    expect(ordersRepo.transitionStatusCalls[0]?.payload).toEqual({
+      paymentTransactionId: PAYMENT_TX_ID,
+      aeropayPaymentId: AEROPAY_PAYMENT_ID,
+      failureCode: null,
+      failureReason: null,
+    });
+  });
+
+  it('drops non-string failure_code / failure_reason values (raw is unknown)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_3',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {
+        data: {
+          object: {
+            failure_code: 42,
+            failure_reason: ['nope'],
+          },
+        },
+      },
+    });
+
+    expect(txRepo.updateStatusCalls[0]?.patch.failureCode).toBeNull();
+    expect(txRepo.updateStatusCalls[0]?.patch.failureReason).toBeNull();
+  });
+
+  it('does not regress a row that already settled (skip and noop the order)', async () => {
+    const { service, txRepo, ordersRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_4',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing for a row that is already failed (replay)', async () => {
+    const { service, txRepo, ordersRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'failed' }));
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_5',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing for a canceled row (terminal guard)', async () => {
+    const { service, txRepo, ordersRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'canceled' }));
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_6',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing when no payment_transactions row matches', async () => {
+    const { service, txRepo, ordersRepo } = build();
+
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_7',
+      objectId: 'pay_unknown_failed',
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.canceled', () => {
+  it('flips an initiated payment row to canceled and stamps canceledAt', async () => {
+    const { service, txRepo, ordersRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook({
+      type: 'payment.canceled',
+      eventId: 'evt_pay_canceled_1',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toEqual([
+      {
+        id: PAYMENT_TX_ID,
+        status: 'canceled',
+        patch: { canceledAt: WEBHOOK_OCCURRED_AT },
+      },
+    ]);
+    // The order intentionally stays in `placed`; the cancellation must
+    // run through the explicit cancel flow with its own auditing.
+    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+  });
+
+  it('also cancels an authorized row (Aeropay can cancel pre-settle)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+
+    await service.applyWebhook({
+      type: 'payment.canceled',
+      eventId: 'evt_pay_canceled_2',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls[0]?.status).toBe('canceled');
+  });
+
+  it('is a no-op when the row is already canceled (replay)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'canceled' }));
+
+    await service.applyWebhook({
+      type: 'payment.canceled',
+      eventId: 'evt_pay_canceled_3',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('refuses to cancel a settled row (terminal guard)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook({
+      type: 'payment.canceled',
+      eventId: 'evt_pay_canceled_4',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('refuses to cancel a failed row (terminal guard)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'failed' }));
+
+    await service.applyWebhook({
+      type: 'payment.canceled',
+      eventId: 'evt_pay_canceled_5',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('does nothing when no payment_transactions row matches', async () => {
+    const { service, txRepo } = build();
+
+    await service.applyWebhook({
+      type: 'payment.canceled',
+      eventId: 'evt_pay_canceled_6',
+      objectId: 'pay_unknown_canceled',
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
   });
 });
