@@ -197,7 +197,7 @@ class FakeListingsRepo implements Pick<
   softDeleteForDispensary(id: string, dispensaryId: string): Promise<boolean> {
     this.deleteCalls.push({ id, dispensaryId });
     const existing = this.rows.get(id);
-    if (existing?.dispensaryId !== dispensaryId) {
+    if (existing?.dispensaryId !== dispensaryId || !existing.isActive) {
       return Promise.resolve(false);
     }
     this.rows.set(id, { ...existing, isActive: false, updatedAt: new Date() });

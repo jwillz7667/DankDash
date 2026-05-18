@@ -402,10 +402,20 @@ export class DispensaryListingsRepository extends BaseRepository {
    * `false` when no matching row exists for the dispensary.
    */
   async softDeleteForDispensary(id: string, dispensaryId: string): Promise<boolean> {
+    // Match only `is_active = true` so a second delete returns false. The
+    // vendor service relies on that to surface a typed 404 instead of an
+    // idempotent 204 — the API contract says the second call cannot
+    // distinguish "already deleted" from "never existed for this vendor".
     const [row] = await this.db
       .update(dispensaryListings)
       .set({ isActive: false, updatedAt: new Date() })
-      .where(and(eq(dispensaryListings.id, id), eq(dispensaryListings.dispensaryId, dispensaryId)))
+      .where(
+        and(
+          eq(dispensaryListings.id, id),
+          eq(dispensaryListings.dispensaryId, dispensaryId),
+          eq(dispensaryListings.isActive, true),
+        ),
+      )
       .returning({ id: dispensaryListings.id });
     return row !== undefined;
   }
