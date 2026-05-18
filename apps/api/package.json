@@ -1,0 +1,27 @@
+{
+  "name": "@dankdash/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "NestJS (Fastify adapter) HTTP API. Fleshed out starting in Phase 2.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dankdash/compliance": "workspace:*",
+    "@dankdash/config": "workspace:*",
+    "@dankdash/db": "workspace:*",
+    "@dankdash/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

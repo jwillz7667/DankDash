@@ -1,0 +1,13 @@
+{
+  "name": "@dankdash/checkout-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Consumer checkout web (Next.js 15) — required by Apple App Store guideline 1.4.3. Scaffolded in Phase 18.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "exit 0",
+    "typecheck": "exit 0",
+    "lint": "exit 0",
+    "test": "exit 0"
+  }
+}

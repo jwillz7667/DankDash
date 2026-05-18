@@ -1,0 +1,13 @@
+{
+  "name": "@dankdash/portal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Vendor web portal (Next.js 15, App Router, deployed to Vercel). Scaffolded in Phase 13.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "exit 0",
+    "typecheck": "exit 0",
+    "lint": "exit 0",
+    "test": "exit 0"
+  }
+}
