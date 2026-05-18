@@ -137,6 +137,41 @@ export class DispensariesRepository extends BaseRepository {
       .where(eq(dispensaries.id, id));
   }
 
+  /**
+   * Partial admin update. Identity-shaped fields (id, createdAt, deletedAt,
+   * licenseNumber) and the immutable status/location/polygon write paths are
+   * excluded from `patch` — those go through `updateStatus` / dedicated geo
+   * setters so the audit trail stays specific. Patching geo columns through
+   * here would skip the `pointToSql` / `polygonToSql` SRID wrapping and write
+   * raw GeoJSON to the geography column.
+   *
+   * Returns `null` when no row matches the id (caller turns this into 404).
+   */
+  async update(
+    id: string,
+    patch: Partial<
+      Omit<
+        NewDispensary,
+        | 'id'
+        | 'createdAt'
+        | 'updatedAt'
+        | 'deletedAt'
+        | 'licenseNumber'
+        | 'status'
+        | 'location'
+        | 'deliveryPolygon'
+      >
+    >,
+  ): Promise<Dispensary | null> {
+    const [updated] = await this.db
+      .update(dispensaries)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(dispensaries.id, id))
+      .returning({ id: dispensaries.id });
+    if (updated === undefined) return null;
+    return this.findById(updated.id);
+  }
+
   async updateStatus(id: string, status: Dispensary['status']): Promise<Dispensary | null> {
     const [updated] = await this.db
       .update(dispensaries)
