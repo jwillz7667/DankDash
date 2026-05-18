@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   dispensaryListings,
   productCategories,
@@ -15,6 +15,7 @@ import {
   type ProductLabResult,
 } from '../schema/catalog.js';
 import { BaseRepository, newId } from './base.js';
+import type { StrainType } from '../schema/enums.js';
 
 export class ProductCategoriesRepository extends BaseRepository {
   async findById(id: string): Promise<ProductCategory | null> {
@@ -89,6 +90,137 @@ export class ProductsRepository extends BaseRepository {
         sql`ts_rank(${products.searchVector}, websearch_to_tsquery('english', ${query})) DESC`,
       )
       .limit(50);
+  }
+
+  /**
+   * Faceted catalog search. Composes the same active/non-deleted filter
+   * every public read uses with optional refinements:
+   *
+   *   - `query`         — websearch_to_tsquery against `search_vector`;
+   *                       relevance-ranked when present, brand+name ordered
+   *                       when absent so the endpoint still behaves like a
+   *                       browse surface for unfiltered calls.
+   *   - `categoryId`    — exact category match.
+   *   - `strainType`    — exact strain-type enum match.
+   *   - `dispensaryId`  — narrows to products carried by the named store
+   *                       via a correlated EXISTS against `dispensary_listings`
+   *                       (active + in-stock listings only). EXISTS keeps the
+   *                       outer row set deduplicated even when a dispensary
+   *                       has multiple listings for the same SKU history.
+   *
+   * The dispensary filter intentionally does not require the dispensary
+   * itself to be active — admins listing products by store SKU expect the
+   * same result regardless of operational status. Public callers funnel
+   * through a service that gates on dispensary state before invoking this.
+   *
+   * Pagination is a simple offset/limit. The Phase 4.2 endpoint exposes
+   * a max page size of 50 to bound the rank computation cost; an explicit
+   * cursor design lands when listings cross the 10k-row mark per category
+   * (tracked in Phase 4 follow-ups).
+   */
+  async searchWithFilters(input: {
+    readonly query?: string | undefined;
+    readonly categoryId?: string | undefined;
+    readonly strainType?: StrainType | undefined;
+    readonly dispensaryId?: string | undefined;
+    readonly limit: number;
+    readonly offset: number;
+  }): Promise<{
+    readonly results: readonly Product[];
+    readonly total: number;
+    readonly categoryFacets: readonly { readonly categoryId: string; readonly count: number }[];
+    readonly strainTypeFacets: readonly {
+      readonly strainType: StrainType;
+      readonly count: number;
+    }[];
+  }> {
+    const filters = this.buildSearchFilters(input);
+    const whereClause = and(...filters);
+
+    const orderBy: SQL =
+      input.query === undefined
+        ? sql`${products.brand}, ${products.name}`
+        : sql`ts_rank(${products.searchVector}, websearch_to_tsquery('english', ${input.query})) DESC, ${products.id}`;
+
+    const [rows, totalRows, categoryRows, strainRows] = await Promise.all([
+      this.db
+        .select()
+        .from(products)
+        .where(whereClause)
+        .orderBy(orderBy)
+        .limit(input.limit)
+        .offset(input.offset),
+      this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(products)
+        .where(whereClause),
+      this.db
+        .select({
+          categoryId: products.categoryId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(products)
+        .where(whereClause)
+        .groupBy(products.categoryId),
+      this.db
+        .select({
+          strainType: products.strainType,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(products)
+        .where(and(whereClause, sql`${products.strainType} IS NOT NULL`))
+        .groupBy(products.strainType),
+    ]);
+
+    return {
+      results: rows,
+      total: totalRows[0]?.count ?? 0,
+      categoryFacets: categoryRows.map((r) => ({ categoryId: r.categoryId, count: r.count })),
+      // strainType comes back as `StrainType | null`; the WHERE above filters
+      // out nulls so the narrow is safe — assert it to keep the public type
+      // strict.
+      strainTypeFacets: strainRows
+        .filter((r): r is { strainType: StrainType; count: number } => r.strainType !== null)
+        .map((r) => ({ strainType: r.strainType, count: r.count })),
+    };
+  }
+
+  private buildSearchFilters(input: {
+    readonly query?: string | undefined;
+    readonly categoryId?: string | undefined;
+    readonly strainType?: StrainType | undefined;
+    readonly dispensaryId?: string | undefined;
+  }): readonly SQL[] {
+    const filters: SQL[] = [eq(products.isActive, true), isNull(products.deletedAt)];
+    if (input.query !== undefined) {
+      filters.push(
+        sql`${products.searchVector} @@ websearch_to_tsquery('english', ${input.query})`,
+      );
+    }
+    if (input.categoryId !== undefined) {
+      filters.push(eq(products.categoryId, input.categoryId));
+    }
+    if (input.strainType !== undefined) {
+      filters.push(eq(products.strainType, input.strainType));
+    }
+    if (input.dispensaryId !== undefined) {
+      filters.push(
+        exists(
+          this.db
+            .select({ one: sql`1` })
+            .from(dispensaryListings)
+            .where(
+              and(
+                eq(dispensaryListings.productId, products.id),
+                eq(dispensaryListings.dispensaryId, input.dispensaryId),
+                eq(dispensaryListings.isActive, true),
+                sql`${dispensaryListings.quantityAvailable} > 0`,
+              ),
+            ),
+        ),
+      );
+    }
+    return filters;
   }
 
   async create(input: Omit<NewProduct, 'id'> & { readonly id?: string }): Promise<Product> {
