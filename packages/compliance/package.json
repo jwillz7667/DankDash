@@ -24,10 +24,16 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@dankdash/types": "workspace:*"
+    "@dankdash/types": "workspace:*",
+    "decimal.js": "^10.6.0",
+    "luxon": "^3.5.0"
   },
   "devDependencies": {
+    "@types/geojson": "^7946.0.16",
+    "@types/luxon": "^3.4.2",
     "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "fast-check": "^3.23.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
