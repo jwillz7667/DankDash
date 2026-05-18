@@ -1,0 +1,122 @@
+/**
+ * /v1/auth/* HTTP surface.
+ *
+ *   POST /v1/auth/register      — Public. Creates a new customer (pending_kyc)
+ *                                  and mints a session.
+ *   POST /v1/auth/login         — Public. Returns either a token pair or
+ *                                  `{ status: 'mfa_required' }` per the
+ *                                  discriminated-union LoginResponse.
+ *   POST /v1/auth/refresh       — Public. Rotates the refresh token; reuse
+ *                                  detection cascades family revocation.
+ *   POST /v1/auth/logout        — Authenticated. Revokes the presented
+ *                                  refresh token; 204 No Content on success.
+ *   POST /v1/auth/mfa/setup     — Authenticated. Begins enrollment; returns
+ *                                  the secret + otpauth URL (NOT persisted
+ *                                  until /confirm).
+ *   POST /v1/auth/mfa/confirm   — Authenticated. Persists the encrypted
+ *                                  secret + flips mfa_enabled=true.
+ *   POST /v1/auth/mfa/verify    — Authenticated. Idempotent code check used
+ *                                  by step-up flows.
+ *   POST /v1/auth/mfa/disable   — Authenticated. Requires a current code so
+ *                                  a stolen access token alone cannot strip
+ *                                  the second factor.
+ *
+ * Public routes carry @Public; everything else inherits the global
+ * JwtAuthGuard. The MFA routes do not need @Roles — any authenticated user
+ * may manage their own MFA.
+ */
+import { Body, Controller, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
+import { Public } from '../../common/decorators/public.decorator.js';
+import { AuthService, type AuthRequestContext } from './auth.service.js';
+import { CurrentUser } from './decorators/current-user.decorator.js';
+import {
+  LoginRequestDto,
+  LogoutRequestDto,
+  MfaConfirmRequestDto,
+  MfaDisableRequestDto,
+  MfaVerifyRequestDto,
+  RefreshRequestDto,
+  RegisterRequestDto,
+  type LoginResponse,
+  type MfaSetupResponse,
+  type RefreshResponse,
+  type RegisterResponse,
+} from './dto/index.js';
+import type { AuthenticatedUser } from './guards/auth-types.js';
+import type { FastifyRequest } from 'fastify';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly auth: AuthService) {}
+
+  @Public()
+  @Post('register')
+  @HttpCode(HttpStatus.CREATED)
+  register(
+    @Body() body: RegisterRequestDto,
+    @Req() req: FastifyRequest,
+  ): Promise<RegisterResponse> {
+    return this.auth.register(body, requestContext(req));
+  }
+
+  @Public()
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  login(@Body() body: LoginRequestDto, @Req() req: FastifyRequest): Promise<LoginResponse> {
+    return this.auth.login(body, requestContext(req));
+  }
+
+  @Public()
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  refresh(@Body() body: RefreshRequestDto, @Req() req: FastifyRequest): Promise<RefreshResponse> {
+    return this.auth.refreshTokens(body.refreshToken, requestContext(req));
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logout(@Body() body: LogoutRequestDto): Promise<void> {
+    await this.auth.logout(body.refreshToken);
+  }
+
+  @Post('mfa/setup')
+  @HttpCode(HttpStatus.OK)
+  mfaSetup(@CurrentUser() user: AuthenticatedUser): Promise<MfaSetupResponse> {
+    return this.auth.startMfaEnrollment(user.userId);
+  }
+
+  @Post('mfa/confirm')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async mfaConfirm(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: MfaConfirmRequestDto,
+  ): Promise<void> {
+    await this.auth.confirmMfaEnrollment(user.userId, body.secretBase32, body.code);
+  }
+
+  @Post('mfa/verify')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async mfaVerify(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: MfaVerifyRequestDto,
+  ): Promise<void> {
+    await this.auth.verifyMfaCode(user.userId, body.code);
+  }
+
+  @Post('mfa/disable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async mfaDisable(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: MfaDisableRequestDto,
+  ): Promise<void> {
+    await this.auth.disableMfa(user.userId, body.code);
+  }
+}
+
+function requestContext(req: FastifyRequest): AuthRequestContext {
+  const ua = req.headers['user-agent'];
+  return {
+    ...(typeof req.ip === 'string' && req.ip.length > 0 ? { ipAddress: req.ip } : {}),
+    ...(typeof ua === 'string' && ua.length > 0 ? { userAgent: ua } : {}),
+  };
+}
