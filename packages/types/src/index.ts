@@ -13,6 +13,8 @@ export {
   RepositoryError,
   EncryptionError,
   type EncryptionErrorCode,
+  PasswordError,
+  type PasswordErrorCode,
   type ErrorDetails,
   type ErrorEnvelope,
   toErrorEnvelope,

@@ -221,6 +221,37 @@ export class EncryptionError extends DomainError {
   }
 }
 
+export type PasswordErrorCode =
+  | 'PASSWORD_HASH_FAILED'
+  | 'PASSWORD_HASH_MALFORMED'
+  | 'PASSWORD_INPUT_INVALID';
+
+/**
+ * Raised by the password hashing primitive when:
+ *   - argon2 fails to produce a hash (system / config problem, not user input)
+ *   - a stored hash cannot be parsed (DB corruption or hand-edited row)
+ *   - the input violates a defensive ceiling (>1024 bytes pre-HMAC)
+ *
+ * "Wrong password" is NOT a `PasswordError` — verify() returns false in that
+ * case and the caller converts it to `AuthError('INVALID_CREDENTIALS')`.
+ * Mapping is intentional: surfacing distinct error codes for crypto failures
+ * lets ops alert on them without drowning in normal failed-login noise.
+ */
+export class PasswordError extends DomainError {
+  public readonly code: PasswordErrorCode;
+  public readonly statusCode = 500;
+
+  constructor(
+    code: PasswordErrorCode,
+    message: string,
+    details: ErrorDetails = {},
+    cause?: unknown,
+  ) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
 export function toErrorEnvelope(error: DomainError, requestId?: string): ErrorEnvelope {
   return {
     error: {
