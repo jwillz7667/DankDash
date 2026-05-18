@@ -261,15 +261,17 @@ interface SeedDispensary {
   readonly deliveryPolygon: GeoPolygon;
 }
 
+// Keys must be the 3-letter lowercase weekday codes the @dankdash/dispensaries
+// `DispensaryHours` type defines. Anything else round-trips through `isOpenAt`
+// as `undefined` and explodes when the service projects `isOpenNow`.
 const HOURS_JSON = {
-  monday: { open: '09:00', close: '21:00' },
-  tuesday: { open: '09:00', close: '21:00' },
-  wednesday: { open: '09:00', close: '21:00' },
-  thursday: { open: '09:00', close: '21:00' },
-  friday: { open: '09:00', close: '22:00' },
-  saturday: { open: '10:00', close: '22:00' },
-  sunday: { open: '10:00', close: '20:00' },
-  timezone: 'America/Chicago',
+  mon: { open: '09:00', close: '21:00' },
+  tue: { open: '09:00', close: '21:00' },
+  wed: { open: '09:00', close: '21:00' },
+  thu: { open: '09:00', close: '21:00' },
+  fri: { open: '09:00', close: '22:00' },
+  sat: { open: '10:00', close: '22:00' },
+  sun: { open: '10:00', close: '20:00' },
 } as const;
 
 const DISPENSARIES: readonly SeedDispensary[] = [
