@@ -40,6 +40,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@swc/core": "^1.15.33",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.10.2",
     "@types/speakeasy": "^2.0.10",
@@ -47,6 +48,7 @@
     "@vitest/coverage-v8": "^2.1.8",
     "supertest": "^7.2.2",
     "typescript": "^5.7.2",
+    "unplugin-swc": "^1.5.9",
     "vitest": "^2.1.8"
   }
 }
