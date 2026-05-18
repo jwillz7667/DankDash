@@ -27,6 +27,7 @@
  */
 import { Body, Controller, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
 import { Public } from '../../common/decorators/public.decorator.js';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { AuthService, type AuthRequestContext } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import {
@@ -45,11 +46,15 @@ import {
 import type { AuthenticatedUser } from './guards/auth-types.js';
 import type { FastifyRequest } from 'fastify';
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Public()
+  @RateLimit({ name: 'auth-register-ip', tracker: 'ip', limit: 3, windowMs: HOUR_MS })
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   register(
@@ -60,6 +65,10 @@ export class AuthController {
   }
 
   @Public()
+  @RateLimit(
+    { name: 'auth-login-ip', tracker: 'ip', limit: 5, windowMs: MINUTE_MS },
+    { name: 'auth-login-email', tracker: 'email-from-body', limit: 10, windowMs: HOUR_MS },
+  )
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() body: LoginRequestDto, @Req() req: FastifyRequest): Promise<LoginResponse> {
@@ -67,24 +76,33 @@ export class AuthController {
   }
 
   @Public()
+  @RateLimit({
+    name: 'auth-refresh',
+    tracker: 'refresh-from-body',
+    limit: 60,
+    windowMs: MINUTE_MS,
+  })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   refresh(@Body() body: RefreshRequestDto, @Req() req: FastifyRequest): Promise<RefreshResponse> {
     return this.auth.refreshTokens(body.refreshToken, requestContext(req));
   }
 
+  @RateLimit({ name: 'auth-default-user', tracker: 'user', limit: 120, windowMs: MINUTE_MS })
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(@Body() body: LogoutRequestDto): Promise<void> {
     await this.auth.logout(body.refreshToken);
   }
 
+  @RateLimit({ name: 'auth-default-user', tracker: 'user', limit: 120, windowMs: MINUTE_MS })
   @Post('mfa/setup')
   @HttpCode(HttpStatus.OK)
   mfaSetup(@CurrentUser() user: AuthenticatedUser): Promise<MfaSetupResponse> {
     return this.auth.startMfaEnrollment(user.userId);
   }
 
+  @RateLimit({ name: 'auth-default-user', tracker: 'user', limit: 120, windowMs: MINUTE_MS })
   @Post('mfa/confirm')
   @HttpCode(HttpStatus.NO_CONTENT)
   async mfaConfirm(
@@ -94,6 +112,7 @@ export class AuthController {
     await this.auth.confirmMfaEnrollment(user.userId, body.secretBase32, body.code);
   }
 
+  @RateLimit({ name: 'auth-default-user', tracker: 'user', limit: 120, windowMs: MINUTE_MS })
   @Post('mfa/verify')
   @HttpCode(HttpStatus.NO_CONTENT)
   async mfaVerify(
@@ -103,6 +122,7 @@ export class AuthController {
     await this.auth.verifyMfaCode(user.userId, body.code);
   }
 
+  @RateLimit({ name: 'auth-default-user', tracker: 'user', limit: 120, windowMs: MINUTE_MS })
   @Post('mfa/disable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async mfaDisable(

@@ -21,9 +21,11 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module.js';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter.js';
+import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor.js';
 import { ZodValidationPipe } from './common/pipes/zod-validation.pipe.js';
+import { RATE_LIMIT_STORE, type RateLimitStore } from './common/rate-limit/rate-limit-store.js';
 import { resolveLogger } from './infrastructure/logger.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
 import { JwtService } from './modules/auth/jwt/jwt.service.js';
@@ -70,9 +72,15 @@ async function bootstrap(): Promise<void> {
   // authenticated unless it carries @Public. Resolve the dependencies from
   // the DI container so the guard shares the same JwtService + Reflector as
   // the rest of the app — never instantiate guards manually with `new`.
+  // Order matters: RateLimitGuard runs AFTER JwtAuthGuard so the 'user'
+  // tracker can read req.user; guards execute in declaration order.
   const reflector = app.get(Reflector);
   const jwtService = app.get(JwtService);
-  app.useGlobalGuards(new JwtAuthGuard(reflector, jwtService));
+  const rateLimitStore = app.get<RateLimitStore>(RATE_LIMIT_STORE);
+  app.useGlobalGuards(
+    new JwtAuthGuard(reflector, jwtService),
+    new RateLimitGuard(reflector, rateLimitStore),
+  );
 
   const swagger = new DocumentBuilder()
     .setTitle('DankDash API')

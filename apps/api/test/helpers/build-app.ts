@@ -16,9 +16,14 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { pino } from 'pino';
 import { AppModule } from '../../src/app.module.js';
 import { GlobalExceptionFilter } from '../../src/common/filters/global-exception.filter.js';
+import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard.js';
 import { LoggingInterceptor } from '../../src/common/interceptors/logging.interceptor.js';
 import { RequestIdInterceptor } from '../../src/common/interceptors/request-id.interceptor.js';
 import { ZodValidationPipe } from '../../src/common/pipes/zod-validation.pipe.js';
+import {
+  RATE_LIMIT_STORE,
+  type RateLimitStore,
+} from '../../src/common/rate-limit/rate-limit-store.js';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard.js';
 import { JwtService } from '../../src/modules/auth/jwt/jwt.service.js';
 
@@ -46,13 +51,18 @@ export async function buildTestApp(): Promise<NestFastifyApplication> {
   app.useGlobalFilters(new GlobalExceptionFilter(logger));
   app.useGlobalInterceptors(new RequestIdInterceptor(), new LoggingInterceptor(logger));
 
-  // Mirror main.ts: deny-by-default global auth. Tests that hit authenticated
-  // routes mint a token via the test rig and pass it in Authorization.
-  // Resolve dependencies from the DI container so the guard shares the same
-  // JwtService + Reflector instances the rest of the app sees.
+  // Mirror main.ts: deny-by-default global auth + global rate limiting.
+  // Tests that hit authenticated routes mint a token via the test rig and
+  // pass it in Authorization. RateLimitGuard runs AFTER JwtAuthGuard so the
+  // 'user' tracker can read req.user. In NODE_ENV=test the store binding
+  // resolves to MemoryRateLimitStore — no Redis required.
   const reflector = app.get(Reflector);
   const jwtService = app.get(JwtService);
-  app.useGlobalGuards(new JwtAuthGuard(reflector, jwtService));
+  const rateLimitStore = app.get<RateLimitStore>(RATE_LIMIT_STORE);
+  app.useGlobalGuards(
+    new JwtAuthGuard(reflector, jwtService),
+    new RateLimitGuard(reflector, rateLimitStore),
+  );
 
   await app.init();
   return app;
