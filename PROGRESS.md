@@ -14,6 +14,45 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 4 — Dispensaries & Catalog
+
+_Status: complete (2026-05-18). Branch: `phase/04-catalog`._
+
+What landed:
+
+- **Four feature modules under `apps/api/src/modules/`** — `dispensaries/`, `catalog/` (products + categories + lab results), `listings/` (vendor-scoped pricing/inventory with RLS-tagged transactions), `search/` (catalog search + facets). Each module owns its controllers, services, DTOs, and unit tests; cross-module reads go through repository interfaces, never raw joins.
+- **Public read surface** (`GET /v1/categories`, `/v1/products/:id`, `/v1/dispensaries?lat=&lng=`, `/v1/dispensaries/:id`, `/v1/dispensaries/:id/menu`, `/v1/products/search`). Geo-narrowing uses `ProductsRepository.searchWithFilters` and `DispensariesRepository.listDeliveringTo` — the latter is a `ST_Contains(delivery_polygon, ST_MakePoint(lng, lat)::geography)` against the GIST index, so a half-spec (`?lat` without `?lng`) is rejected at the Zod schema layer with 422. Search returns a paginated `{ results, facets: { categories, strainTypes }, page }` envelope; the facet counts reflect the same filter set as the rows so the iOS pill UI matches the result list. Public routes are `@Public()` — JwtAuthGuard skips them; the per-IP `RateLimitGuard` does not.
+- **Admin write surface** (`POST/PATCH /v1/admin/dispensaries`, `POST /v1/admin/dispensaries/:id/{activate,suspend}`, `POST/PATCH /v1/admin/products`, `POST /v1/admin/products/:id/lab-results`, `POST /v1/admin/categories`). Gated by `RolesGuard` to `admin`/`superadmin`. `POST /v1/admin/dispensaries/:id/activate` runs the compliance gate server-side: license not yet expired AND at least one accepted `owner` staff member. Either gate returns 422 `VALIDATION_FAILED` with a specific message; the DB-side `status='active'` UPDATE only runs after both pass.
+- **Vendor write surface** (`GET/POST/PATCH/DELETE /v1/vendor/listings`) — protected by a three-guard chain: `JwtAuthGuard` → `RateLimitGuard` (user tracker) → `VendorContextGuard`. The vendor guard requires `X-Dispensary-Id` (422 if missing or non-UUID) and verifies the principal is a member of `dispensary_staff` with `deactivated_at IS NULL` (403 otherwise). `RolesGuard` then narrows to staff roles. Every mutation runs inside a `db.transaction` that calls `select set_config('app.current_dispensary_id', ?, true)` — a no-op under the current single-role pool but already correct for the future `app_vendor` role swap. A cross-vendor PATCH or DELETE matches zero rows and surfaces as 404 (never 200 with leaked content); the repository's `softDeleteForDispensary` only matches `is_active = true` so a double-DELETE returns 404 on the second call.
+- **`packages/dispensaries` hours engine** (`isOpenAt`, `nextOpenAt`) extracted to its own package (Phase 4.5) so the compliance engine and the API both consume the same cross-midnight + DST-aware window math. Hours type pins weekday keys to the closed union `'mon'|'tue'|...|'sun'` — seed and DTO schema both match the type now, so `projectDispensary`'s `isOpenAt` call never throws on missing weekday lookup.
+- **`packages/storage` R2 presign adapter** (Phase 4.6) — `presignUpload(key, contentType, sizeLimit)` returns a presigned POST + R2 `Cache-Control` headers; `getPublicUrl(key)` builds the CDN URL. Admin/vendor image uploads never proxy bytes through the API.
+- **`apps/api/src/modules/catalog-cache`** (Phase 4.7) — `CatalogCacheService` wraps a `CatalogCacheStore` interface backed by Redis in production (`RedisCatalogCacheStore`, 60s TTL, versioned key prefix `v1:`) and by an in-memory map under `NODE_ENV=test` (`MemoryCatalogCacheStore`, also exposed via `@Global()` `CatalogCacheModule`). Public dispensary feed + per-dispensary menu are read-through-cached; vendor listing writes call `cache.invalidateListing(dispensaryId)` after the tx commits so a rolled-back write leaves the cache untouched.
+- **Integration test rig** (`apps/api/test/integration/`) — vitest `globalSetup` boots ONE Postgres+PostGIS testcontainer per `pnpm test` invocation via `@dankdash/db/testing.setupTestDb()` and exports `DATABASE_URL`/`TEST_DATABASE_URL` to forked workers. `test/integration/setup.ts` exposes `SEED_IDS` (the stable UUIDv5s the canonical seed produces), `seedFixtures()` (truncate + reseed), and `signTokenFor(app, {userId, role, sessionId?})` which goes through the running app's `JwtService` so RS256 tokens match what `JwtAuthGuard` verifies. The rig also wires `unplugin-swc` into the vitest pipeline — esbuild strips decorators but does NOT emit `design:paramtypes`, so without SWC's `decoratorMetadata: true` NestJS DI silently fails to inject any constructor parameter. With SWC, `app.inject()` exercises the production guard/pipe/filter chain end-to-end.
+- **37 integration tests across five files** — `catalog.public.test.ts` (8: categories ordering, product 200/404, ParseUUIDPipe 400, dispensary 200/404, menu 200/404), `dispensaries.geo.test.ts` (7: inside MPLS/STP/MG polygons, outside in LA, half-spec 422, out-of-range 422, unfiltered response shape), `search.ranking.test.ts` (7: `q="northern lights"` returns both NL hits, `q="durban"` excludes NL, category narrowing + facets, dispensary narrowing (skipped-types absent + total strictly smaller than global), unknown dispensary returns empty without leaking existence, paged limit/offset non-overlapping, oversized limit 422), `admin-dispensaries.activate.test.ts` (5: no accepted-owner → 422 owner, expired license → 422 expired, license window end ≤ start → 422 from schema refine, non-admin role → 403, missing auth → 401), `vendor-listings.rls.test.ts` (10: missing/malformed X-Dispensary-Id → 422, non-staff principal → 403, customer role → 403, owner sees only own listings, cross-vendor PATCH/DELETE → 404, double-DELETE → 204 then 404, malformed POST → 422, duplicate SKU → 409). 626 tests pass across the apps/api package overall.
+
+Definition-of-Done verification:
+
+- All Phase 4 endpoints implemented with auth/RLS enforced (deny-by-default global `JwtAuthGuard` + per-route `RolesGuard` + per-vendor `VendorContextGuard`).
+- PostGIS geo-queries working: `GET /v1/dispensaries?lat=44.987&lng=-93.273` returns only the MPLS dispensary; outside-polygon points return an empty list; interstate points (LA) return empty.
+- Search returns ranked + faceted results via the `tsvector` GIN index (`ts_rank` ORDER BY); facets count the narrowed set, not the global catalog.
+- R2 presign adapter (`@dankdash/storage`) wired and unit-covered; LocalStack endpoint resolution works via the `STORAGE_S3_ENDPOINT` env override.
+- Redis cache layer functional with explicit invalidation on listing writes; `NODE_ENV=test` swaps the binding for `MemoryCatalogCacheStore` so the suite never touches Redis.
+- `pnpm typecheck` — 18/18 tasks succeed.
+- `pnpm lint` — 13/13 tasks succeed, zero warnings.
+- `pnpm test` — 18/18 tasks succeed (626/626 apps/api tests pass; 37/37 of those are the new Phase 4 integration suite).
+- `pnpm --filter @dankdash/api build` — produces `dist/main.js`.
+- Branch `phase/04-catalog` pushed; PR opened against `main`.
+
+Deferred:
+
+- **`POST /v1/admin/dispensaries/:id/suspend` end-to-end test** — the route handler ships with unit coverage of `DispensariesService.suspend`, but no integration test pins the 403/422 paths against a real DB. Activation has full coverage; suspend follows the same RolesGuard + repo-update pattern, so the marginal value is low. Pick up alongside Phase 11 (Compliance + Audit ops) when the audit-log surface around dispensary status transitions also lands.
+- **`POST /v1/admin/products/:id/lab-results` integration test** — admin lab-result append is unit-covered (`AdminProductsService.appendLabResult`), but the full HTTP round-trip is not exercised. Phase 11 owns the COA ingestion workflow; this gap closes there alongside the COA file-upload + R2 link test.
+- **Cache key hit/miss assertions** — the cache wrapper is unit-covered for `MemoryCatalogCacheStore` (hits, misses, TTL expiry, invalidation) but the integration suite does not measure DB call count under a hot vs. cold cache. Phase 14 (observability) adds a cache-hit metric the integration test can read directly; until then the unit tests + production Redis metrics suffice.
+- **Real RLS enforcement at the Postgres layer** — current deployment pools as a single app role; the `WHERE dispensary_id = ?` filter in each repo method is the primary guard, the `app.current_dispensary_id` GUC is set per request but the policies are a no-op. Phase 12 (deploy hardening) is where the pool splits into `app_admin`/`app_vendor` and the policies become load-bearing.
+- **Catalog cache stampede protection** — multiple cold readers can stampede the loader on key expiry. Production traffic + 60s TTL makes the worst-case cost small enough to defer. Phase 14 adds the singleflight wrapper alongside the dedup-by-key metric so the trade-off is measurable before introducing the code.
+
+---
+
 ## Phase 3 — Compliance Engine
 
 _Status: complete (2026-05-18). Commit range: `35e30ac..acb1a6a` (12 commits)._
