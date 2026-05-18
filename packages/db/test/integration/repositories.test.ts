@@ -176,13 +176,16 @@ describe('repository coverage', () => {
       hash[0] = 7;
       hash[1] = 11;
 
+      const familyId = newId();
       const created = await sessions.create({
         userId: ALICE,
+        familyId,
         refreshTokenHash: hash,
         deviceId: 'iphone-16',
         expiresAt: new Date(Date.now() + 86_400_000),
       });
       expect(created.userId).toBe(ALICE);
+      expect(created.familyId).toBe(familyId);
 
       const found = await sessions.findByRefreshTokenHash(hash);
       expect(found?.id).toBe(created.id);
@@ -212,11 +215,13 @@ describe('repository coverage', () => {
 
       await sessions.create({
         userId: BEN,
+        familyId: newId(),
         refreshTokenHash: h1,
         expiresAt: new Date(Date.now() + 86_400_000),
       });
       await sessions.create({
         userId: BEN,
+        familyId: newId(),
         refreshTokenHash: h2,
         expiresAt: new Date(Date.now() + 86_400_000),
       });
@@ -230,11 +235,122 @@ describe('repository coverage', () => {
       hExp[0] = 9;
       await sessions.create({
         userId: BEN,
+        familyId: newId(),
         refreshTokenHash: hExp,
         expiresAt: new Date(Date.now() - 1_000),
       });
       const deleted = await sessions.deleteExpired(new Date());
       expect(deleted).toBeGreaterThan(0);
+    });
+
+    it('rotate atomically issues successor and stamps predecessor', async () => {
+      const sessions = new SessionsRepository(getPool().db);
+      const familyId = newId();
+      const h1 = new Uint8Array(32);
+      h1[0] = 21;
+      const h2 = new Uint8Array(32);
+      h2[0] = 22;
+
+      const first = await sessions.create({
+        userId: ALICE,
+        familyId,
+        refreshTokenHash: h1,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+
+      const second = await sessions.rotate({
+        predecessorId: first.id,
+        successor: {
+          userId: ALICE,
+          familyId,
+          refreshTokenHash: h2,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+
+      expect(second.familyId).toBe(familyId);
+      expect(second.id).not.toBe(first.id);
+
+      const predAfter = await sessions.findById(first.id);
+      expect(predAfter?.rotatedAt).not.toBeNull();
+      expect(predAfter?.rotatedTo).toBe(second.id);
+    });
+
+    it('rotate refuses to double-rotate a predecessor (reuse safety)', async () => {
+      const sessions = new SessionsRepository(getPool().db);
+      const familyId = newId();
+      const h1 = new Uint8Array(32);
+      h1[0] = 31;
+      const h2 = new Uint8Array(32);
+      h2[0] = 32;
+      const h3 = new Uint8Array(32);
+      h3[0] = 33;
+
+      const first = await sessions.create({
+        userId: ALICE,
+        familyId,
+        refreshTokenHash: h1,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+
+      await sessions.rotate({
+        predecessorId: first.id,
+        successor: {
+          userId: ALICE,
+          familyId,
+          refreshTokenHash: h2,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+
+      await expect(
+        sessions.rotate({
+          predecessorId: first.id,
+          successor: {
+            userId: ALICE,
+            familyId,
+            refreshTokenHash: h3,
+            expiresAt: new Date(Date.now() + 86_400_000),
+          },
+        }),
+      ).rejects.toThrow('predecessor session unavailable for rotation');
+    });
+
+    it('revokeFamily burns every non-revoked row sharing a familyId', async () => {
+      const sessions = new SessionsRepository(getPool().db);
+      const familyId = newId();
+      const other = newId();
+      const h1 = new Uint8Array(32);
+      h1[0] = 41;
+      const h2 = new Uint8Array(32);
+      h2[0] = 42;
+      const hOther = new Uint8Array(32);
+      hOther[0] = 43;
+
+      await sessions.create({
+        userId: ALICE,
+        familyId,
+        refreshTokenHash: h1,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      await sessions.create({
+        userId: ALICE,
+        familyId,
+        refreshTokenHash: h2,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      await sessions.create({
+        userId: ALICE,
+        familyId: other,
+        refreshTokenHash: hOther,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+
+      const burned = await sessions.revokeFamily(familyId);
+      expect(burned).toBe(2);
+      expect((await sessions.findByRefreshTokenHash(h1))?.revokedAt).not.toBeNull();
+      expect((await sessions.findByRefreshTokenHash(h2))?.revokedAt).not.toBeNull();
+      expect((await sessions.findByRefreshTokenHash(hOther))?.revokedAt).toBeNull();
     });
   });
 
