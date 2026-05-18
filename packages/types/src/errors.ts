@@ -53,6 +53,7 @@ export class AuthError extends DomainError {
 
   constructor(
     code:
+      | 'UNAUTHENTICATED'
       | 'INVALID_CREDENTIALS'
       | 'TOKEN_EXPIRED'
       | 'TOKEN_INVALID'
