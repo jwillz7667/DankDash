@@ -21,7 +21,7 @@
  *     between the cart service and pricing, never user input.
  */
 import { describe, expect, it } from 'vitest';
-import { computeOrderTotals } from '../src/index.js';
+import { computeOrderTotals, computePlatformFeeCents } from '../src/index.js';
 import type { PricingLine, PricingOptions } from '../src/index.js';
 
 const noFees: PricingOptions = {
@@ -290,5 +290,44 @@ describe('computeOrderTotals — integer contract', () => {
     expect(Number.isInteger(result.totals.cannabisTaxCents)).toBe(true);
     expect(Number.isInteger(result.totals.salesTaxCents)).toBe(true);
     expect(Number.isInteger(result.totals.totalCents)).toBe(true);
+  });
+});
+
+describe('computePlatformFeeCents', () => {
+  it('takes 15% of a round subtotal', () => {
+    // 10000 * 0.15 = 1500 exactly
+    expect(computePlatformFeeCents(10_000)).toBe(1500);
+  });
+
+  it('is exactly zero on a zero subtotal', () => {
+    expect(computePlatformFeeCents(0)).toBe(0);
+  });
+
+  it('banker-rounds half-cent ties to even (matches the tax rounding rule)', () => {
+    // 5 * 0.15 = 0.75 → banker's rounds to 0 (toward even); but 0.75 is
+    // not a half-tie. Use 10 → 1.5 cents → banker's → 2 (nearest even).
+    expect(computePlatformFeeCents(10)).toBe(2);
+    // 30 → 4.5 → banker's → 4 (nearest even). `Math.round` would give 5.
+    expect(computePlatformFeeCents(30)).toBe(4);
+  });
+
+  it('rejects negative subtotals as programmer error', () => {
+    expect(() => computePlatformFeeCents(-1)).toThrow(RangeError);
+  });
+
+  it('rejects fractional cents as programmer error', () => {
+    expect(() => computePlatformFeeCents(100.5)).toThrow(RangeError);
+  });
+
+  it('rejects NaN as programmer error', () => {
+    expect(() => computePlatformFeeCents(Number.NaN)).toThrow(RangeError);
+  });
+
+  it('scales linearly across realistic order sizes', () => {
+    // 4_500 → 675; 12_345 → 1852 (banker's rounds 1851.75 → 1852).
+    expect(computePlatformFeeCents(4_500)).toBe(675);
+    expect(computePlatformFeeCents(12_345)).toBe(1852);
+    // 99_999 → 14999.85 → 15000.
+    expect(computePlatformFeeCents(99_999)).toBe(15_000);
   });
 });

@@ -11,8 +11,13 @@
  * Additions here are a workspace-wide contract change. Bump the package
  * version and re-test the checkout integration suite before landing.
  */
-export { CANNABIS_TAX_RATE, STATE_SALES_TAX_RATE, isCannabisTaxable } from './constants.js';
-export { computeOrderTotals } from './totals.js';
+export {
+  CANNABIS_TAX_RATE,
+  PLATFORM_FEE_RATE,
+  STATE_SALES_TAX_RATE,
+  isCannabisTaxable,
+} from './constants.js';
+export { computeOrderTotals, computePlatformFeeCents } from './totals.js';
 export type {
   OrderPricingTotals,
   PricingLine,

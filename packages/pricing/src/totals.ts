@@ -28,7 +28,12 @@
  * this only fires on programmer error or a corrupt persistence layer.
  */
 import { Decimal } from 'decimal.js';
-import { CANNABIS_TAX_RATE, STATE_SALES_TAX_RATE, isCannabisTaxable } from './constants.js';
+import {
+  CANNABIS_TAX_RATE,
+  PLATFORM_FEE_RATE,
+  STATE_SALES_TAX_RATE,
+  isCannabisTaxable,
+} from './constants.js';
 import type {
   OrderPricingTotals,
   PricingLine,
@@ -39,6 +44,7 @@ import type {
 
 const CANNABIS_RATE = new Decimal(CANNABIS_TAX_RATE);
 const STATE_SALES_RATE = new Decimal(STATE_SALES_TAX_RATE);
+const PLATFORM_RATE = new Decimal(PLATFORM_FEE_RATE);
 
 function requireNonNegativeInt(value: number, label: string): void {
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
@@ -136,4 +142,24 @@ export function computeOrderTotals(
   };
 
   return { lines: lineResults, totals };
+}
+
+/**
+ * Platform commission on the *gross* cannabis subtotal, banker-rounded
+ * to whole cents. Settlement uses this to split funds between the
+ * dispensary credit and the `platform_revenue` ledger account; the
+ * dispensary share is `subtotal - platform_fee - discount`.
+ *
+ * Computed on subtotal (not on total) by design — taxes pass through to
+ * the state and tips pass through to the driver, so the platform's take
+ * is only on the dispensary's revenue line. Same reason discounts reduce
+ * the dispensary's share, not the platform fee: the dispensary funds
+ * its own promotions.
+ *
+ * `subtotalCents` must be a non-negative integer; throws otherwise so a
+ * corrupt caller fails loud rather than rounding garbage into the books.
+ */
+export function computePlatformFeeCents(subtotalCents: number): number {
+  requireNonNegativeInt(subtotalCents, 'subtotalCents');
+  return bankerRoundToInt(new Decimal(subtotalCents).times(PLATFORM_RATE));
 }

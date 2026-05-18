@@ -33,6 +33,21 @@ export const CANNABIS_TAX_RATE = '0.10';
 export const STATE_SALES_TAX_RATE = '0.06875';
 
 /**
+ * Platform take-rate on the cannabis subtotal (15%). Applied at settlement
+ * to split funds between the dispensary and the platform. Not a tax — this
+ * is the marketplace commission per the dispensary partner agreement.
+ *
+ * Per-dispensary overrides are out of scope for Phase 6 — every dispensary
+ * pays the same rate until the contracts surface lands. When that happens,
+ * move this to a `dispensaries.platform_fee_rate` column with this value
+ * as the default.
+ *
+ * Stored as a decimal string so `decimal.js` consumes it losslessly and
+ * banker-rounds the cents value the same way taxes are computed.
+ */
+export const PLATFORM_FEE_RATE = '0.15';
+
+/**
  * Product types subject to the cannabis gross-receipts tax. Per § 295.81
  * subd. 1(g), "cannabis product" is defined broadly to include cannabis
  * flower, ingestibles, concentrates, topicals, and immature plants /
