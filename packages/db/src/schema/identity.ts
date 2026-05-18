@@ -118,12 +118,18 @@ export const sessions = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // All session rows descended from the same login share a familyId.
+    // Refresh-token reuse detection invalidates the entire family —
+    // see docs/runbooks/refresh-token-reuse.md.
+    familyId: uuid('family_id').notNull(),
     refreshTokenHash: bytea('refresh_token_hash').notNull().unique(),
     deviceId: text('device_id'),
     deviceFingerprint: jsonb('device_fingerprint'),
     ipAddress: inet('ip_address'),
     userAgent: text('user_agent'),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    rotatedAt: timestamp('rotated_at', { withTimezone: true, mode: 'date' }),
+    rotatedTo: uuid('rotated_to'),
     revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'date' })
@@ -137,6 +143,13 @@ export const sessions = pgTable(
     index('sessions_expires_idx')
       .on(table.expiresAt)
       .where(sql`${table.revokedAt} IS NULL`),
+    index('sessions_family_idx')
+      .on(table.familyId)
+      .where(sql`${table.revokedAt} IS NULL`),
+    check(
+      'sessions_rotation_consistent',
+      sql`(${table.rotatedAt} IS NULL) = (${table.rotatedTo} IS NULL)`,
+    ),
   ],
 );
 
