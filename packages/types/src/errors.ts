@@ -58,6 +58,7 @@ export class AuthError extends DomainError {
       | 'TOKEN_INVALID'
       | 'TOKEN_REVOKED'
       | 'MFA_REQUIRED'
+      | 'MFA_CODE_INVALID'
       | 'KYC_REQUIRED'
       | 'SESSION_EXPIRED',
     message: string,

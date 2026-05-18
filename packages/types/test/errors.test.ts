@@ -69,6 +69,12 @@ describe('DomainError hierarchy', () => {
     expect(error.details).toEqual({ userId: 'u_1' });
   });
 
+  it('AuthError covers MFA_CODE_INVALID as a 401', () => {
+    const error = new AuthError('MFA_CODE_INVALID', 'wrong totp');
+    expect(error.code).toBe('MFA_CODE_INVALID');
+    expect(error.statusCode).toBe(401);
+  });
+
   it('ComplianceError preserves the failing-rule code', () => {
     const error = new ComplianceError('COMPLIANCE_LIMIT_EXCEEDED', 'edible THC over 800mg', {
       limit_mg: 800,
