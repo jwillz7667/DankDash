@@ -242,6 +242,47 @@ export class ConfigError extends DomainError {
   }
 }
 
+export type KycErrorCode =
+  | 'KYC_INQUIRY_FAILED'
+  | 'KYC_WEBHOOK_SIGNATURE_INVALID'
+  | 'KYC_WEBHOOK_PAYLOAD_INVALID'
+  | 'KYC_WEBHOOK_TIMESTAMP_STALE'
+  | 'KYC_AGE_UNDER_MINIMUM'
+  | 'KYC_DOB_MISSING';
+
+const KYC_STATUS_CODES: Readonly<Record<KycErrorCode, number>> = {
+  KYC_INQUIRY_FAILED: 502,
+  KYC_WEBHOOK_SIGNATURE_INVALID: 401,
+  KYC_WEBHOOK_PAYLOAD_INVALID: 400,
+  KYC_WEBHOOK_TIMESTAMP_STALE: 400,
+  KYC_AGE_UNDER_MINIMUM: 422,
+  KYC_DOB_MISSING: 422,
+};
+
+/**
+ * Raised by the Persona KYC integration when:
+ *   - The upstream API call to create an inquiry fails (502 — provider issue).
+ *   - A webhook signature, timestamp, or payload shape cannot be validated
+ *     (401 / 400 — caller did not present a trustworthy request).
+ *   - A verified inquiry returns a DOB that is missing or under the MN
+ *     adult-use minimum of 21 years (422 — user is not eligible).
+ *
+ * The age and DOB cases surface as 422 because the *request* was well-formed
+ * but the *applicant* failed compliance. Signature / timestamp / payload
+ * failures are caller-fault and surface as 4xx. Provider failures surface as
+ * 502 so ops can alert on Persona availability distinct from client errors.
+ */
+export class KycError extends DomainError {
+  public readonly code: KycErrorCode;
+  public readonly statusCode: number;
+
+  constructor(code: KycErrorCode, message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+    this.code = code;
+    this.statusCode = KYC_STATUS_CODES[code];
+  }
+}
+
 export type PasswordErrorCode =
   | 'PASSWORD_HASH_FAILED'
   | 'PASSWORD_HASH_MALFORMED'

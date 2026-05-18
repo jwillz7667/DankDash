@@ -8,6 +8,8 @@ import {
   ExternalServiceError,
   ForbiddenError,
   InventoryError,
+  KycError,
+  type KycErrorCode,
   NotFoundError,
   PaymentError,
   RateLimitError,
@@ -31,6 +33,7 @@ describe('DomainError hierarchy', () => {
       new RateLimitError('too many requests'),
       new RepositoryError('orders insert returned no row'),
       new ConfigError('CONFIG_INVALID', 'JWT_PRIVATE_KEY_BASE64 is not base64'),
+      new KycError('KYC_AGE_UNDER_MINIMUM', 'applicant under 21'),
     ];
 
     for (const error of samples) {
@@ -102,6 +105,28 @@ describe('DomainError hierarchy', () => {
     expect(error.statusCode).toBe(500);
     expect(error.code).toBe('CONFIG_MISSING');
     expect(error.details).toEqual({ variable: 'JWT_PRIVATE_KEY_BASE64' });
+  });
+
+  it('KycError maps each documented code to its intended HTTP status', () => {
+    const cases: ReadonlyArray<readonly [KycErrorCode, number]> = [
+      ['KYC_INQUIRY_FAILED', 502],
+      ['KYC_WEBHOOK_SIGNATURE_INVALID', 401],
+      ['KYC_WEBHOOK_PAYLOAD_INVALID', 400],
+      ['KYC_WEBHOOK_TIMESTAMP_STALE', 400],
+      ['KYC_AGE_UNDER_MINIMUM', 422],
+      ['KYC_DOB_MISSING', 422],
+    ];
+    for (const [code, status] of cases) {
+      const error = new KycError(code, `${code} test`);
+      expect(error.code).toBe(code);
+      expect(error.statusCode).toBe(status);
+    }
+  });
+
+  it('KycError preserves age + minimum details for the under-21 case', () => {
+    const error = new KycError('KYC_AGE_UNDER_MINIMUM', 'too young', { age: 19, minimum: 21 });
+    expect(error.details).toEqual({ age: 19, minimum: 21 });
+    expect(error.statusCode).toBe(422);
   });
 
   it('preserves cause when provided (Node error chaining)', () => {

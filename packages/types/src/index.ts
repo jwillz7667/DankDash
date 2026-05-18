@@ -15,6 +15,8 @@ export {
   type EncryptionErrorCode,
   ConfigError,
   type ConfigErrorCode,
+  KycError,
+  type KycErrorCode,
   PasswordError,
   type PasswordErrorCode,
   type ErrorDetails,
