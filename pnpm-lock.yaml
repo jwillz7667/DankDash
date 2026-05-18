@@ -77,9 +77,15 @@ importers:
       '@dankdash/dispensaries':
         specifier: workspace:*
         version: link:../../packages/dispensaries
+      '@dankdash/pricing':
+        specifier: workspace:*
+        version: link:../../packages/pricing
       '@dankdash/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@dankdash/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
       '@fastify/helmet':
         specifier: ^13.0.2
         version: 13.0.2
@@ -107,6 +113,9 @@ importers:
       argon2:
         specifier: ^0.44.0
         version: 0.44.0
+      decimal.js:
+        specifier: ^10.6.0
+        version: 10.6.0
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
@@ -141,6 +150,9 @@ importers:
       '@swc/core':
         specifier: ^1.15.33
         version: 1.15.33
+      '@types/geojson':
+        specifier: ^7946.0.16
+        version: 7946.0.16
       '@types/jsonwebtoken':
         specifier: ^9.0.10
         version: 9.0.10
@@ -347,6 +359,31 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
 
+  packages/pricing:
+    dependencies:
+      '@dankdash/compliance':
+        specifier: workspace:*
+        version: link:../compliance
+      decimal.js:
+        specifier: ^10.6.0
+        version: 10.6.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.19.19))
+      fast-check:
+        specifier: ^3.23.2
+        version: 3.23.2
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
   packages/storage:
     dependencies:
       '@aws-sdk/client-s3':
@@ -429,6 +466,21 @@ importers:
       '@types/node':
         specifier: ^22.10.2
         version: 22.19.19
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/utils:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.19.19))
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
