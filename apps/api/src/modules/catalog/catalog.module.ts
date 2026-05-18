@@ -8,9 +8,15 @@
  * with independent price/inventory rows.
  *
  * Phase 4.2 wires the public read-side: GET /v1/categories,
- * GET /v1/products/:id. The product search endpoint lives in
- * SearchModule. Admin writes (Phase 4.3) and the catalog cache
- * (Phase 4.7) layer onto these providers without rewiring.
+ * GET /v1/products/:id. Phase 4.3 layers the admin write surface
+ * (create + patch products, create categories, append COAs) onto the
+ * same providers without rewiring. The catalog cache (Phase 4.7)
+ * lands as another decorator over the read services.
+ *
+ * AuthModule is imported so RolesGuard is available for the admin
+ * controllers' @UseGuards(RolesGuard); JwtAuthGuard is already bound
+ * globally in the root composition and authenticates every non-@Public
+ * request before RolesGuard runs.
  */
 import {
   ProductCategoriesRepository,
@@ -20,6 +26,11 @@ import {
 } from '@dankdash/db';
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
+import { AuthModule } from '../auth/auth.module.js';
+import { AdminCategoriesController } from './admin/admin-categories.controller.js';
+import { AdminCategoriesService } from './admin/admin-categories.service.js';
+import { AdminProductsController } from './admin/admin-products.controller.js';
+import { AdminProductsService } from './admin/admin-products.service.js';
 import { CategoriesController } from './categories.controller.js';
 import { CategoriesService } from './categories.service.js';
 import { ProductsController } from './products.controller.js';
@@ -59,18 +70,45 @@ const productsServiceProvider: FactoryProvider<ProductsService> = {
   ): ProductsService => new ProductsService(products, labResults),
 };
 
+const adminCategoriesServiceProvider: FactoryProvider<AdminCategoriesService> = {
+  provide: AdminCategoriesService,
+  inject: [ProductCategoriesRepository],
+  useFactory: (categories: ProductCategoriesRepository): AdminCategoriesService =>
+    new AdminCategoriesService(categories),
+};
+
+const adminProductsServiceProvider: FactoryProvider<AdminProductsService> = {
+  provide: AdminProductsService,
+  inject: [ProductsRepository, ProductCategoriesRepository, ProductLabResultsRepository],
+  useFactory: (
+    products: ProductsRepository,
+    categories: ProductCategoriesRepository,
+    labResults: ProductLabResultsRepository,
+  ): AdminProductsService => new AdminProductsService(products, categories, labResults),
+};
+
 @Module({
-  controllers: [CategoriesController, ProductsController],
+  imports: [AuthModule],
+  controllers: [
+    CategoriesController,
+    ProductsController,
+    AdminCategoriesController,
+    AdminProductsController,
+  ],
   providers: [
     categoriesRepoProvider,
     productsRepoProvider,
     labResultsRepoProvider,
     categoriesServiceProvider,
     productsServiceProvider,
+    adminCategoriesServiceProvider,
+    adminProductsServiceProvider,
   ],
   exports: [
     CategoriesService,
     ProductsService,
+    AdminCategoriesService,
+    AdminProductsService,
     ProductCategoriesRepository,
     ProductsRepository,
     ProductLabResultsRepository,

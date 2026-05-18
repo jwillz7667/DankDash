@@ -386,4 +386,23 @@ export class ProductLabResultsRepository extends BaseRepository {
       .where(eq(productLabResults.productId, productId))
       .orderBy(desc(productLabResults.testedAt));
   }
+
+  /**
+   * Pre-flight duplicate-batch lookup for admin lab-result creation. Matches
+   * the unique constraint `product_lab_results_product_batch_uq` so the
+   * service can translate a duplicate into a typed 409 before the DB does.
+   */
+  async findByProductIdAndBatchId(
+    productId: string,
+    batchId: string,
+  ): Promise<ProductLabResult | null> {
+    const [row] = await this.db
+      .select()
+      .from(productLabResults)
+      .where(
+        and(eq(productLabResults.productId, productId), eq(productLabResults.batchId, batchId)),
+      )
+      .limit(1);
+    return row ?? null;
+  }
 }
