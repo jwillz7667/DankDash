@@ -33,6 +33,9 @@ export default tseslint.config(
       '**/coverage/**',
       '**/node_modules/**',
       '**/*.generated.ts',
+      // Reference material checked in for AI/human readers. Not part of any
+      // TypeScript project and not on the build path; treated as docs.
+      'docs/**',
     ],
   },
   // Type-aware rules for TypeScript source.
