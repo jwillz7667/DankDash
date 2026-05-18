@@ -16,7 +16,7 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ## Phase 0 — Foundation & Tooling
 
-_Status: in progress (2026-05-17). Commit range: pending._
+_Status: complete (2026-05-17). Commit range: `eccf1eb..2d97d31` (12 commits). PR: [#1](https://github.com/jwillz7667/DankDash/pull/1)._
 
 What landed:
 
@@ -35,10 +35,13 @@ What landed:
 
 Definition-of-Done verification:
 
-- `pnpm install` — verified during phase wrap-up.
-- `docker compose up` — verified during phase wrap-up.
-- `pnpm typecheck`, `pnpm lint`, `pnpm test` — verified during phase wrap-up.
-- CI green on the Phase 0 PR — verified once the PR is opened.
+- `pnpm install` — clean install verified.
+- `docker compose config` — stack definition validates; full `up` smoke-tested earlier in the phase.
+- `pnpm typecheck` — 15/15 tasks succeed.
+- `pnpm lint` — 11/11 tasks succeed, zero warnings.
+- `pnpm test` — 15/15 tasks succeed.
+- Pre-commit + commit-msg hooks fire on real commits (three commits during this phase were rejected by commitlint for >72 char headers and had to be shortened).
+- Branch `phase/00-foundation` pushed; PR #1 opened against `main`. CI verification continues on the PR.
 
 Deferred:
 
