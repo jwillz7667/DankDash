@@ -221,6 +221,27 @@ export class EncryptionError extends DomainError {
   }
 }
 
+export type ConfigErrorCode = 'CONFIG_INVALID' | 'CONFIG_MISSING';
+
+/**
+ * Raised at boot when a runtime configuration value cannot be parsed,
+ * decoded, or otherwise made usable — distinct from `ValidationError`
+ * which is for request input. Surfaces as `INTERNAL_ERROR` to clients
+ * (config bugs should never reach end users); the stable `CONFIG_INVALID`
+ * / `CONFIG_MISSING` codes let ops alert on them separately from generic
+ * 500s. Process should fail fast — `enableShutdownHooks` will not have run
+ * if this is thrown from a NestJS factory provider, which is desirable.
+ */
+export class ConfigError extends DomainError {
+  public readonly code: ConfigErrorCode;
+  public readonly statusCode = 500;
+
+  constructor(code: ConfigErrorCode, message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
 export type PasswordErrorCode =
   | 'PASSWORD_HASH_FAILED'
   | 'PASSWORD_HASH_MALFORMED'

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AuthError,
   ComplianceError,
+  ConfigError,
   ConflictError,
   DomainError,
   ExternalServiceError,
@@ -29,6 +30,7 @@ describe('DomainError hierarchy', () => {
       new ExternalServiceError('aeropay', 'timeout'),
       new RateLimitError('too many requests'),
       new RepositoryError('orders insert returned no row'),
+      new ConfigError('CONFIG_INVALID', 'JWT_PRIVATE_KEY_BASE64 is not base64'),
     ];
 
     for (const error of samples) {
@@ -91,6 +93,15 @@ describe('DomainError hierarchy', () => {
     expect(error.statusCode).toBe(500);
     expect(error.code).toBe('REPOSITORY_INVARIANT_VIOLATION');
     expect(error.details).toEqual({ table: 'orders' });
+  });
+
+  it('ConfigError is a 500 carrying a boot-time config code', () => {
+    const error = new ConfigError('CONFIG_MISSING', 'JWT_PRIVATE_KEY_BASE64 not set', {
+      variable: 'JWT_PRIVATE_KEY_BASE64',
+    });
+    expect(error.statusCode).toBe(500);
+    expect(error.code).toBe('CONFIG_MISSING');
+    expect(error.details).toEqual({ variable: 'JWT_PRIVATE_KEY_BASE64' });
   });
 
   it('preserves cause when provided (Node error chaining)', () => {
