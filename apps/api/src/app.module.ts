@@ -17,6 +17,7 @@
  *   - SearchModule       (product search + dispensary discovery feed — /v1)
  *   - CartModule         (consumer cart CRUD, user-owned, dispensary-scoped — /v1)
  *   - CheckoutModule     (POST /v1/carts/:id/checkout — the atomic checkout txn)
+ *   - PaymentsModule     (Aeropay client + payment-method CRUD + webhook — /v1)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -38,6 +39,7 @@ import { DispensariesModule } from './modules/dispensaries/dispensaries.module.j
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
+import { PaymentsModule } from './modules/payments/payments.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 
 @Module({
@@ -61,6 +63,7 @@ import { SearchModule } from './modules/search/search.module.js';
     SearchModule,
     CartModule,
     CheckoutModule,
+    PaymentsModule,
   ],
 })
 export class AppModule {}

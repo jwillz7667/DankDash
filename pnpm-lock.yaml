@@ -65,6 +65,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@dankdash/aeropay':
+        specifier: workspace:*
+        version: link:../../packages/aeropay
       '@dankdash/compliance':
         specifier: workspace:*
         version: link:../../packages/compliance
