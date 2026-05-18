@@ -11,6 +11,9 @@ export {
   ExternalServiceError,
   RateLimitError,
   RepositoryError,
+  EncryptionError,
+  type EncryptionErrorCode,
+  type ErrorDetails,
   type ErrorEnvelope,
   toErrorEnvelope,
 } from './errors.js';

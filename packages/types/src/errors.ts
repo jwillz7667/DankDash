@@ -193,6 +193,34 @@ export class RateLimitError extends DomainError {
   }
 }
 
+export type EncryptionErrorCode =
+  | 'ENCRYPTION_CONFIG_INVALID'
+  | 'ENCRYPTION_FAILED'
+  | 'DECRYPTION_FAILED';
+
+/**
+ * Raised by the column-encryption helper when a master key is misconfigured,
+ * an encrypt operation fails (rare — generally a programmer error), or a
+ * decrypt fails because the ciphertext is tampered, the wrong master key was
+ * supplied, or the bound context (AAD) does not match the column the value
+ * was written to. Surfaces as INTERNAL_ERROR at the API boundary; alerts on
+ * the distinct code so operators can distinguish from generic 500s.
+ */
+export class EncryptionError extends DomainError {
+  public readonly code: EncryptionErrorCode;
+  public readonly statusCode = 500;
+
+  constructor(
+    code: EncryptionErrorCode,
+    message: string,
+    details: ErrorDetails = {},
+    cause?: unknown,
+  ) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
 export function toErrorEnvelope(error: DomainError, requestId?: string): ErrorEnvelope {
   return {
     error: {
