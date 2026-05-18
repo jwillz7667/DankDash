@@ -25,7 +25,16 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@dankdash/config": "workspace:^",
+    "@dankdash/types": "workspace:^",
+    "decimal.js": "^10.6.0",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
+    "uuidv7": "^1.2.1"
   }
 }
