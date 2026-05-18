@@ -1,0 +1,188 @@
+export type ErrorDetails = Readonly<Record<string, unknown>>;
+
+export interface ErrorEnvelope {
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly details: ErrorDetails;
+    readonly request_id?: string;
+  };
+}
+
+/**
+ * Base class for every error that crosses a domain boundary.
+ *
+ * Concrete subclasses set `code` (stable, machine-readable, SCREAMING_SNAKE_CASE)
+ * and `statusCode` (HTTP status). The NestJS global exception filter maps any
+ * `DomainError` to the standard error envelope from openapi-excerpt.yaml.
+ *
+ * Non-`DomainError` exceptions are treated as unexpected and surfaced as
+ * `INTERNAL_ERROR` — never let raw stack traces leave the process.
+ */
+export abstract class DomainError extends Error {
+  public abstract readonly code: string;
+  public abstract readonly statusCode: number;
+  public readonly details: ErrorDetails;
+  public override readonly cause?: unknown;
+
+  protected constructor(message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message);
+    this.name = this.constructor.name;
+    this.details = details;
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+    if (typeof Error.captureStackTrace === 'function') {
+      Error.captureStackTrace(this, this.constructor);
+    }
+  }
+}
+
+export class ValidationError extends DomainError {
+  public readonly code = 'VALIDATION_FAILED';
+  public readonly statusCode = 422;
+
+  constructor(message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+  }
+}
+
+export class AuthError extends DomainError {
+  public readonly code: string;
+  public readonly statusCode = 401;
+
+  constructor(
+    code:
+      | 'INVALID_CREDENTIALS'
+      | 'TOKEN_EXPIRED'
+      | 'TOKEN_INVALID'
+      | 'TOKEN_REVOKED'
+      | 'MFA_REQUIRED'
+      | 'KYC_REQUIRED'
+      | 'SESSION_EXPIRED',
+    message: string,
+    details: ErrorDetails = {},
+    cause?: unknown,
+  ) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
+export class ForbiddenError extends DomainError {
+  public readonly code = 'FORBIDDEN';
+  public readonly statusCode = 403;
+
+  constructor(message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+  }
+}
+
+export class NotFoundError extends DomainError {
+  public readonly code = 'NOT_FOUND';
+  public readonly statusCode = 404;
+
+  constructor(resource: string, identifier: string | number, cause?: unknown) {
+    super(`${resource} not found`, { resource, identifier }, cause);
+  }
+}
+
+export class ConflictError extends DomainError {
+  public readonly code: string;
+  public readonly statusCode = 409;
+
+  constructor(code: string, message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
+/**
+ * Raised when a cart, order, or related entity fails a Minnesota
+ * cannabis compliance rule. Always include the failing rule(s) in `details`
+ * — the API surfaces them so the client can give a precise UX message.
+ */
+export class ComplianceError extends DomainError {
+  public readonly code: string;
+  public readonly statusCode = 422;
+
+  constructor(
+    code:
+      | 'COMPLIANCE_AGE_REQUIRED'
+      | 'COMPLIANCE_KYC_REQUIRED'
+      | 'COMPLIANCE_HOURS_VIOLATION'
+      | 'COMPLIANCE_LIMIT_EXCEEDED'
+      | 'COMPLIANCE_GEOFENCE_VIOLATION'
+      | 'COMPLIANCE_LICENSE_INVALID'
+      | 'COMPLIANCE_PRODUCT_INVALID'
+      | 'COMPLIANCE_ID_SCAN_REQUIRED'
+      | 'COMPLIANCE_EVALUATION_FAILED',
+    message: string,
+    details: ErrorDetails = {},
+    cause?: unknown,
+  ) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
+export class InventoryError extends DomainError {
+  public readonly code = 'INSUFFICIENT_INVENTORY';
+  public readonly statusCode = 409;
+
+  constructor(message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+  }
+}
+
+export class PaymentError extends DomainError {
+  public readonly code: string;
+  public readonly statusCode: number;
+
+  constructor(
+    code:
+      | 'PAYMENT_DECLINED'
+      | 'PAYMENT_METHOD_INVALID'
+      | 'PAYMENT_PROVIDER_UNAVAILABLE'
+      | 'PAYMENT_WEBHOOK_SIGNATURE_INVALID'
+      | 'PAYMENT_AMOUNT_MISMATCH'
+      | 'REFUND_NOT_ALLOWED',
+    message: string,
+    details: ErrorDetails = {},
+    statusCode = 402,
+    cause?: unknown,
+  ) {
+    super(message, details, cause);
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
+export class ExternalServiceError extends DomainError {
+  public readonly code = 'EXTERNAL_SERVICE_ERROR';
+  public readonly statusCode = 502;
+
+  constructor(service: string, message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, { ...details, service }, cause);
+  }
+}
+
+export class RateLimitError extends DomainError {
+  public readonly code = 'RATE_LIMIT_EXCEEDED';
+  public readonly statusCode = 429;
+
+  constructor(message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+  }
+}
+
+export function toErrorEnvelope(error: DomainError, requestId?: string): ErrorEnvelope {
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      ...(requestId !== undefined ? { request_id: requestId } : {}),
+    },
+  };
+}

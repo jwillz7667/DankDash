@@ -1,0 +1,15 @@
+export {
+  DomainError,
+  ValidationError,
+  AuthError,
+  ForbiddenError,
+  NotFoundError,
+  ConflictError,
+  ComplianceError,
+  InventoryError,
+  PaymentError,
+  ExternalServiceError,
+  RateLimitError,
+  type ErrorEnvelope,
+  toErrorEnvelope,
+} from './errors.js';
