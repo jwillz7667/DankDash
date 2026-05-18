@@ -44,6 +44,7 @@ export const SEED_IDS = {
     stpManager: stableUuid('user', 'staff-stp-mgr'),
     mgOwner: stableUuid('user', 'staff-mg-owner'),
     customer1: stableUuid('user', 'customer-1'),
+    customer4: stableUuid('user', 'customer-4'),
   },
   product: {
     northernLights7g: stableUuid('product', 'p-flower-bg-2'),
