@@ -89,6 +89,15 @@ export default tseslint.config(
       // it is safe; we don't need a second linter complaining.
       '@typescript-eslint/dot-notation': 'off',
 
+      // Allow numbers (and string-typed enum-like values via booleans) in
+      // template literals. The intent of the strict rule is to flag accidental
+      // `${[]}` / `${{}}` interpolation; `${count}` is well-defined and
+      // formatting-equivalent to `String(count)`.
+      '@typescript-eslint/restrict-template-expressions': [
+        'error',
+        { allowNumber: true, allowBoolean: false, allowAny: false, allowNullish: false },
+      ],
+
       // Type-only imports kept as type imports.
       '@typescript-eslint/consistent-type-imports': [
         'error',
@@ -159,11 +168,15 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
-  // Test files relax a few rules.
+  // Test files relax a few rules. Non-null assertions on the result of an
+  // INSERT or a known-seeded read are idiomatic in tests — the assertion is
+  // the test (if the row really were null, the test would fail loudly on
+  // the next access). Same for explicit any when poking at internal state.
   {
     files: ['**/test/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-call': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',
