@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./scenarios": {
+      "types": "./dist/scenarios.d.ts",
+      "import": "./dist/scenarios.js"
     }
   },
   "files": [
@@ -32,10 +36,12 @@
     "@dankdash/config": "workspace:^",
     "@dankdash/db": "workspace:^",
     "@dankdash/types": "workspace:^",
-    "@testcontainers/postgresql": "^11.14.0",
     "drizzle-orm": "^0.45.2",
+    "pino": "^9.5.0",
     "postgres": "^3.4.9",
-    "testcontainers": "^11.14.0",
     "uuidv7": "^1.2.1"
+  },
+  "peerDependencies": {
+    "vitest": "^2.1.8"
   }
 }
