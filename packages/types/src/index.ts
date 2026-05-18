@@ -10,6 +10,7 @@ export {
   PaymentError,
   ExternalServiceError,
   RateLimitError,
+  RepositoryError,
   type ErrorEnvelope,
   toErrorEnvelope,
 } from './errors.js';

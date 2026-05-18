@@ -10,6 +10,7 @@ import {
   NotFoundError,
   PaymentError,
   RateLimitError,
+  RepositoryError,
   ValidationError,
   toErrorEnvelope,
 } from '../src/errors.js';
@@ -27,6 +28,7 @@ describe('DomainError hierarchy', () => {
       new PaymentError('PAYMENT_DECLINED', 'declined'),
       new ExternalServiceError('aeropay', 'timeout'),
       new RateLimitError('too many requests'),
+      new RepositoryError('orders insert returned no row'),
     ];
 
     for (const error of samples) {
@@ -82,6 +84,13 @@ describe('DomainError hierarchy', () => {
   it('ExternalServiceError tags details with the service name', () => {
     const error = new ExternalServiceError('metrc', 'gateway timeout', { status: 504 });
     expect(error.details).toEqual({ service: 'metrc', status: 504 });
+  });
+
+  it('RepositoryError is a 500 with a stable code for ops alerting', () => {
+    const error = new RepositoryError('orders insert returned no row', { table: 'orders' });
+    expect(error.statusCode).toBe(500);
+    expect(error.code).toBe('REPOSITORY_INVARIANT_VIOLATION');
+    expect(error.details).toEqual({ table: 'orders' });
   });
 
   it('preserves cause when provided (Node error chaining)', () => {

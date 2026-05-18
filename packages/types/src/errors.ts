@@ -167,6 +167,23 @@ export class ExternalServiceError extends DomainError {
   }
 }
 
+/**
+ * Raised when a repository layer detects an infrastructure invariant
+ * violation — e.g. `INSERT ... RETURNING *` returns zero rows, a row that
+ * was just written cannot be re-read, or a state transition references a
+ * row that has vanished. These are bugs, not user errors; the API surfaces
+ * them as INTERNAL_ERROR but the stable `REPOSITORY_INVARIANT_VIOLATION`
+ * code lets ops alert on them distinctly from generic 500s.
+ */
+export class RepositoryError extends DomainError {
+  public readonly code = 'REPOSITORY_INVARIANT_VIOLATION';
+  public readonly statusCode = 500;
+
+  constructor(message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+  }
+}
+
 export class RateLimitError extends DomainError {
   public readonly code = 'RATE_LIMIT_EXCEEDED';
   public readonly statusCode = 429;
