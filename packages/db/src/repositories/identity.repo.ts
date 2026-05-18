@@ -220,6 +220,11 @@ export class UserIdDocumentsRepository extends BaseRepository {
   }
 }
 
+export interface RotateSessionInput {
+  readonly predecessorId: string;
+  readonly successor: Omit<NewSession, 'id'> & { readonly id?: string };
+}
+
 export class SessionsRepository extends BaseRepository {
   async create(input: Omit<NewSession, 'id'> & { readonly id?: string }): Promise<Session> {
     const [row] = await this.db
@@ -230,6 +235,16 @@ export class SessionsRepository extends BaseRepository {
     return row;
   }
 
+  async findById(id: string): Promise<Session | null> {
+    const [row] = await this.db.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Returns any session matching the hash — including rotated or revoked
+   * ones. The caller inspects `rotatedAt`/`revokedAt` to decide whether the
+   * incoming refresh is fresh, a reuse attempt, or a stale revoked token.
+   */
   async findByRefreshTokenHash(hash: Uint8Array): Promise<Session | null> {
     const [row] = await this.db
       .select()
@@ -239,12 +254,55 @@ export class SessionsRepository extends BaseRepository {
     return row ?? null;
   }
 
+  /**
+   * Atomically issues a successor session and stamps the predecessor with
+   * `rotated_at` + `rotated_to`. The whole operation runs in a single
+   * transaction so a refresh either fully succeeds or leaves the
+   * predecessor still usable — we never end up with two simultaneously
+   * valid refresh tokens in the same family.
+   */
+  async rotate(input: RotateSessionInput): Promise<Session> {
+    return this.db.transaction(async (tx) => {
+      const successorId = input.successor.id ?? newId();
+      const [successor] = await tx
+        .insert(sessions)
+        .values({ ...input.successor, id: successorId })
+        .returning();
+      if (successor === undefined) throw new RepositoryError('sessions insert returned no row');
+      const [predecessor] = await tx
+        .update(sessions)
+        .set({ rotatedAt: new Date(), rotatedTo: successorId })
+        .where(and(eq(sessions.id, input.predecessorId), isNull(sessions.rotatedAt)))
+        .returning({ id: sessions.id });
+      if (predecessor === undefined) {
+        throw new RepositoryError('predecessor session unavailable for rotation', {
+          predecessorId: input.predecessorId,
+        });
+      }
+      return successor;
+    });
+  }
+
   async touch(id: string, at: Date): Promise<void> {
     await this.db.update(sessions).set({ lastUsedAt: at }).where(eq(sessions.id, id));
   }
 
   async revoke(id: string): Promise<void> {
     await this.db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, id));
+  }
+
+  /**
+   * Revokes every non-revoked row in a refresh-token family. Called when a
+   * reuse is detected: every chain descended from the original login is
+   * burned so the attacker holding the stolen token cannot continue. The
+   * legitimate user is forced to log in again.
+   */
+  async revokeFamily(familyId: string): Promise<number> {
+    const result = await this.db
+      .update(sessions)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(sessions.familyId, familyId), isNull(sessions.revokedAt)));
+    return result.count;
   }
 
   async revokeAllForUser(userId: string): Promise<void> {

@@ -26,6 +26,7 @@ export {
 } from './dispensaries.repo.js';
 export {
   type CreateUserAddressInput,
+  type RotateSessionInput,
   SessionsRepository,
   UserAddressesRepository,
   UserIdDocumentsRepository,
