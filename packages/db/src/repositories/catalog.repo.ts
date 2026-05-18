@@ -290,6 +290,36 @@ export class DispensaryListingsRepository extends BaseRepository {
   }
 
   /**
+   * Vendor surface — every listing the dispensary owns, active or not. Inactive
+   * rows are still surfaced so the vendor portal can reactivate them without
+   * re-creating from scratch (and re-issuing a SKU collision pre-flight).
+   * Sorted by updated-then-created so a recent edit lands at the top.
+   */
+  async listAllForDispensary(dispensaryId: string): Promise<readonly DispensaryListing[]> {
+    return this.db
+      .select()
+      .from(dispensaryListings)
+      .where(eq(dispensaryListings.dispensaryId, dispensaryId))
+      .orderBy(desc(dispensaryListings.updatedAt), desc(dispensaryListings.createdAt));
+  }
+
+  /**
+   * Vendor-scoped read — returns the listing only if it belongs to the given
+   * dispensary. Crossing dispensary boundaries returns `null`, which the
+   * service translates to a 404 so cross-vendor probing cannot distinguish
+   * "this listing does not exist" from "this listing belongs to another
+   * dispensary".
+   */
+  async findByIdForDispensary(id: string, dispensaryId: string): Promise<DispensaryListing | null> {
+    const [row] = await this.db
+      .select()
+      .from(dispensaryListings)
+      .where(and(eq(dispensaryListings.id, id), eq(dispensaryListings.dispensaryId, dispensaryId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
    * Public menu read — listings joined to their products in a single round
    * trip, filtered to what a customer can actually buy: active+in-stock
    * listing AND active+non-deleted product. Sorted by product brand then
@@ -341,6 +371,43 @@ export class DispensaryListingsRepository extends BaseRepository {
       .where(eq(dispensaryListings.id, id))
       .returning();
     return row ?? null;
+  }
+
+  /**
+   * Vendor-scoped update — atomic combined existence + ownership check via
+   * `WHERE id = ? AND dispensary_id = ?`. Cross-dispensary attempts match
+   * zero rows and return `null`, which the service maps to 404 (matching
+   * the find behaviour so the response does not distinguish "missing" from
+   * "owned by another vendor").
+   */
+  async updateForDispensary(
+    id: string,
+    dispensaryId: string,
+    patch: Partial<Omit<NewDispensaryListing, 'id' | 'createdAt' | 'dispensaryId'>>,
+  ): Promise<DispensaryListing | null> {
+    const [row] = await this.db
+      .update(dispensaryListings)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(and(eq(dispensaryListings.id, id), eq(dispensaryListings.dispensaryId, dispensaryId)))
+      .returning();
+    return row ?? null;
+  }
+
+  /**
+   * Vendor-scoped soft delete — flips `is_active` to false. The schema has no
+   * `deleted_at` column on listings because historical orders reference the
+   * row by FK (`ON DELETE RESTRICT`); deletion in this context means the
+   * listing leaves the public menu surface and the SKU is released for a new
+   * listing to claim. Returns `true` when the row was found and flipped,
+   * `false` when no matching row exists for the dispensary.
+   */
+  async softDeleteForDispensary(id: string, dispensaryId: string): Promise<boolean> {
+    const [row] = await this.db
+      .update(dispensaryListings)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(dispensaryListings.id, id), eq(dispensaryListings.dispensaryId, dispensaryId)))
+      .returning({ id: dispensaryListings.id });
+    return row !== undefined;
   }
 
   /**

@@ -5,12 +5,54 @@
  * product to a specific dispensary at a specific price with a specific
  * quantity-on-hand. The vendor surface (list/create/patch/delete the
  * dispensary's own listings) is RLS-scoped via `SET LOCAL
- * app.current_dispensary_id` so cross-dispensary access returns 404
- * rather than 403 (avoiding info leak about other vendors).
+ * app.current_dispensary_id` inside each operation's transaction, so a
+ * future Phase that swaps the vendor surface onto an `app_vendor`
+ * connection pool picks up RLS without touching the service. In the
+ * current single-role deployment the application-layer
+ * `WHERE dispensary_id = ?` in each repo method is the primary guard,
+ * and cross-dispensary access surfaces as 404 (not 403) so a probing
+ * call cannot distinguish "this listing does not exist" from "this
+ * listing belongs to another vendor".
  *
- * Controllers, services, and DI wiring land in Phase 4.4.
+ * AuthModule is imported so RolesGuard is available for the vendor
+ * controller's @UseGuards(RolesGuard); DispensariesModule is imported so
+ * the same DispensaryStaffRepository singleton serves the
+ * VendorContextGuard staff-membership check that the admin dispensaries
+ * controller already uses for activation/suspension. JwtAuthGuard is
+ * already bound globally in the root composition and authenticates
+ * every non-@Public request before the route-local guards run.
+ *
+ * VendorListingsService is constructed with the raw Database and a
+ * scoped-repo factory rather than with the pool's repository singletons
+ * — every operation runs inside a tx that needs tx-bound repos, and the
+ * factory pattern keeps the service unit-testable.
  */
-import { Module } from '@nestjs/common';
+import { DispensaryListingsRepository, ProductsRepository, type Database } from '@dankdash/db';
+import { Module, type FactoryProvider } from '@nestjs/common';
+import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
+import { AuthModule } from '../auth/auth.module.js';
+import { DispensariesModule } from '../dispensaries/dispensaries.module.js';
+import { VendorContextGuard } from './vendor/vendor-context.guard.js';
+import { VendorListingsController } from './vendor/vendor-listings.controller.js';
+import { VendorListingsService, type ScopedRepos } from './vendor/vendor-listings.service.js';
 
-@Module({})
+const vendorListingsServiceProvider: FactoryProvider<VendorListingsService> = {
+  provide: VendorListingsService,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): VendorListingsService =>
+    new VendorListingsService(
+      db,
+      (scopedDb): ScopedRepos => ({
+        listings: new DispensaryListingsRepository(scopedDb),
+        products: new ProductsRepository(scopedDb),
+      }),
+    ),
+};
+
+@Module({
+  imports: [AuthModule, DispensariesModule],
+  controllers: [VendorListingsController],
+  providers: [vendorListingsServiceProvider, VendorContextGuard],
+  exports: [VendorListingsService],
+})
 export class ListingsModule {}

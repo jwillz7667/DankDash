@@ -1,5 +1,10 @@
 export * as schema from './schema/index.js';
 export * from './schema/index.js';
+// Re-export the `sql` tagged-template helper so application code that needs
+// raw SQL fragments (e.g. set_config for RLS GUCs) does not have to take a
+// direct dependency on `drizzle-orm`. The shape mirrors what the repos use
+// internally, so a single import surface stays consistent.
+export { sql } from 'drizzle-orm';
 export {
   createPool,
   createPoolFromEnv,
