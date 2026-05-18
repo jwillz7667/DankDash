@@ -4,3 +4,13 @@ export {
   type CategoryListResponse,
   type CategoryResponse,
 } from './category.dto.js';
+export {
+  LabResultResponseSchema,
+  ProductResponseSchema,
+  ProductTypeSchema,
+  StrainTypeSchema,
+  type LabResultResponse,
+  type ProductResponse,
+  type ProductTypeDto,
+  type StrainTypeDto,
+} from './product.dto.js';
