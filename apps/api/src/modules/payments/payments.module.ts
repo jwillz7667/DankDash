@@ -31,6 +31,7 @@ import {
   type TokenCache,
 } from '@dankdash/aeropay';
 import {
+  LedgerEntriesRepository,
   OrdersRepository,
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
@@ -44,7 +45,11 @@ import { REDIS_CLIENT } from '../../infrastructure/redis.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { AeropayWebhookController } from './aeropay-webhook.controller.js';
 import { PaymentMethodsController } from './payment-methods.controller.js';
-import { PaymentMethodsService } from './payment-methods.service.js';
+import {
+  PaymentMethodsService,
+  type SettlementScopedRepos,
+  type SettlementScopedReposFactory,
+} from './payment-methods.service.js';
 import { RedisTokenCache } from './redis-token-cache.js';
 import { AEROPAY_CLIENT, AEROPAY_WEBHOOK_VERIFIER } from './tokens.js';
 
@@ -119,6 +124,15 @@ const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
   useFactory: (db: Database): OrdersRepository => new OrdersRepository(db),
 };
 
+// Closure factory used by PaymentMethodsService.handlePaymentSettled to
+// re-bind the write repos to the transactional handle. Stateless — the
+// same closure is reused for every webhook invocation; only the `db`
+// passed in changes.
+const settlementReposFor: SettlementScopedReposFactory = (db: Database): SettlementScopedRepos => ({
+  paymentTransactions: new PaymentTransactionsRepository(db),
+  ledgerEntries: new LedgerEntriesRepository(db),
+});
+
 // Service is wired through a FactoryProvider rather than a class-token so we
 // don't depend on SWC emitting `design:paramtypes` for the constructor.
 // Symbol-token deps (AEROPAY_CLIENT) and class-token deps are passed
@@ -129,14 +143,17 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     PaymentMethodsRepository,
     PaymentTransactionsRepository,
     OrdersRepository,
+    DRIZZLE_DB,
     AEROPAY_CLIENT,
   ],
   useFactory: (
     repo: PaymentMethodsRepository,
     paymentTransactions: PaymentTransactionsRepository,
     orders: OrdersRepository,
+    db: Database,
     client: AeropayClient,
-  ): PaymentMethodsService => new PaymentMethodsService(repo, paymentTransactions, orders, client),
+  ): PaymentMethodsService =>
+    new PaymentMethodsService(repo, paymentTransactions, orders, db, settlementReposFor, client),
 };
 
 const providers: Provider[] = [

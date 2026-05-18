@@ -23,6 +23,9 @@ import {
   type AeropayWebhookOutcome,
 } from '@dankdash/aeropay';
 import {
+  type Database,
+  type LedgerEntry,
+  type NewLedgerEntry,
   type NewPaymentMethod,
   type NewPaymentTransaction,
   type Order,
@@ -34,9 +37,13 @@ import {
   type PaymentTransaction,
   type PaymentTransactionsRepository,
 } from '@dankdash/db';
-import { ConflictError, NotFoundError, PaymentError } from '@dankdash/types';
+import { ConflictError, NotFoundError, PaymentError, RepositoryError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
-import { PaymentMethodsService } from './payment-methods.service.js';
+import {
+  PaymentMethodsService,
+  type SettlementScopedRepos,
+  type SettlementScopedReposFactory,
+} from './payment-methods.service.js';
 import type { AeropayClientLike } from './tokens.js';
 
 type UpsertPatch = Pick<PaymentMethod, 'aeropayPaymentMethodRef' | 'bankName' | 'last4' | 'status'>;
@@ -56,9 +63,76 @@ type TxStatusPatch = Partial<
 const USER_ID = '01935f3d-0000-7000-8000-000000000001';
 const OTHER_USER_ID = '01935f3d-0000-7000-8000-000000000002';
 const ORDER_ID = '01935f3d-0000-7000-8000-0000000000d1';
+const DISPENSARY_ID = '01935f3d-0000-7000-8000-0000000000a1';
+const DRIVER_ID = '01935f3d-0000-7000-8000-0000000000c1';
+const DELIVERY_ADDRESS_ID = '01935f3d-0000-7000-8000-0000000000b1';
 const PAYMENT_TX_ID = '01935f3d-0000-7000-8000-0000000000e1';
 const AEROPAY_PAYMENT_ID = 'pay_aeropay_abc123';
 const WEBHOOK_OCCURRED_AT = new Date('2026-05-02T12:00:00.000Z');
+
+// Sample order math (all integer cents):
+//   subtotal       = 10_000
+//   cannabis_tax   = 10% * 10_000      = 1_000
+//   sales_tax      = banker(11_000 * 6.875%) = 756
+//   delivery_fee   = 500
+//   driver_tip     = 300
+//   discount       = 0
+//   total          = 12_556
+//   platform_fee   = banker(10_000 * 15%)  = 1_500
+//   dispensary     = 10_000 - 1_500 - 0    = 8_500
+//   driver_payout  = 500 + 300             = 800
+// Sum DR = 12_556 (clearing) + 12_556 (customer distribution) = 25_112
+// Sum CR = 12_556 (customer settle) + 8_500 + 1_500 + 1_000 + 756 + 800 = 25_112 ✓
+const SAMPLE_ORDER_SUBTOTAL_CENTS = 10_000;
+const SAMPLE_ORDER_CANNABIS_TAX_CENTS = 1_000;
+const SAMPLE_ORDER_SALES_TAX_CENTS = 756;
+const SAMPLE_ORDER_DELIVERY_FEE_CENTS = 500;
+const SAMPLE_ORDER_DRIVER_TIP_CENTS = 300;
+const SAMPLE_ORDER_DISCOUNT_CENTS = 0;
+const SAMPLE_ORDER_TOTAL_CENTS = 12_556;
+const SAMPLE_ORDER_PLATFORM_FEE_CENTS = 1_500;
+const SAMPLE_ORDER_DISPENSARY_SHARE_CENTS = 8_500;
+const SAMPLE_ORDER_DRIVER_PAYOUT_CENTS = 800;
+
+function makeOrder(overrides: Partial<Order> = {}): Order {
+  return {
+    id: ORDER_ID,
+    shortCode: 'DD-ABC123',
+    userId: USER_ID,
+    dispensaryId: DISPENSARY_ID,
+    driverId: DRIVER_ID,
+    deliveryAddressId: DELIVERY_ADDRESS_ID,
+    status: 'placed',
+    statusChangedAt: new Date('2026-05-01T00:00:00.000Z'),
+    subtotalCents: SAMPLE_ORDER_SUBTOTAL_CENTS,
+    cannabisTaxCents: SAMPLE_ORDER_CANNABIS_TAX_CENTS,
+    salesTaxCents: SAMPLE_ORDER_SALES_TAX_CENTS,
+    deliveryFeeCents: SAMPLE_ORDER_DELIVERY_FEE_CENTS,
+    driverTipCents: SAMPLE_ORDER_DRIVER_TIP_CENTS,
+    discountCents: SAMPLE_ORDER_DISCOUNT_CENTS,
+    totalCents: SAMPLE_ORDER_TOTAL_CENTS,
+    complianceCheckPayload: {},
+    deliveryAddressSnapshot: {},
+    placedAt: new Date('2026-05-01T00:00:00.000Z'),
+    acceptedAt: null,
+    preparedAt: null,
+    pickedUpAt: null,
+    deliveredAt: null,
+    canceledAt: null,
+    canceledBy: null,
+    cancelReason: null,
+    deliveryIdScanRef: null,
+    deliveryIdScanPassed: null,
+    deliveryIdScanAt: null,
+    customerRating: null,
+    customerReview: null,
+    dispensaryRating: null,
+    driverRating: null,
+    createdAt: new Date('2026-05-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+    ...overrides,
+  };
+}
 
 function makeMethod(overrides: Partial<PaymentMethod> = {}): PaymentMethod {
   return {
@@ -84,7 +158,7 @@ function makePaymentTransaction(overrides: Partial<PaymentTransaction> = {}): Pa
     paymentMethodId: null,
     provider: 'aeropay',
     providerRef: AEROPAY_PAYMENT_ID,
-    amountCents: 4000,
+    amountCents: SAMPLE_ORDER_TOTAL_CENTS,
     status: 'initiated',
     failureCode: null,
     failureReason: null,
@@ -265,7 +339,14 @@ class FakePaymentTransactionsRepo {
 }
 
 class FakeOrdersRepo {
+  rows: Order[] = [];
   transitionStatusCalls: OrderStatusTransitionInput[] = [];
+  findByIdCalls: string[] = [];
+
+  findById = (id: string): Promise<Order | null> => {
+    this.findByIdCalls.push(id);
+    return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
+  };
 
   transitionStatus = (input: OrderStatusTransitionInput): Promise<Order> => {
     this.transitionStatusCalls.push(input);
@@ -275,24 +356,84 @@ class FakeOrdersRepo {
   };
 }
 
+type SettlementEntryInput = Omit<NewLedgerEntry, 'id'> & { readonly id?: string };
+
+class FakeLedgerEntriesRepo {
+  rows: LedgerEntry[] = [];
+  recordTransactionCalls: Array<readonly SettlementEntryInput[]> = [];
+  private idSeq = 1;
+
+  recordTransaction = (
+    entries: readonly SettlementEntryInput[],
+  ): Promise<readonly LedgerEntry[]> => {
+    this.recordTransactionCalls.push(entries);
+    if (entries.length === 0) {
+      throw new RangeError('recordTransaction: at least one entry required');
+    }
+    let debit = 0;
+    let credit = 0;
+    for (const e of entries) {
+      debit += e.debitCents ?? 0;
+      credit += e.creditCents ?? 0;
+    }
+    if (debit !== credit) {
+      throw new RangeError(
+        `recordTransaction: unbalanced ledger — debits=${String(debit)} credits=${String(credit)}`,
+      );
+    }
+    const now = new Date('2026-05-02T13:00:00.000Z');
+    const materialized: LedgerEntry[] = entries.map((e) => ({
+      id: e.id ?? `01935f3d-0000-7000-8000-${String(0x5000 + this.idSeq++).padStart(12, '0')}`,
+      orderId: e.orderId ?? null,
+      payoutId: e.payoutId ?? null,
+      refundId: e.refundId ?? null,
+      accountType: e.accountType,
+      accountRef: e.accountRef ?? null,
+      debitCents: e.debitCents ?? 0,
+      creditCents: e.creditCents ?? 0,
+      description: e.description,
+      occurredAt: e.occurredAt ?? now,
+      createdAt: now,
+    }));
+    this.rows.push(...materialized);
+    return Promise.resolve(materialized);
+  };
+}
+
 function build(): {
   service: PaymentMethodsService;
   repo: FakePaymentMethodsRepo;
   txRepo: FakePaymentTransactionsRepo;
   ordersRepo: FakeOrdersRepo;
+  ledgerRepo: FakeLedgerEntriesRepo;
   aeropay: FakeAeropayClient;
 } {
   const repo = new FakePaymentMethodsRepo();
   const txRepo = new FakePaymentTransactionsRepo();
   const ordersRepo = new FakeOrdersRepo();
+  const ledgerRepo = new FakeLedgerEntriesRepo();
   const aeropay = new FakeAeropayClient();
+  // The settlement path opens a single transaction. The fake just hands the
+  // service back the same singleton repos via the factory closure — there is
+  // no real tx isolation to model in unit tests, only the ordering guarantee
+  // that the status flip and the ledger insert both run.
+  const fakeDb = {
+    transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
+  } as unknown as Database;
+  const settlementReposFor: SettlementScopedReposFactory = () =>
+    ({
+      paymentTransactions: txRepo,
+      ledgerEntries: ledgerRepo,
+    }) as unknown as SettlementScopedRepos;
   const service = new PaymentMethodsService(
     repo as unknown as PaymentMethodsRepository,
     txRepo as unknown as PaymentTransactionsRepository,
     ordersRepo as unknown as OrdersRepository,
+    fakeDb,
+    settlementReposFor,
     aeropay,
   );
-  return { service, repo, txRepo, ordersRepo, aeropay };
+  return { service, repo, txRepo, ordersRepo, ledgerRepo, aeropay };
 }
 
 describe('PaymentMethodsService.list', () => {
@@ -760,13 +901,14 @@ describe('PaymentMethodsService.applyWebhook — payment.authorized', () => {
 
 describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
   it('flips an authorized row to settled and stamps settledAt', async () => {
-    const { service, txRepo } = build();
+    const { service, txRepo, ordersRepo } = build();
     txRepo.rows.push(
       makePaymentTransaction({
         status: 'authorized',
         authorizedAt: new Date('2026-05-02T10:00:00.000Z'),
       }),
     );
+    ordersRepo.rows.push(makeOrder());
 
     await service.applyWebhook({
       type: 'payment.settled',
@@ -786,8 +928,9 @@ describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
   });
 
   it('also accepts a settle that arrives without an intermediate authorize', async () => {
-    const { service, txRepo } = build();
+    const { service, txRepo, ordersRepo } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+    ordersRepo.rows.push(makeOrder());
 
     await service.applyWebhook({
       type: 'payment.settled',
@@ -807,7 +950,7 @@ describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
   });
 
   it('is a no-op when the row is already settled (replay)', async () => {
-    const { service, txRepo } = build();
+    const { service, txRepo, ledgerRepo } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
 
     await service.applyWebhook({
@@ -819,10 +962,13 @@ describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+    // Replay must short-circuit before any ledger write — otherwise a
+    // repeated webhook would double-credit the dispensary.
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 
   it('refuses to re-settle a row that is already failed (terminal guard)', async () => {
-    const { service, txRepo } = build();
+    const { service, txRepo, ledgerRepo } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'failed' }));
 
     await service.applyWebhook({
@@ -834,10 +980,11 @@ describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 
   it('refuses to settle a canceled row (terminal guard)', async () => {
-    const { service, txRepo } = build();
+    const { service, txRepo, ledgerRepo } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'canceled' }));
 
     await service.applyWebhook({
@@ -849,10 +996,11 @@ describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 
   it('does nothing when no payment_transactions row matches', async () => {
-    const { service, txRepo } = build();
+    const { service, txRepo, ledgerRepo } = build();
 
     await service.applyWebhook({
       type: 'payment.settled',
@@ -863,6 +1011,279 @@ describe('PaymentMethodsService.applyWebhook — payment.settled', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.settled distribution', () => {
+  it('writes a balanced 8-leg ledger transaction for a fully-formed order', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    ordersRepo.rows.push(makeOrder());
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_1',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(1);
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    expect(entries).toHaveLength(8);
+
+    // Balance check is enforced by the fake's recordTransaction guard,
+    // but assert it again here so a refactor that bypasses the guard
+    // still fails this test loudly.
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(2 * SAMPLE_ORDER_TOTAL_CENTS);
+    expect(credits).toBe(2 * SAMPLE_ORDER_TOTAL_CENTS);
+
+    // Settlement leg: clearing DR + customer CR for the order total.
+    expect(entries[0]).toMatchObject({
+      orderId: ORDER_ID,
+      accountType: 'aeropay_clearing',
+      accountRef: null,
+      debitCents: SAMPLE_ORDER_TOTAL_CENTS,
+      creditCents: 0,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+    });
+    expect(entries[1]).toMatchObject({
+      orderId: ORDER_ID,
+      accountType: 'customer',
+      accountRef: USER_ID,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_TOTAL_CENTS,
+    });
+
+    // Distribution funding DR re-debits the customer for the full total.
+    expect(entries[2]).toMatchObject({
+      accountType: 'customer',
+      accountRef: USER_ID,
+      debitCents: SAMPLE_ORDER_TOTAL_CENTS,
+      creditCents: 0,
+    });
+
+    // Distribution credits — each party receives its computed share.
+    expect(entries[3]).toMatchObject({
+      accountType: 'dispensary',
+      accountRef: DISPENSARY_ID,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_DISPENSARY_SHARE_CENTS,
+    });
+    expect(entries[4]).toMatchObject({
+      accountType: 'platform_revenue',
+      accountRef: null,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_PLATFORM_FEE_CENTS,
+    });
+    expect(entries[5]).toMatchObject({
+      accountType: 'cannabis_tax',
+      accountRef: null,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_CANNABIS_TAX_CENTS,
+    });
+    expect(entries[6]).toMatchObject({
+      accountType: 'sales_tax',
+      accountRef: null,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_SALES_TAX_CENTS,
+    });
+    expect(entries[7]).toMatchObject({
+      accountType: 'driver',
+      accountRef: DRIVER_ID,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_DRIVER_PAYOUT_CENTS,
+    });
+
+    // Single-side invariant — every row has exactly one of debit/credit
+    // greater than zero. Mirrors the `ledger_one_side_only` CHECK.
+    for (const entry of entries) {
+      const dr = entry.debitCents ?? 0;
+      const cr = entry.creditCents ?? 0;
+      expect((dr > 0 && cr === 0) || (cr > 0 && dr === 0)).toBe(true);
+    }
+  });
+
+  it('subtracts platform fee and discount from the dispensary share', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    // Same order shape but with a $5 discount applied. dispensaryShare
+    // becomes 10_000 - 1_500 - 500 = 8_000, total drops by 500.
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - 500;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: 500,
+        totalCents: discountedTotal,
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_2',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    const dispensaryLeg = entries.find((e) => e.accountType === 'dispensary');
+    expect(dispensaryLeg?.creditCents).toBe(8_000);
+
+    // Total ledger movement still balances at 2 * (discounted) total.
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    expect(debits).toBe(2 * discountedTotal);
+  });
+
+  it('credits driver with delivery_fee + tip and uses driverId as accountRef', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    ordersRepo.rows.push(makeOrder());
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_3',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const driverLeg = (ledgerRepo.recordTransactionCalls[0] ?? []).find(
+      (e) => e.accountType === 'driver',
+    );
+    expect(driverLeg).toBeDefined();
+    expect(driverLeg?.creditCents).toBe(
+      SAMPLE_ORDER_DELIVERY_FEE_CENTS + SAMPLE_ORDER_DRIVER_TIP_CENTS,
+    );
+    expect(driverLeg?.accountRef).toBe(DRIVER_ID);
+  });
+
+  it('parks the driver credit with accountRef=null when the order has no driver assigned', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    ordersRepo.rows.push(makeOrder({ driverId: null }));
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_4',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const driverLeg = (ledgerRepo.recordTransactionCalls[0] ?? []).find(
+      (e) => e.accountType === 'driver',
+    );
+    expect(driverLeg).toBeDefined();
+    expect(driverLeg?.accountRef).toBeNull();
+    expect(driverLeg?.creditCents).toBe(
+      SAMPLE_ORDER_DELIVERY_FEE_CENTS + SAMPLE_ORDER_DRIVER_TIP_CENTS,
+    );
+  });
+
+  it('omits zero-amount conditional legs to satisfy the ledger_one_side_only CHECK', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    // Order shape: non-cannabis lines (so cannabis_tax=0), no tip,
+    // no discount. Cannabis/tip legs should be absent from the ledger;
+    // the remaining legs must still balance against the new total.
+    //   subtotal=10_000  cannabis_tax=0  sales_tax=687  delivery=500
+    //   tip=0  discount=0  total=11_187
+    //   platform=1_500  dispensary=8_500  driver_payout=500
+    const total = 10_000 + 0 + 687 + 500 + 0 - 0;
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized', amountCents: total }));
+    ordersRepo.rows.push(
+      makeOrder({
+        cannabisTaxCents: 0,
+        salesTaxCents: 687,
+        driverTipCents: 0,
+        totalCents: total,
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_5',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    // 8 - 1 (no cannabis tax) = 7 legs.
+    expect(entries).toHaveLength(7);
+    expect(entries.find((e) => e.accountType === 'cannabis_tax')).toBeUndefined();
+
+    // Driver still credited the delivery fee even though tip is 0.
+    const driverLeg = entries.find((e) => e.accountType === 'driver');
+    expect(driverLeg?.creditCents).toBe(500);
+
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(2 * total);
+    expect(credits).toBe(2 * total);
+
+    // Every persisted leg has exactly one side non-zero.
+    for (const entry of entries) {
+      const dr = entry.debitCents ?? 0;
+      const cr = entry.creditCents ?? 0;
+      expect((dr > 0 && cr === 0) || (cr > 0 && dr === 0)).toBe(true);
+    }
+  });
+
+  it('throws RepositoryError when the order is missing for a settling payment', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    // No order seeded — orders.findById returns null.
+
+    await expect(
+      service.applyWebhook({
+        type: 'payment.settled',
+        eventId: 'evt_dist_6',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+  });
+
+  it('throws RepositoryError when the order total drifts from the payment amount', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized', amountCents: 12_000 }));
+    ordersRepo.rows.push(makeOrder()); // totalCents = 12_556
+
+    await expect(
+      service.applyWebhook({
+        type: 'payment.settled',
+        eventId: 'evt_dist_7',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
+  it('throws RepositoryError when discount + platform fee exceeds subtotal', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    // subtotal=10_000, platform=1_500, discount=9_000 → dispensaryShare = -500
+    const total = 10_000 + 1_000 + 756 + 500 + 300 - 9_000;
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized', amountCents: total }));
+    ordersRepo.rows.push(makeOrder({ discountCents: 9_000, totalCents: total }));
+
+    await expect(
+      service.applyWebhook({
+        type: 'payment.settled',
+        eventId: 'evt_dist_8',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 });
 

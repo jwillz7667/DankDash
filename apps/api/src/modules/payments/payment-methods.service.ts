@@ -32,13 +32,18 @@
  */
 import { type AeropayBankAccount, type AeropayWebhookOutcome } from '@dankdash/aeropay';
 import {
+  type Database,
+  type LedgerEntriesRepository,
+  type NewLedgerEntry,
+  type Order,
   type OrdersRepository,
   type PaymentMethod,
   type PaymentMethodsRepository,
   type PaymentTransaction,
   type PaymentTransactionsRepository,
 } from '@dankdash/db';
-import { ConflictError, NotFoundError, PaymentError } from '@dankdash/types';
+import { computePlatformFeeCents } from '@dankdash/pricing';
+import { ConflictError, NotFoundError, PaymentError, RepositoryError } from '@dankdash/types';
 import { Inject, Injectable } from '@nestjs/common';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
 import type {
@@ -47,12 +52,27 @@ import type {
   PaymentMethodResponse,
 } from './dto/index.js';
 
+/**
+ * Repositories the settlement path re-binds to the transactional handle
+ * so the status flip and the distribution ledger writes commit atomically.
+ * Kept narrow on purpose — only the writes that must share the tx are
+ * exposed; pre-tx reads still use the singleton repos on the service.
+ */
+export interface SettlementScopedRepos {
+  readonly paymentTransactions: PaymentTransactionsRepository;
+  readonly ledgerEntries: LedgerEntriesRepository;
+}
+
+export type SettlementScopedReposFactory = (db: Database) => SettlementScopedRepos;
+
 @Injectable()
 export class PaymentMethodsService {
   constructor(
     private readonly repo: PaymentMethodsRepository,
     private readonly paymentTransactions: PaymentTransactionsRepository,
     private readonly orders: OrdersRepository,
+    private readonly db: Database,
+    private readonly settlementReposFor: SettlementScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
   ) {}
 
@@ -301,14 +321,52 @@ export class PaymentMethodsService {
     // re-settle — drop a late settle silently to avoid clobbering the
     // terminal state.
     if (tx.status !== 'initiated' && tx.status !== 'authorized') return;
-    await this.paymentTransactions.updateStatus(tx.id, 'settled', {
-      settledAt: occurredAt,
+
+    // The order is the source of truth for the distribution math. The
+    // payment_transactions row only carries the total — splits live on
+    // the order header (subtotal, taxes, delivery fee, tip, discount,
+    // driverId). A missing order while a payment_transactions row
+    // exists is a data-integrity violation (the FK should have
+    // prevented it), so fail loudly rather than swallow the webhook.
+    const order = await this.orders.findById(tx.orderId);
+    if (order === null) {
+      throw new RepositoryError(
+        `handlePaymentSettled: order ${tx.orderId} missing for payment_transactions ${tx.id}`,
+      );
+    }
+    if (order.totalCents !== tx.amountCents) {
+      // Total drift between the order header and the persisted payment
+      // amount would silently misallocate funds. The checkout txn pins
+      // these to the same value at creation; a divergence here is
+      // either tampering or a buggy refund flow that didn't reset the
+      // amount. Refuse to distribute on stale numbers.
+      throw new RepositoryError(
+        `handlePaymentSettled: order ${order.id} total (${String(order.totalCents)}) ` +
+          `does not match payment_transactions amount (${String(tx.amountCents)})`,
+      );
+    }
+
+    const entries = buildSettlementEntries(order, occurredAt);
+
+    // One transaction so the `settled` flip and the eight ledger rows
+    // (or fewer when some legs net to zero) commit together. Either
+    // both land or neither does — the replay guard above prevents a
+    // partial state on Aeropay's retry.
+    await this.db.transaction(async (txDb) => {
+      const scoped = this.settlementReposFor(txDb);
+      const updated = await scoped.paymentTransactions.updateStatus(tx.id, 'settled', {
+        settledAt: occurredAt,
+      });
+      if (updated === null) {
+        // We re-read the row inside the tx; if updateStatus returns
+        // null something else deleted it between our read and the
+        // write. Throwing rolls back the ledger insert that follows.
+        throw new RepositoryError(
+          `handlePaymentSettled: payment_transactions ${tx.id} vanished mid-settlement`,
+        );
+      }
+      await scoped.ledgerEntries.recordTransaction(entries);
     });
-    // Phase 6.4 lands the distribution ledger writes here:
-    //   DR customer / CR dispensary + platform_revenue + cannabis_tax
-    //   + sales_tax + driver. Until then, the only ledger movement is
-    //   the placement entries written by CheckoutService (customer DR /
-    //   aeropay_clearing CR), which already exist.
   }
 
   private async handlePaymentFailed(
@@ -415,4 +473,163 @@ function extractFailureDetails(raw: Readonly<Record<string, unknown>>): {
   const failureCode = typeof obj['failure_code'] === 'string' ? obj['failure_code'] : null;
   const failureReason = typeof obj['failure_reason'] === 'string' ? obj['failure_reason'] : null;
   return { failureCode, failureReason };
+}
+
+/**
+ * Distribution ledger entries written when an Aeropay payment settles.
+ * One balanced double-entry transaction covering two logical movements
+ * the spec (Phase 6.4) calls out separately:
+ *
+ *   1. Settlement: Aeropay clearing → customer (clears the IOU the
+ *      placement entries opened — `aeropay_clearing` DR matches the
+ *      placement-time CR; `customer` CR matches the placement-time DR).
+ *   2. Distribution: customer → dispensary + platform_revenue +
+ *      cannabis_tax + sales_tax + driver. Re-debits the customer to
+ *      fund the allocation; each party's account is credited its
+ *      share. Customer's lifetime balance settles to the cumulative
+ *      spend (DR placement + DR distribution - CR settlement = +total
+ *      per delivered order), which the auditor reads as "what this
+ *      customer's purchases have been allocated to."
+ *
+ * Math:
+ *   platformFee     = banker_round(subtotal * PLATFORM_FEE_RATE)
+ *   dispensaryShare = subtotal - platformFee - discount
+ *   driverPayout    = deliveryFee + driverTip
+ *
+ * Sum DR  = total + total            (clearing DR + customer DR)
+ * Sum CR  = total + dispensaryShare + platformFee + cannabis + sales + driverPayout
+ *         = total + (subtotal - platformFee - discount) + platformFee
+ *           + cannabis + sales + (delivery + tip)
+ *         = total + subtotal + cannabis + sales + delivery + tip - discount
+ *         = total + total
+ *         = balanced.
+ *
+ * Driver assignment: if `driverId` is null at settlement time (the order
+ * settled before dispatch — pathological but possible) the driver
+ * credit lands with `accountRef: null` so funds aren't misallocated.
+ * The 6.6 payout job filters those out; a subsequent driver
+ * assignment + delivery transition can move the funds to a specific
+ * driver_id via reverse entries.
+ *
+ * Zero-leg suppression: rows with both debit and credit at 0 violate
+ * the `ledger_one_side_only` CHECK, so a leg whose amount is 0 is
+ * omitted. The balance still holds because `total` already reflects
+ * the zero-valued component.
+ */
+type SettlementLedgerEntry = Omit<NewLedgerEntry, 'id'> & { readonly id?: string };
+
+function buildSettlementEntries(order: Order, occurredAt: Date): readonly SettlementLedgerEntry[] {
+  const subtotal = order.subtotalCents;
+  const cannabis = order.cannabisTaxCents;
+  const sales = order.salesTaxCents;
+  const delivery = order.deliveryFeeCents;
+  const tip = order.driverTipCents;
+  const discount = order.discountCents;
+  const total = order.totalCents;
+
+  const platformFee = computePlatformFeeCents(subtotal);
+  const dispensaryShare = subtotal - platformFee - discount;
+  const driverPayout = delivery + tip;
+
+  if (dispensaryShare < 0) {
+    // discount + platform_fee > subtotal — would credit the dispensary
+    // negatively, which the ledger CHECK constraint rejects anyway.
+    // Surface as a domain error so the cause (most likely a promo +
+    // platform-fee policy interaction) is visible rather than a raw
+    // Postgres error.
+    throw new RepositoryError(
+      `buildSettlementEntries: order ${order.id} dispensary share would be negative ` +
+        `(subtotal=${String(subtotal)}, platformFee=${String(platformFee)}, discount=${String(discount)})`,
+    );
+  }
+
+  const entries: SettlementLedgerEntry[] = [];
+
+  // (1) Settlement leg — clears the placement-time IOU.
+  entries.push({
+    orderId: order.id,
+    accountType: 'aeropay_clearing',
+    accountRef: null,
+    debitCents: total,
+    creditCents: 0,
+    description: `Order ${order.shortCode} settlement (clearing)`,
+    occurredAt,
+  });
+  entries.push({
+    orderId: order.id,
+    accountType: 'customer',
+    accountRef: order.userId,
+    debitCents: 0,
+    creditCents: total,
+    description: `Order ${order.shortCode} settlement (customer paid)`,
+    occurredAt,
+  });
+
+  // (2) Distribution leg — fund the various parties from the customer.
+  entries.push({
+    orderId: order.id,
+    accountType: 'customer',
+    accountRef: order.userId,
+    debitCents: total,
+    creditCents: 0,
+    description: `Order ${order.shortCode} distribution`,
+    occurredAt,
+  });
+  if (dispensaryShare > 0) {
+    entries.push({
+      orderId: order.id,
+      accountType: 'dispensary',
+      accountRef: order.dispensaryId,
+      debitCents: 0,
+      creditCents: dispensaryShare,
+      description: `Order ${order.shortCode} dispensary share`,
+      occurredAt,
+    });
+  }
+  if (platformFee > 0) {
+    entries.push({
+      orderId: order.id,
+      accountType: 'platform_revenue',
+      accountRef: null,
+      debitCents: 0,
+      creditCents: platformFee,
+      description: `Order ${order.shortCode} platform fee`,
+      occurredAt,
+    });
+  }
+  if (cannabis > 0) {
+    entries.push({
+      orderId: order.id,
+      accountType: 'cannabis_tax',
+      accountRef: null,
+      debitCents: 0,
+      creditCents: cannabis,
+      description: `Order ${order.shortCode} cannabis tax`,
+      occurredAt,
+    });
+  }
+  if (sales > 0) {
+    entries.push({
+      orderId: order.id,
+      accountType: 'sales_tax',
+      accountRef: null,
+      debitCents: 0,
+      creditCents: sales,
+      description: `Order ${order.shortCode} sales tax`,
+      occurredAt,
+    });
+  }
+  if (driverPayout > 0) {
+    entries.push({
+      orderId: order.id,
+      accountType: 'driver',
+      accountRef: order.driverId,
+      debitCents: 0,
+      creditCents: driverPayout,
+      description: `Order ${order.shortCode} driver payout`,
+      occurredAt,
+    });
+  }
+
+  return entries;
 }
