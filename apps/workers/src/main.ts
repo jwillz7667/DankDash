@@ -25,7 +25,7 @@ import {
   createPoolFromEnv,
 } from '@dankdash/db';
 import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
-import { startLocationIngest } from './jobs/location-ingest/index.js';
+import { createGeofenceObserver, startLocationIngest } from './jobs/location-ingest/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
@@ -67,11 +67,13 @@ async function main(): Promise<void> {
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
   const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+  const geofenceObserver = createGeofenceObserver({ orders, logger });
   const locationIngest = await startLocationIngest({
     drivers,
     history: driverLocationHistory,
     logger,
     redisUrl: env.REDIS_URL,
+    onCommitted: geofenceObserver,
   });
 
   logger.info({ env: env.NODE_ENV }, 'workers started');
