@@ -15,9 +15,27 @@ import {
   type NewDriverLocationHistoryRow,
   type NewDriverShift,
 } from '../schema/dispatch.js';
+import { dispensaries } from '../schema/dispensaries.js';
 import { type DriverStatus, type OfferStatus } from '../schema/enums.js';
 import { parsePoint, pointToSql } from '../schema/geo.js';
+import { orders } from '../schema/orders.js';
 import { BaseRepository, newId } from './base.js';
+
+/**
+ * Row shape returned by the dispatch-candidate query — exactly the
+ * fields `@dankdash/dispatch` needs for its `DispatchCandidate`
+ * interface, plus the raw distance from the dispensary so the
+ * scorer can normalise it. Kept narrow so we don't drag the full
+ * Driver row (and its parsed GeoPoint location) through the
+ * candidate scan.
+ */
+export interface DispatchCandidateRow {
+  readonly driverId: string;
+  readonly distanceMeters: number;
+  readonly ratingAvg: number | null;
+  readonly ratingCount: number;
+  readonly lastDeliveryAt: Date | null;
+}
 
 interface DriverRow extends Omit<Driver, 'currentLocation'> {
   readonly currentLocation: string | null;
@@ -239,6 +257,68 @@ export class DriversRepository extends BaseRepository {
       .update(drivers)
       .set({ totalDeliveries: sql`${drivers.totalDeliveries} + 1`, updatedAt: new Date() })
       .where(eq(drivers.id, id));
+  }
+
+  /**
+   * Find online drivers within `maxRadiusMeters` of the dispensary,
+   * with their beeline distance and last-delivery timestamp attached.
+   * Used by the dispatch worker — the worker hands the rows straight
+   * to `@dankdash/dispatch`'s scoring layer.
+   *
+   * Eligibility filter (in addition to radius):
+   *   - `current_status = 'online'` (not offline, on_break, unavailable)
+   *   - `current_order_id IS NULL` (not already mid-delivery)
+   *   - has a `current_location` set (cannot route a driver we cannot find)
+   *
+   * Distance uses `ST_Distance` on the geography type — returned in
+   * meters, no projection conversion needed. The radius filter is
+   * `ST_DWithin` so PostgreSQL can use the GiST index on
+   * `drivers.current_location` instead of computing distance for every
+   * online driver.
+   *
+   * `lastDeliveryAt` is a correlated subquery against `orders` —
+   * cheaper than a LEFT JOIN + GROUP BY at the candidate-pool sizes
+   * we expect (dozens of drivers per dispensary). If we ever scale to
+   * thousands of drivers per ping we should denormalise this onto
+   * `drivers.last_delivery_at`, but that's a future-day problem.
+   */
+  async findDispatchCandidatesNearDispensary(
+    dispensaryId: string,
+    maxRadiusMeters: number,
+  ): Promise<readonly DispatchCandidateRow[]> {
+    const distanceSql = sql<string>`ST_Distance(${drivers.currentLocation}, ${dispensaries.location})`;
+    const lastDeliveryAtSql = sql<Date | null>`(SELECT MAX(${orders.deliveredAt}) FROM ${orders} WHERE ${orders.driverId} = ${drivers.userId})`;
+
+    const rows = await this.db
+      .select({
+        driverId: drivers.id,
+        distanceMeters: distanceSql,
+        ratingAvg: drivers.ratingAvg,
+        ratingCount: drivers.ratingCount,
+        lastDeliveryAt: lastDeliveryAtSql,
+      })
+      .from(drivers)
+      .innerJoin(dispensaries, eq(dispensaries.id, dispensaryId))
+      .where(
+        and(
+          eq(drivers.currentStatus, 'online'),
+          isNull(drivers.currentOrderId),
+          sql`${drivers.currentLocation} IS NOT NULL`,
+          sql`ST_DWithin(${drivers.currentLocation}, ${dispensaries.location}, ${maxRadiusMeters})`,
+        ),
+      );
+
+    return rows.map((row) => ({
+      driverId: row.driverId,
+      // Drizzle returns geography distances as `string` (Postgres NUMERIC).
+      // Coerce here so the scorer never sees a string masquerading as a
+      // number — JavaScript would happily compare them and silently bias
+      // the rank.
+      distanceMeters: Number(row.distanceMeters),
+      ratingAvg: row.ratingAvg === null ? null : Number(row.ratingAvg),
+      ratingCount: row.ratingCount,
+      lastDeliveryAt: row.lastDeliveryAt,
+    }));
   }
 }
 
