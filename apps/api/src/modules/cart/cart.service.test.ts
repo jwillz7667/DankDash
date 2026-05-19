@@ -50,18 +50,20 @@ const ITEM_ID = '01935f3d-0000-7000-8000-000000000040';
 const PRODUCT_ID = '01935f3d-0000-7000-8000-000000000050';
 const ADDRESS_ID = '01935f3d-0000-7000-8000-000000000060';
 
-// 2026-05-18 (Mon) 14:00 America/Chicago = 19:00 UTC. Inside the dispensary's
-// SAMPLE_HOURS window (9–22 CT) and outside MN's 02:00–08:00 statutory dark
-// window. validate() runs the live compliance clock, so the test rig seeds a
-// dispensary whose hours encompass this moment.
+// validate() runs the live compliance clock, so the test rig seeds a
+// dispensary whose hours mirror MN's full statutory window (08:00–02:00
+// local, encoded as 26:00 for the next-day close). That way these tests
+// stay green for any wall-clock moment that is itself legal under the
+// state cap — they don't bake in a narrower fixture that drifts out of
+// scope as the real time advances during a long run or a late-night CI.
 const SAMPLE_HOURS = {
-  mon: { open: '09:00', close: '22:00' },
-  tue: { open: '09:00', close: '22:00' },
-  wed: { open: '09:00', close: '22:00' },
-  thu: { open: '09:00', close: '22:00' },
-  fri: { open: '09:00', close: '22:00' },
-  sat: { open: '10:00', close: '22:00' },
-  sun: { open: '10:00', close: '22:00' },
+  mon: { open: '08:00', close: '26:00' },
+  tue: { open: '08:00', close: '26:00' },
+  wed: { open: '08:00', close: '26:00' },
+  thu: { open: '08:00', close: '26:00' },
+  fri: { open: '08:00', close: '26:00' },
+  sat: { open: '08:00', close: '26:00' },
+  sun: { open: '08:00', close: '26:00' },
 };
 
 // A tight Minneapolis square. The delivery address fixture's coordinates
