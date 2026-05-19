@@ -19,7 +19,9 @@
     "@dankdash/db": "workspace:*",
     "@dankdash/dispatch": "workspace:*",
     "@dankdash/orders": "workspace:*",
+    "@dankdash/realtime-events": "workspace:*",
     "@dankdash/types": "workspace:*",
+    "ioredis": "^5.10.1",
     "luxon": "^3.5.0",
     "node-cron": "^3.0.3",
     "pino": "^9.5.0"
@@ -28,6 +30,7 @@
     "@types/luxon": "^3.4.2",
     "@types/node": "^22.10.2",
     "@types/node-cron": "^3.0.11",
+    "testcontainers": "^11.14.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

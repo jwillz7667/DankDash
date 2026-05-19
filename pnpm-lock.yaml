@@ -281,9 +281,15 @@ importers:
       '@dankdash/orders':
         specifier: workspace:*
         version: link:../../packages/orders
+      '@dankdash/realtime-events':
+        specifier: workspace:*
+        version: link:../../packages/realtime-events
       '@dankdash/types':
         specifier: workspace:*
         version: link:../../packages/types
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.10.1
       luxon:
         specifier: ^3.5.0
         version: 3.7.2
@@ -303,6 +309,9 @@ importers:
       '@types/node-cron':
         specifier: ^3.0.11
         version: 3.0.11
+      testcontainers:
+        specifier: ^11.14.0
+        version: 11.14.0
       typescript:
         specifier: ^5.7.2
         version: 5.9.3

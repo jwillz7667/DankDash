@@ -16,6 +16,7 @@ import { createLogger, loadEnv } from '@dankdash/config';
 import {
   DispatchOffersRepository,
   DispensariesRepository,
+  DriverLocationHistoryRepository,
   DriversRepository,
   LedgerEntriesRepository,
   OrdersRepository,
@@ -24,10 +25,11 @@ import {
   createPoolFromEnv,
 } from '@dankdash/db';
 import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
+import { startLocationIngest } from './jobs/location-ingest/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
-function main(): void {
+async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger({ name: 'workers', environment: env.NODE_ENV });
 
@@ -39,6 +41,7 @@ function main(): void {
   const orders = new OrdersRepository(pool.db);
   const drivers = new DriversRepository(pool.db);
   const dispatchOffers = new DispatchOffersRepository(pool.db);
+  const driverLocationHistory = new DriverLocationHistoryRepository(pool.db);
 
   const http = new HttpClient({
     dispatcher: createUndiciDispatcher({ maxConnections: 8, keepAliveTimeoutMs: 30_000 }),
@@ -64,6 +67,12 @@ function main(): void {
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
   const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+  const locationIngest = await startLocationIngest({
+    drivers,
+    history: driverLocationHistory,
+    logger,
+    redisUrl: env.REDIS_URL,
+  });
 
   logger.info({ env: env.NODE_ENV }, 'workers started');
 
@@ -73,6 +82,7 @@ function main(): void {
     webhookCleanupTask.stop();
     dispatchTask.stop();
     offerExpiryTask.stop();
+    await locationIngest.stop();
     await pool.close();
     process.exit(0);
   };
@@ -113,10 +123,8 @@ function createMemoryTokenCache(): {
   };
 }
 
-try {
-  main();
-} catch (err: unknown) {
+main().catch((err: unknown) => {
   const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
   process.stderr.write(`workers fatal: ${message}\n`);
   process.exit(1);
-}
+});
