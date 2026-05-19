@@ -141,6 +141,12 @@ export const payouts = pgTable(
   (table) => [
     index('payouts_recipient_idx').on(table.recipientType, table.recipientId, table.periodEnd),
     index('payouts_status_idx').on(table.status, table.scheduledFor),
+    unique('payouts_recipient_period_uq').on(
+      table.recipientType,
+      table.recipientId,
+      table.periodStart,
+      table.periodEnd,
+    ),
   ],
 );
 

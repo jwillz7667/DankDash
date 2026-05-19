@@ -22,6 +22,13 @@
       "when": 1747670400000,
       "tag": "0002_payment_canceled",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1747756800000,
+      "tag": "0003_payouts_period_unique",
+      "breakpoints": true
     }
   ]
 }

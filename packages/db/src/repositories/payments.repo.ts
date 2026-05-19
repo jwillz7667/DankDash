@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, isNull, sum } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, lt, sql, sum } from 'drizzle-orm';
 import {
   type LedgerAccountType,
   type PaymentStatus,
@@ -280,6 +280,47 @@ export class LedgerEntriesRepository extends BaseRepository {
     if (row === undefined) return 0;
     return row.debits - row.credits;
   }
+
+  /**
+   * Aggregate credits − debits for every distinct accountRef of a given
+   * accountType whose entries fall in the [periodStartUtc, periodEndUtc)
+   * window. Used by the daily payout job to compute per-dispensary or
+   * per-driver net earnings for the period in a single round trip.
+   *
+   * The window is half-open intentionally — `periodEndUtc` is the next
+   * day's 00:00 Central converted to UTC, so an entry whose occurredAt
+   * lands exactly at the boundary belongs to the *next* period, not this
+   * one. This mirrors how the payouts row's `period_end` is the exclusive
+   * upper bound on the date axis.
+   *
+   * Rows where accountRef IS NULL (platform_revenue, taxes, clearing) are
+   * skipped — they have no recipient and don't roll up into a payout.
+   */
+  async netByAccountRefInWindow(
+    accountType: LedgerAccountType,
+    periodStartUtc: Date,
+    periodEndUtc: Date,
+  ): Promise<readonly { readonly accountRef: string; readonly netCents: number }[]> {
+    const rows = await this.db
+      .select({
+        accountRef: ledgerEntries.accountRef,
+        debits: sum(ledgerEntries.debitCents).mapWith(Number),
+        credits: sum(ledgerEntries.creditCents).mapWith(Number),
+      })
+      .from(ledgerEntries)
+      .where(
+        and(
+          eq(ledgerEntries.accountType, accountType),
+          gte(ledgerEntries.occurredAt, periodStartUtc),
+          lt(ledgerEntries.occurredAt, periodEndUtc),
+          sql`${ledgerEntries.accountRef} IS NOT NULL`,
+        ),
+      )
+      .groupBy(ledgerEntries.accountRef);
+    return rows.flatMap((row) =>
+      row.accountRef === null ? [] : [{ accountRef: row.accountRef, netCents: row.credits - row.debits }],
+    );
+  }
 }
 
 export class PayoutsRepository extends BaseRepository {
@@ -317,6 +358,52 @@ export class PayoutsRepository extends BaseRepository {
       .returning();
     if (row === undefined) throw new RepositoryError('payouts insert returned no row');
     return row;
+  }
+
+  /**
+   * Insert a payout row, or return the existing row that already covers
+   * the same (recipient_type, recipient_id, period_start, period_end).
+   * Backs the daily payout job's idempotency — a redeploy or worker
+   * restart re-firing the cron for the same calendar day is a no-op
+   * rather than a duplicate-row error.
+   *
+   * Returns `{ payout, created }` so the caller can decide whether to
+   * issue the upstream Aeropay payout (`created === true`) or skip it
+   * (the prior run already initiated and the upstream call has its own
+   * idempotency key — re-calling would be safe but wasteful).
+   */
+  async createIfAbsent(
+    input: Omit<NewPayout, 'id'> & { readonly id?: string },
+  ): Promise<{ readonly payout: Payout; readonly created: boolean }> {
+    const candidate = { ...input, id: input.id ?? newId() };
+    const inserted = await this.db
+      .insert(payouts)
+      .values(candidate)
+      .onConflictDoNothing({
+        target: [payouts.recipientType, payouts.recipientId, payouts.periodStart, payouts.periodEnd],
+      })
+      .returning();
+    if (inserted[0] !== undefined) {
+      return { payout: inserted[0], created: true };
+    }
+    const [existing] = await this.db
+      .select()
+      .from(payouts)
+      .where(
+        and(
+          eq(payouts.recipientType, candidate.recipientType),
+          eq(payouts.recipientId, candidate.recipientId),
+          eq(payouts.periodStart, candidate.periodStart),
+          eq(payouts.periodEnd, candidate.periodEnd),
+        ),
+      )
+      .limit(1);
+    if (existing === undefined) {
+      throw new RepositoryError(
+        `payouts.createIfAbsent: conflict on insert but no existing row found for ${candidate.recipientType} ${candidate.recipientId} ${candidate.periodStart}..${candidate.periodEnd}`,
+      );
+    }
+    return { payout: existing, created: false };
   }
 
   async updateStatus(
