@@ -18,13 +18,15 @@
     "@dankdash/config": "workspace:*",
     "@dankdash/db": "workspace:*",
     "@dankdash/dispatch": "workspace:*",
+    "@dankdash/eta": "workspace:*",
     "@dankdash/orders": "workspace:*",
     "@dankdash/realtime-events": "workspace:*",
     "@dankdash/types": "workspace:*",
     "ioredis": "^5.10.1",
     "luxon": "^3.5.0",
     "node-cron": "^3.0.3",
-    "pino": "^9.5.0"
+    "pino": "^9.5.0",
+    "uuidv7": "^1.2.1"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.2",

@@ -24,8 +24,17 @@ import {
   WebhookEventsProcessedRepository,
   createPoolFromEnv,
 } from '@dankdash/db';
+import { EtaService, MapboxClient } from '@dankdash/eta';
+import { publishRealtimeEvent } from '@dankdash/realtime-events';
+import { Redis } from 'ioredis';
+import { uuidv7 } from 'uuidv7';
 import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
-import { createGeofenceObserver, startLocationIngest } from './jobs/location-ingest/index.js';
+import {
+  createEtaObserver,
+  createGeofenceObserver,
+  startLocationIngest,
+  type LocationIngestItem,
+} from './jobs/location-ingest/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
@@ -67,13 +76,73 @@ async function main(): Promise<void> {
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
   const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+
+  // Two extra Redis connections for the ETA path:
+  //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
+  //   - etaPublishRedis: XADD to dankdash:realtime.
+  // We deliberately keep these off the location-ingest connection because
+  // ioredis serialises commands per connection and the ingest connection
+  // spends most of its time BLOCKed on XREADGROUP; any XADD/GET queued
+  // behind it would wait up to `blockMs` for no reason.
+  const etaCacheRedis = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+  });
+  const etaPublishRedis = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+  });
+  for (const [name, client] of [
+    ['eta-cache', etaCacheRedis],
+    ['eta-publish', etaPublishRedis],
+  ] as const) {
+    client.on('error', (err: Error) => {
+      logger.error(
+        { event: 'workers.redis_error', connection: name, err: err.message },
+        'workers: redis client error',
+      );
+    });
+  }
+  const mapbox = new MapboxClient({ accessToken: env.MAPBOX_ACCESS_TOKEN });
+  const etaService = new EtaService({ redis: etaCacheRedis, mapbox, logger });
+
   const geofenceObserver = createGeofenceObserver({ orders, logger });
+  const etaObserver = createEtaObserver({
+    orders,
+    eta: etaService,
+    publish: (input) => publishRealtimeEvent(etaPublishRedis, input),
+    logger,
+    idGen: uuidv7,
+  });
+
+  // Per-item fan-out across observers. Each observer reports its own
+  // failures with the right context; `Promise.allSettled` keeps a single
+  // observer crash from cascading into the others. The consumer's outer
+  // allSettled becomes a no-op for this combined function (it never
+  // rejects), which is exactly what we want — observer-specific logs are
+  // strictly more useful than the generic "observer failed" line.
+  const onLocationCommitted = async (item: LocationIngestItem): Promise<void> => {
+    const results = await Promise.allSettled([geofenceObserver(item), etaObserver(item)]);
+    for (let i = 0; i < results.length; i += 1) {
+      const result = results[i];
+      if (result?.status !== 'rejected') continue;
+      logger.warn(
+        {
+          event: 'workers.location_observer_failed',
+          observer: i === 0 ? 'geofence' : 'eta',
+          err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        },
+        'workers: location observer failed',
+      );
+    }
+  };
+
   const locationIngest = await startLocationIngest({
     drivers,
     history: driverLocationHistory,
     logger,
     redisUrl: env.REDIS_URL,
-    onCommitted: geofenceObserver,
+    onCommitted: onLocationCommitted,
   });
 
   logger.info({ env: env.NODE_ENV }, 'workers started');
@@ -85,6 +154,8 @@ async function main(): Promise<void> {
     dispatchTask.stop();
     offerExpiryTask.stop();
     await locationIngest.stop();
+    etaCacheRedis.disconnect();
+    etaPublishRedis.disconnect();
     await pool.close();
     process.exit(0);
   };

@@ -278,6 +278,9 @@ importers:
       '@dankdash/dispatch':
         specifier: workspace:*
         version: link:../../packages/dispatch
+      '@dankdash/eta':
+        specifier: workspace:*
+        version: link:../../packages/eta
       '@dankdash/orders':
         specifier: workspace:*
         version: link:../../packages/orders
@@ -299,6 +302,9 @@ importers:
       pino:
         specifier: ^9.5.0
         version: 9.14.0
+      uuidv7:
+        specifier: ^1.2.1
+        version: 1.2.1
     devDependencies:
       '@types/luxon':
         specifier: ^3.4.2

@@ -25,4 +25,10 @@ export {
   type GeofenceObserver,
   type GeofenceObserverDeps,
 } from './geofence.observer.js';
+export {
+  createEtaObserver,
+  type EtaObserver,
+  type EtaObserverDeps,
+  type EtaComputer,
+} from './eta.observer.js';
 export type { LocationIngestItem } from './types.js';
