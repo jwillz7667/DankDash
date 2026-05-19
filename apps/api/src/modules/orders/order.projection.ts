@@ -40,6 +40,7 @@ export function projectOrder(o: Order): OrderResponse {
       preppingAt: iso(o.preppingAt),
       preparedAt: iso(o.preparedAt),
       awaitingDriverAt: iso(o.awaitingDriverAt),
+      dispatchFailedAt: iso(o.dispatchFailedAt),
       driverAssignedAt: iso(o.driverAssignedAt),
       enRoutePickupAt: iso(o.enRoutePickupAt),
       pickedUpAt: iso(o.pickedUpAt),

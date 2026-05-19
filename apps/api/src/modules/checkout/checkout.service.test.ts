@@ -460,6 +460,7 @@ class FakeOrdersRepo implements Pick<OrdersRepository, 'create' | 'shortCodeExis
       preppingAt: input.preppingAt ?? null,
       preparedAt: input.preparedAt ?? null,
       awaitingDriverAt: input.awaitingDriverAt ?? null,
+      dispatchFailedAt: input.dispatchFailedAt ?? null,
       driverAssignedAt: input.driverAssignedAt ?? null,
       enRoutePickupAt: input.enRoutePickupAt ?? null,
       pickedUpAt: input.pickedUpAt ?? null,

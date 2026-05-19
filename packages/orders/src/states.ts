@@ -17,6 +17,7 @@ export const ORDER_STATES = [
   'prepping',
   'ready_for_pickup',
   'awaiting_driver',
+  'dispatch_failed',
   'driver_assigned',
   'en_route_pickup',
   'picked_up',
@@ -41,6 +42,7 @@ export type OrderState = (typeof ORDER_STATES)[number];
 export const TERMINAL_ORDER_STATES = [
   'payment_failed',
   'rejected',
+  'dispatch_failed',
   'delivered',
   'returned_to_store',
   'canceled',

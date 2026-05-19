@@ -116,6 +116,7 @@ const AUTH_BY_EVENT: Readonly<Record<OrderEventType, AuthFn>> = {
   VENDOR_READY: vendorOwnsOrder,
   STORE_CANCEL: vendorOwnsOrder,
   DISPATCH_QUEUE: allowSystemOrAdmin,
+  DISPATCH_FAILED: allowSystemOrAdmin,
   DRIVER_ASSIGNED: allowSystemOrAdmin,
   DRIVER_EN_ROUTE_PICKUP: assignedDriver,
   DRIVER_PICKED_UP: assignedDriver,

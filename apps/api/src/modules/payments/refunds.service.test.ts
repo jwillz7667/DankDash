@@ -98,6 +98,7 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     preppingAt: null,
     preparedAt: null,
     awaitingDriverAt: null,
+    dispatchFailedAt: null,
     driverAssignedAt: null,
     enRoutePickupAt: null,
     pickedUpAt: null,

@@ -57,9 +57,11 @@ export const orderMachine = setup({
     awaiting_driver: {
       on: {
         DRIVER_ASSIGNED: 'driver_assigned',
+        DISPATCH_FAILED: 'dispatch_failed',
         STORE_CANCEL: 'canceled',
       },
     },
+    dispatch_failed: { type: 'final' },
     driver_assigned: {
       on: {
         DRIVER_EN_ROUTE_PICKUP: 'en_route_pickup',
@@ -198,6 +200,7 @@ const ALL_EVENT_TYPES: readonly OrderEventType[] = [
   'VENDOR_READY',
   'STORE_CANCEL',
   'DISPATCH_QUEUE',
+  'DISPATCH_FAILED',
   'DRIVER_ASSIGNED',
   'DRIVER_EN_ROUTE_PICKUP',
   'DRIVER_PICKED_UP',

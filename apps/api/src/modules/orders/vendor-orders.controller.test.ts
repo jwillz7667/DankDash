@@ -58,6 +58,7 @@ function makeOrder(status: Order['status'] = 'placed'): Order {
     preppingAt: null,
     preparedAt: null,
     awaitingDriverAt: null,
+    dispatchFailedAt: null,
     driverAssignedAt: null,
     enRoutePickupAt: null,
     pickedUpAt: null,

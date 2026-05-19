@@ -100,6 +100,7 @@ const STATUS_TIMESTAMP_COLUMN: Readonly<Partial<Record<OrderStatus, keyof NewOrd
   prepping: 'preppingAt',
   ready_for_pickup: 'preparedAt',
   awaiting_driver: 'awaitingDriverAt',
+  dispatch_failed: 'dispatchFailedAt',
   driver_assigned: 'driverAssignedAt',
   en_route_pickup: 'enRoutePickupAt',
   picked_up: 'pickedUpAt',

@@ -74,6 +74,7 @@ export const OrderStatusSchema = z.enum([
   'prepping',
   'ready_for_pickup',
   'awaiting_driver',
+  'dispatch_failed',
   'driver_assigned',
   'en_route_pickup',
   'picked_up',
