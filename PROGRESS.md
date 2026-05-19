@@ -14,6 +14,57 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 10 — Tracking & Geofencing
+
+_Status: complete (2026-05-19). Branch: `phase/10-tracking-geofencing`. Commit range: `baf85f5..27f6834` (14 commits)._
+
+What landed:
+
+- **Location ingestion worker** (`apps/workers/src/jobs/location-ingest/`) — joins the `dankdash:realtime` Redis Stream as a consumer-group member (`realtime` → `location-ingest:<host>-<pid>`), filters to `driver:location` envelopes, batches up to `LOCATION_INGEST_BATCH_SIZE=50` items or `LOCATION_INGEST_BATCH_DELAY_MS=200ms`, and commits each batch in a single Postgres transaction: insert into `driver_location_history` (the weekly-partitioned table) + UPDATE `drivers.current_location` + XACK the stream entries. `XPENDING IDLE … XCLAIM` recovery picks up entries from a dead pod before the regular `XREADGROUP BLOCK`. The writer is split into `location-ingest.batcher.ts` (pure timing logic — 7 tests) + `location-ingest.writer.ts` (DB IO — 3 tests) + `location-ingest.consumer.ts` (Redis loop). The consumer fires an injected `onCommitted(item)` callback per item after the batch's XACK so downstream observers (geofence, ETA) get exactly-once invocations under the at-least-once stream contract.
+
+- **`drivers.updateLocation` stale-write guard** — the location writer can race with itself under claim-recovery, so the UPDATE includes a `WHERE current_location_updated_at IS NULL OR current_location_updated_at < $stamp` predicate. An earlier ping that arrives second silently no-ops instead of overwriting the fresher one. The first cut used a raw `sql\`... < ${stamp}\`` template that lost the column's timestamptz type on its way to postgres.js (`ERR_INVALID_ARG_TYPE`); routed through drizzle's typed `lt()`+`isNull()`+`or()` in the fix.
+
+- **Geofence arrival observer** (`apps/workers/src/jobs/location-ingest/geofence.*`) — pure haversine math in `geofence.service.ts` (23 tests: meters, km, equator, poles, antipode, the 50m threshold, the dropoff-snapshot parser) plus the observer that wraps it (`geofence.observer.ts`, 12 tests). Per ping: cheap pre-check on order status (only `en_route_dropoff` is transitionable); if inside the 50m threshold, calls `OrdersRepository.applyTransition('DRIVER_ARRIVED')` which row-locks under `SELECT … FOR UPDATE` and re-runs the state machine — concurrent pings throw `ORDER_INVALID_TRANSITION` from the resolver and we swallow them. Non-OrderError exceptions rethrow so the consumer's outer warn-log captures them. The threshold and dropoff-point extraction are exported as pure functions so they're testable without a DB.
+
+- **`@dankdash/eta` cache-fronted ETA service** (`packages/eta/`) — `EtaService.computeEta(from, to)` quantizes both endpoints to a grid (`DEFAULT_GRID_PRECISION_DEGREES`, ~110m at 45°N), looks up `eta:v1:<from>:<to>` in Redis with a sub-second timeout, calls Mapbox Directions API on miss with a 60s SETEX cache, and falls back to `haversineMeters × 0.8` (spec §10.3) on Mapbox failure without caching the fallback. The `EtaResult` carries a `source: 'cache' | 'mapbox' | 'fallback'` discriminant so observability can split cache-hit ratio from real-call latency. The `MapboxClient` adds an `ExternalServiceError`-wrapping retry-aware Directions caller. Tests cover grid quantization, distance math, cache hit/miss/poisoning, Mapbox 5xx fallback, and the 0.8 multiplier boundary.
+
+- **ETA observer + realtime `customer:eta_updated` event** — every committed location ping for a driver with an active order publishes a `customer:eta_updated` envelope onto `dankdash:realtime`. The realtime service routes it to the `customer:{userId}` room so the consumer iOS app can paint a fresh ETA without polling. The event type is added to the discriminated `RealtimeEvent` union in `@dankdash/realtime-events` (zod schema enforces `{orderId, etaSeconds, distanceMeters, source}` at the wire). 13 observer tests cover the publish path including null-active-order skip, ExternalServiceError propagation, and idempotency under repeat pings.
+
+- **Partition lifecycle cron** (`apps/workers/src/jobs/partition-management/`) — a node-cron `30 2 * * 0` America/Chicago job that runs three phases per Sunday tick:
+  1. **Drop orphans**: any `<parent>_YYYY_wNN` table not in `pg_inherits` (i.e. leftover from a prior crashed run) gets dropped.
+  2. **Ensure future**: creates 4 ISO-week-numbered partitions ahead of `now` via the `dankdash_create_week_partition(parent, week_start)` SQL helper baked into the bootstrap migration. Idempotent — calling for an existing week is a no-op.
+  3. **Archive + drop expired**: for each partition whose `range_end < now - retentionDays` (default 90), streams rows to a Parquet archive in R2, then `DETACH PARTITION` + `DROP TABLE`. Per-partition try/catch isolates failures so a single bad week doesn't poison the rest.
+
+  The `PartitionLifecycleService` depends on an injected `PartitionArchiver` interface; tests use a fake archiver and production wires `ParquetPartitionArchiver`. 20 service tests cover orchestration, per-step failure isolation, ISO-week-year boundary (2024-12-30 → `2025_w01`, 2025-12-29 → `2026_w01`), and the retention/lookahead overrides.
+
+- **`PartitionsRepository`** (`packages/db/src/repositories/partitions.repo.ts`) — typed surface over the partition catalog. `createWeekPartition` (forwards to the SQL helper), `listWeekPartitions` (parses `pg_get_expr(relpartbound, oid)` text back into typed Date ranges), `detachPartition` + `dropTable` (explicit two-step rather than DETACH CONCURRENTLY because the 02:30 Sunday window absorbs the brief AccessExclusiveLock), `listDetachedOrphans` (matches `<parent>_YYYY_wNN` not in `pg_inherits`), and `streamPartitionRows` (async generator with BigInt-cursor keyset pagination, unpacks PostGIS geography to lat/lng doubles via `ST_Y`/`ST_X` so the archiver doesn't need geo plumbing). Every identifier crosses a `SAFE_IDENTIFIER` regex before composing SQL — Postgres rejects bind parameters for object identifiers, so the guard is the only line. 7 integration tests against the testcontainers Postgres exercise the full create → list → stream → detach → orphan → drop cycle plus safety rejects.
+
+- **`ParquetPartitionArchiver`** (`apps/workers/src/jobs/partition-management/parquet-archiver.ts`) — end-to-end streaming pipeline: `PartitionsRepository.streamPartitionRows` → `@dsnp/parquetjs` ParquetWriter (GZIP per column) → `ByteCountingPassThrough` Transform (gives the encoded size for the summary without a HEAD round-trip) → R2 `@aws-sdk/lib-storage` Upload (multipart 5MB chunks). Schema choices: `id` is UTF8 not INT64 (bigserial values cross JS Number safe range and parquetjs's INT64 handling has BigInt/number ambiguity across Athena/DuckDB versions; UTF8 round-trips losslessly and consumers cast back); `recorded_at` is TIMESTAMP_MILLIS (JS Date.getTime() lands directly); geography unpacked to lat/lng doubles upstream (Parquet has no geometry type). GZIP rather than SNAPPY — archive bytes are written once and read rarely (regulator export), so we optimize storage density over decode speed. Object key is `archives/driver_location_history/<partition>.parquet` — content-addressed by partition name, so a re-run after a mid-pipeline failure overwrites identical bytes and gets idempotency without bookkeeping. 6 tests including a real round-trip via `ParquetReader.openBuffer` that catches schema/shape regressions mock-only tests would miss.
+
+- **`@dankdash/storage` `putObject` + `putObjectStream`** — adds two new methods to the existing `R2Storage` surface. The streamed variant wraps `@aws-sdk/lib-storage` Upload (4 parts in flight, 5MB each) and absorbs the multipart-completion plumbing. Bumps `@aws-sdk/client-s3` from `^3.700.0` to `^3.1050.0` to satisfy lib-storage's peer range. Both surfaces share `assertKey` and wrap unexpected errors in `ExternalServiceError`.
+
+- **Worker entrypoint wiring** (`apps/workers/src/main.ts`) — constructs `PartitionsRepository`, a dedicated `R2Storage` client (separate from the API's because the worker owns its own DI graph), `ParquetPartitionArchiver`, and registers `schedulePartitionManagementJob`. Adds `partitionTask.stop()` to the graceful-shutdown chain.
+
+Definition-of-Done verification:
+
+- Location ingest: at-least-once delivery + per-batch atomicity verified by writer + batcher + consumer unit tests; XPENDING claim-recovery verified by the consumer integration shape.
+- Geofence: 50m threshold, idempotent re-pings, race-resolution under `applyTransition` lock all covered by 12 observer tests + 23 service tests.
+- ETA: Mapbox happy path + cache hit + cache miss + 5xx fallback + grid quantization all covered (33 tests across distance/grid/service/mapbox).
+- Partition lifecycle: orchestration (20 tests), Parquet round-trip (6 tests), scheduler cron pin (2 tests), PartitionsRepository against real Postgres (7 integration tests).
+- `pnpm typecheck` — 33/33 tasks succeed.
+- `pnpm lint` — 20/20 tasks succeed, zero warnings.
+- `pnpm --filter @dankdash/db --filter @dankdash/workers --filter @dankdash/storage --filter @dankdash/eta --filter @dankdash/realtime-events test` — all green (99 db + 135 workers + 23 storage + 33 eta).
+- Branch `phase/10-tracking-geofencing` will be pushed; PR opened against `main` after this entry lands.
+
+Deferred:
+
+- **Metrc package-tag reconciliation worker** — the nightly reconcile cron that ties each `delivered` order back to its Metrc receipt is its own deliverable in Phase 11 (Compliance Reconciliation). The schema column (`orders.metrc_receipt_id`) and the per-order receipt fetch already exist; only the cron is missing.
+- **Archive replay** — there is no path yet to load an archived `.parquet` back into Postgres for a regulator audit. The archive bytes are stable and re-readable today (proven by the Parquet round-trip tests); the replay tool is its own ticket once a real audit request lands.
+- **R2 retention / lifecycle policies on the archive bucket** — partitions older than retention are kept in R2 indefinitely. Setting an object-storage lifecycle policy (e.g. "transition to deep cold after 1 year") is an infra-side decision and lives outside the worker.
+- **Per-driver-day ingest backpressure** — a single misbehaving client could in theory flood the consumer; current defense is the driver-namespace token bucket in the realtime service (Phase 9.4), not a worker-side guard. Phase 14 (observability + capacity planning) revisits if real numbers show pressure.
+
+---
+
 ## Phase 9 — Realtime Service (Socket.io)
 
 _Status: complete (2026-05-19). Branch: `phase/09-realtime`._
