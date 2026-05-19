@@ -454,6 +454,28 @@ export class DispatchOffersRepository extends BaseRepository {
     return row ?? null;
   }
 
+  /**
+   * `SELECT … FOR UPDATE` on a dispatch_offers row. Must run inside a
+   * transaction. Used by the driver accept/decline path so a second
+   * concurrent accept on the same offer blocks behind the lock and
+   * fails the "already responded" status check after the first wins.
+   *
+   * `respond()`'s atomic `WHERE status = 'offered'` already serialises
+   * accept races at the SQL level — the FOR UPDATE here is additional
+   * defence so the entire accept flow (offer validate + driver lock +
+   * order transition) sees a stable offer snapshot for the lifetime of
+   * the tx.
+   */
+  async findByIdForUpdate(id: string): Promise<DispatchOffer | null> {
+    const [row] = await this.db
+      .select()
+      .from(dispatchOffers)
+      .where(eq(dispatchOffers.id, id))
+      .for('update')
+      .limit(1);
+    return row ?? null;
+  }
+
   async listActiveForDriver(driverId: string, now: Date): Promise<readonly DispatchOffer[]> {
     return this.db
       .select()
@@ -510,6 +532,40 @@ export class DispatchOffersRepository extends BaseRepository {
       .update(dispatchOffers)
       .set({ status: 'expired', respondedAt: now })
       .where(and(eq(dispatchOffers.status, 'offered'), lte(dispatchOffers.expiresAt, now)))
+      .returning({ id: dispatchOffers.id });
+    return rows.length;
+  }
+
+  /**
+   * When one offer for an order is accepted, every other still-`offered`
+   * sibling on the same order is effectively dead — the driver who would
+   * have responded to them has lost the race. Flip them to `expired` so:
+   *   - the partial index `dispatch_offers_active_idx` (status='offered')
+   *     drops them immediately
+   *   - the driver's app stops showing them in "my live offers"
+   *   - the audit row carries `respondedAt = now` (the timestamp at which
+   *     they were superseded), not the eventual cron expiry
+   *
+   * The DB enum doesn't carry a 'superseded' value, so we reuse 'expired'.
+   * Callers that need to distinguish "timed out" from "lost race" can
+   * inspect `responded_at` vs. `expires_at`: if `responded_at < expires_at`
+   * the row was cancelled early, otherwise it timed out.
+   */
+  async expireOtherActiveForOrder(
+    orderId: string,
+    keepOfferId: string,
+    now: Date,
+  ): Promise<number> {
+    const rows = await this.db
+      .update(dispatchOffers)
+      .set({ status: 'expired', respondedAt: now })
+      .where(
+        and(
+          eq(dispatchOffers.orderId, orderId),
+          eq(dispatchOffers.status, 'offered'),
+          sql`${dispatchOffers.id} <> ${keepOfferId}`,
+        ),
+      )
       .returning({ id: dispatchOffers.id });
     return rows.length;
   }
