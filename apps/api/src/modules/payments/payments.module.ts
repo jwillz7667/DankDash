@@ -1,20 +1,28 @@
 /**
  * Payments feature module — composes the Aeropay adapter chain and the
- * payment-methods surface.
+ * payment-methods + refunds surfaces.
  *
  * DI graph constructed here:
  *
  *   AeropayAuth                      (token-cache + HTTP + client creds)
  *      └──► AeropayClient            (REST surface used by service + Phase 6.3 checkout)
  *      └──► AeropayWebhookVerifier   (HMAC verifier used by the webhook controller)
- *      └──► PaymentMethodsService    (business logic; consumes the client)
+ *      └──► PaymentMethodsService    (link, delete, webhook → ledger)
+ *      └──► RefundsService           (vendor initiate, admin approve,
+ *                                      Aeropay reverse-ACH, reverse ledger)
  *      └──► PaymentMethodsController + AeropayWebhookController
+ *      └──► VendorRefundsController  + AdminRefundsController
  *
  * The undici dispatcher, ioredis-backed token cache, and HttpClient are
  * built once per process (no Scope.REQUEST) — Aeropay tokens are
  * fleet-shared and the HTTP pool reuses sockets. Tests bypass the module
  * entirely and inject hand-rolled fakes into the service/controller
  * constructors.
+ *
+ * DispensariesModule is imported so the vendor refunds controller's
+ * VendorContextGuard resolves the same DispensaryStaffRepository
+ * singleton the listings vendor surface uses — symmetric with how
+ * ListingsModule wires the guard.
  *
  * Why module-level FactoryProviders instead of @Injectable() classes:
  * the aeropay package is plain-TS (no Nest decorators) so each
@@ -35,6 +43,7 @@ import {
   OrdersRepository,
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
+  RefundsRepository,
   type Database,
 } from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
@@ -43,6 +52,9 @@ import { Redis } from 'ioredis';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { REDIS_CLIENT } from '../../infrastructure/redis.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { DispensariesModule } from '../dispensaries/dispensaries.module.js';
+import { VendorContextGuard } from '../listings/vendor/vendor-context.guard.js';
+import { AdminRefundsController } from './admin-refunds.controller.js';
 import { AeropayWebhookController } from './aeropay-webhook.controller.js';
 import { PaymentMethodsController } from './payment-methods.controller.js';
 import {
@@ -51,7 +63,13 @@ import {
   type SettlementScopedReposFactory,
 } from './payment-methods.service.js';
 import { RedisTokenCache } from './redis-token-cache.js';
+import {
+  RefundsService,
+  type RefundScopedRepos,
+  type RefundScopedReposFactory,
+} from './refunds.service.js';
 import { AEROPAY_CLIENT, AEROPAY_WEBHOOK_VERIFIER } from './tokens.js';
+import { VendorRefundsController } from './vendor-refunds.controller.js';
 
 const TOKEN_CACHE = Symbol.for('AEROPAY_TOKEN_CACHE');
 const AEROPAY_HTTP = Symbol.for('AEROPAY_HTTP_CLIENT');
@@ -133,6 +151,16 @@ const settlementReposFor: SettlementScopedReposFactory = (db: Database): Settlem
   ledgerEntries: new LedgerEntriesRepository(db),
 });
 
+// Closure factory used by RefundsService.finalize to keep the refund
+// row update, payment_transactions status flip, and reverse-ledger
+// writes inside one transaction. Same shape and rationale as
+// `settlementReposFor` above.
+const refundReposFor: RefundScopedReposFactory = (db: Database): RefundScopedRepos => ({
+  refunds: new RefundsRepository(db),
+  paymentTransactions: new PaymentTransactionsRepository(db),
+  ledgerEntries: new LedgerEntriesRepository(db),
+});
+
 // Service is wired through a FactoryProvider rather than a class-token so we
 // don't depend on SWC emitting `design:paramtypes` for the constructor.
 // Symbol-token deps (AEROPAY_CLIENT) and class-token deps are passed
@@ -156,6 +184,31 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     new PaymentMethodsService(repo, paymentTransactions, orders, db, settlementReposFor, client),
 };
 
+const refundsRepoProvider: FactoryProvider<RefundsRepository> = {
+  provide: RefundsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): RefundsRepository => new RefundsRepository(db),
+};
+
+const refundsServiceProvider: FactoryProvider<RefundsService> = {
+  provide: RefundsService,
+  inject: [
+    OrdersRepository,
+    PaymentTransactionsRepository,
+    RefundsRepository,
+    DRIZZLE_DB,
+    AEROPAY_CLIENT,
+  ],
+  useFactory: (
+    orders: OrdersRepository,
+    paymentTransactions: PaymentTransactionsRepository,
+    refunds: RefundsRepository,
+    db: Database,
+    client: AeropayClient,
+  ): RefundsService =>
+    new RefundsService(orders, paymentTransactions, refunds, db, refundReposFor, client),
+};
+
 const providers: Provider[] = [
   tokenCacheProvider,
   httpClientProvider,
@@ -165,13 +218,21 @@ const providers: Provider[] = [
   paymentMethodsRepoProvider,
   paymentTransactionsRepoProvider,
   ordersRepoProvider,
+  refundsRepoProvider,
+  VendorContextGuard,
   serviceProvider,
+  refundsServiceProvider,
 ];
 
 @Module({
-  imports: [AuthModule],
-  controllers: [PaymentMethodsController, AeropayWebhookController],
+  imports: [AuthModule, DispensariesModule],
+  controllers: [
+    PaymentMethodsController,
+    AeropayWebhookController,
+    VendorRefundsController,
+    AdminRefundsController,
+  ],
   providers,
-  exports: [PaymentMethodsService, AEROPAY_CLIENT],
+  exports: [PaymentMethodsService, RefundsService, AEROPAY_CLIENT],
 })
 export class PaymentsModule {}

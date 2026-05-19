@@ -17,3 +17,15 @@ export {
   type LinkAeropayRequest,
   type LinkAeropayResponse,
 } from './link-aeropay.dto.js';
+export {
+  InitiateRefundRequestDto,
+  InitiateRefundRequestSchema,
+  REFUND_AUTO_APPROVE_LIMIT_CENTS,
+  RefundEnvelopeResponseSchema,
+  RefundResponseSchema,
+  RefundStatusSchema,
+  type InitiateRefundRequest,
+  type RefundEnvelopeResponse,
+  type RefundResponse,
+  type RefundStatusDto,
+} from './refund.dto.js';
