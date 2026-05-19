@@ -13,4 +13,11 @@ export {
   type LocationWriterDeps,
   type LocationWriteSummary,
 } from './location-ingest.writer.js';
+export {
+  ARRIVAL_THRESHOLD_METERS,
+  extractDropoffPoint,
+  haversineMeters,
+  isWithinArrivalThreshold,
+  type LatLng,
+} from './geofence.service.js';
 export type { LocationIngestItem } from './types.js';
