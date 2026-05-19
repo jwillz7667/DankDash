@@ -32,9 +32,12 @@ import {
   type DocumentHasher,
 } from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DOCUMENT_HASHER, DocumentHashModule } from '../../infrastructure/document-hash.module.js';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { OrderTransitionService } from '../orders/order-transition.service.js';
+import { OrdersModule } from '../orders/orders.module.js';
 import { AdminDriversController } from './admin/admin-drivers.controller.js';
 import {
   AdminDriversService,
@@ -42,6 +45,12 @@ import {
   type AdminDriverScopedReposFactory,
 } from './admin/admin-drivers.service.js';
 import { DriverContextGuard } from './context/driver-context.guard.js';
+import { DriverOffersController } from './offers/driver-offers.controller.js';
+import {
+  DriverOffersService,
+  type DriverOffersScopedRepos,
+  type DriverOffersScopedReposFactory,
+} from './offers/driver-offers.service.js';
 import { DriverShiftController } from './shift/driver-shift.controller.js';
 import {
   DriverShiftService,
@@ -119,6 +128,28 @@ const driverShiftServiceProvider: FactoryProvider<DriverShiftService> = {
   useFactory: (db: Database): DriverShiftService => new DriverShiftService(db, driverShiftReposFor),
 };
 
+// Per-tx repo bundle for the offer accept/decline service. The accept flow
+// composes offer + driver + (via OrderTransitionService.transitionWithinTx)
+// order writes into one outer tx, so all repos here must be re-bound to
+// the tx handle the closure receives.
+const driverOffersReposFor: DriverOffersScopedReposFactory = (
+  db: Database,
+): DriverOffersScopedRepos => ({
+  dispatchOffers: new DispatchOffersRepository(db),
+  drivers: new DriversRepository(db),
+});
+
+const driverOffersServiceProvider: FactoryProvider<DriverOffersService> = {
+  provide: DriverOffersService,
+  inject: [DRIZZLE_DB, OrderTransitionService, EventEmitter2],
+  useFactory: (
+    db: Database,
+    orderTransitions: OrderTransitionService,
+    events: EventEmitter2,
+  ): DriverOffersService =>
+    new DriverOffersService(db, orderTransitions, driverOffersReposFor, events),
+};
+
 const providers: Provider[] = [
   driversRepoProvider,
   driverShiftsRepoProvider,
@@ -127,16 +158,18 @@ const providers: Provider[] = [
   usersRepoProvider,
   adminDriversServiceProvider,
   driverShiftServiceProvider,
+  driverOffersServiceProvider,
   DriverContextGuard,
 ];
 
 @Module({
-  imports: [AuthModule, DocumentHashModule],
-  controllers: [AdminDriversController, DriverShiftController],
+  imports: [AuthModule, DocumentHashModule, OrdersModule],
+  controllers: [AdminDriversController, DriverShiftController, DriverOffersController],
   providers,
   exports: [
     AdminDriversService,
     DriverShiftService,
+    DriverOffersService,
     DriversRepository,
     DriverShiftsRepository,
     DriverLocationHistoryRepository,
