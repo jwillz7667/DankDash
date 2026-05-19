@@ -58,6 +58,7 @@ const config = {
         'dispatch',
         'driver',
         'eta',
+        'metrc',
         'config',
         'types',
         'ui',
