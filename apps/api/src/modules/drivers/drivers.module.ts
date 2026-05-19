@@ -24,9 +24,11 @@
  */
 import {
   DispatchOffersRepository,
+  DispensariesRepository,
   DriverLocationHistoryRepository,
   DriverShiftsRepository,
   DriversRepository,
+  OrdersRepository,
   UsersRepository,
   type Database,
   type DocumentHasher,
@@ -44,6 +46,8 @@ import {
   type AdminDriverScopedRepos,
   type AdminDriverScopedReposFactory,
 } from './admin/admin-drivers.service.js';
+import { DriverAppController } from './app/driver-app.controller.js';
+import { DriverAppService } from './app/driver-app.service.js';
 import { DriverContextGuard } from './context/driver-context.guard.js';
 import { DriverOffersController } from './offers/driver-offers.controller.js';
 import {
@@ -150,26 +154,62 @@ const driverOffersServiceProvider: FactoryProvider<DriverOffersService> = {
     new DriverOffersService(db, orderTransitions, driverOffersReposFor, events),
 };
 
+// Read-only repos for the driver app surface. The repos are stateless
+// over the shared Database (same as the other FactoryProviders above),
+// so a single instance per process is correct — they own no per-request
+// state and `db` is the shared pool, not a tx handle.
+const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
+  provide: OrdersRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): OrdersRepository => new OrdersRepository(db),
+};
+
+const dispensariesRepoProvider: FactoryProvider<DispensariesRepository> = {
+  provide: DispensariesRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DispensariesRepository => new DispensariesRepository(db),
+};
+
+const driverAppServiceProvider: FactoryProvider<DriverAppService> = {
+  provide: DriverAppService,
+  inject: [DriversRepository, OrdersRepository, DispensariesRepository, DriverShiftsRepository],
+  useFactory: (
+    drivers: DriversRepository,
+    orders: OrdersRepository,
+    dispensaries: DispensariesRepository,
+    shifts: DriverShiftsRepository,
+  ): DriverAppService => new DriverAppService(drivers, orders, dispensaries, shifts),
+};
+
 const providers: Provider[] = [
   driversRepoProvider,
   driverShiftsRepoProvider,
   driverLocationHistoryRepoProvider,
   dispatchOffersRepoProvider,
   usersRepoProvider,
+  ordersRepoProvider,
+  dispensariesRepoProvider,
   adminDriversServiceProvider,
   driverShiftServiceProvider,
   driverOffersServiceProvider,
+  driverAppServiceProvider,
   DriverContextGuard,
 ];
 
 @Module({
   imports: [AuthModule, DocumentHashModule, OrdersModule],
-  controllers: [AdminDriversController, DriverShiftController, DriverOffersController],
+  controllers: [
+    AdminDriversController,
+    DriverShiftController,
+    DriverOffersController,
+    DriverAppController,
+  ],
   providers,
   exports: [
     AdminDriversService,
     DriverShiftService,
     DriverOffersService,
+    DriverAppService,
     DriversRepository,
     DriverShiftsRepository,
     DriverLocationHistoryRepository,
