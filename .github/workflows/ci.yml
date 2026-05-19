@@ -152,4 +152,7 @@ jobs:
         # The @dankdash/compliance package is the existential gate — its tests
         # must pass before any merge to main or any deploy. Implementation
         # lives under packages/compliance and is scaffolded in Phase 3.
-        run: pnpm --filter @dankdash/compliance test
+        # Route through turbo (not pnpm --filter) so the `^build` dependency
+        # chain produces dist/ for @dankdash/dispensaries and @dankdash/types
+        # before vitest tries to resolve them.
+        run: pnpm turbo run test --filter @dankdash/compliance
