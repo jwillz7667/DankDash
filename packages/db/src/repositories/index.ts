@@ -46,3 +46,4 @@ export {
   PayoutsRepository,
   RefundsRepository,
 } from './payments.repo.js';
+export { WebhookEventsProcessedRepository } from './webhook-events.repo.js';

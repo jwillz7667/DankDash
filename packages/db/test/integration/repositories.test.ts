@@ -35,6 +35,7 @@ import {
   UserAddressesRepository,
   UserIdDocumentsRepository,
   UsersRepository,
+  WebhookEventsProcessedRepository,
   newId,
   stableUuid,
 } from '../../src/index.js';
@@ -1228,6 +1229,84 @@ describe('repository coverage', () => {
       expect(removedCount).toBeGreaterThanOrEqual(1);
       const afterT2 = await tokens.findById(t2.id);
       expect(afterT2?.isActive).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Webhook idempotency
+  // -------------------------------------------------------------------------
+
+  describe('WebhookEventsProcessedRepository', () => {
+    it('recordIfAbsent inserts on first call and short-circuits on replay', async () => {
+      const repo = new WebhookEventsProcessedRepository(getPool().db);
+      const eventId = `evt_${newId()}`;
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
+
+      const first = await repo.recordIfAbsent({
+        eventId,
+        provider: 'aeropay',
+        eventType: 'bank_account.linked',
+        expiresAt,
+      });
+      expect(first.recorded).toBe(true);
+      expect(first.existing).toBeNull();
+
+      const second = await repo.recordIfAbsent({
+        eventId,
+        provider: 'aeropay',
+        eventType: 'bank_account.linked',
+        expiresAt,
+      });
+      expect(second.recorded).toBe(false);
+      expect(second.existing?.eventId).toBe(eventId);
+      expect(second.existing?.provider).toBe('aeropay');
+      expect(second.existing?.eventType).toBe('bank_account.linked');
+    });
+
+    it('findByEventId returns the recorded row, null for unknown ids', async () => {
+      const repo = new WebhookEventsProcessedRepository(getPool().db);
+      const eventId = `evt_${newId()}`;
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
+
+      await repo.recordIfAbsent({
+        eventId,
+        provider: 'aeropay',
+        eventType: 'payment.settled',
+        expiresAt,
+      });
+
+      const found = await repo.findByEventId(eventId);
+      expect(found?.eventId).toBe(eventId);
+      expect(found?.eventType).toBe('payment.settled');
+
+      const missing = await repo.findByEventId(`evt_missing_${newId()}`);
+      expect(missing).toBeNull();
+    });
+
+    it('purgeExpired deletes only rows whose expires_at is strictly before the horizon', async () => {
+      const repo = new WebhookEventsProcessedRepository(getPool().db);
+      const oldEventId = `evt_old_${newId()}`;
+      const futureEventId = `evt_future_${newId()}`;
+      const horizon = new Date('2026-05-18T12:00:00.000Z');
+
+      await repo.recordIfAbsent({
+        eventId: oldEventId,
+        provider: 'aeropay',
+        eventType: 'payment.settled',
+        expiresAt: new Date('2026-05-18T11:59:59.000Z'),
+      });
+      await repo.recordIfAbsent({
+        eventId: futureEventId,
+        provider: 'aeropay',
+        eventType: 'payment.settled',
+        expiresAt: new Date('2026-05-18T12:00:01.000Z'),
+      });
+
+      const purgedCount = await repo.purgeExpired(horizon);
+      expect(purgedCount).toBeGreaterThanOrEqual(1);
+
+      expect(await repo.findByEventId(oldEventId)).toBeNull();
+      expect(await repo.findByEventId(futureEventId)).not.toBeNull();
     });
   });
 });
