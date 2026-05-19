@@ -84,6 +84,64 @@ describe('realtime envelope schema', () => {
     };
     expect(() => realtimeEnvelopeSchema.parse(bad)).toThrow();
   });
+
+  it('accepts a well-formed customer:eta_updated envelope', () => {
+    const env: RealtimeEnvelope = {
+      ...SAMPLE_ENVELOPE,
+      event: {
+        type: 'customer:eta_updated',
+        payload: {
+          orderId: '01900000-0000-7000-8000-00000000000a',
+          customerId: '01900000-0000-7000-8000-00000000000b',
+          driverId: '01900000-0000-7000-8000-00000000000c',
+          etaSeconds: 540.5,
+          distanceMeters: 3210,
+          source: 'mapbox',
+          computedAt: '2026-05-19T12:00:01.000Z',
+        },
+      },
+    };
+    const parsed = realtimeEnvelopeSchema.parse(env);
+    expect(parsed.event.type).toBe('customer:eta_updated');
+  });
+
+  it('rejects a customer:eta_updated payload with a non-positive ETA', () => {
+    const bad = {
+      ...SAMPLE_ENVELOPE,
+      event: {
+        type: 'customer:eta_updated' as const,
+        payload: {
+          orderId: '01900000-0000-7000-8000-00000000000a',
+          customerId: '01900000-0000-7000-8000-00000000000b',
+          driverId: '01900000-0000-7000-8000-00000000000c',
+          etaSeconds: 0,
+          distanceMeters: 0,
+          source: 'mapbox',
+          computedAt: '2026-05-19T12:00:01.000Z',
+        },
+      },
+    };
+    expect(() => realtimeEnvelopeSchema.parse(bad)).toThrow();
+  });
+
+  it('rejects a customer:eta_updated payload with an unknown source', () => {
+    const bad = {
+      ...SAMPLE_ENVELOPE,
+      event: {
+        type: 'customer:eta_updated' as const,
+        payload: {
+          orderId: '01900000-0000-7000-8000-00000000000a',
+          customerId: '01900000-0000-7000-8000-00000000000b',
+          driverId: '01900000-0000-7000-8000-00000000000c',
+          etaSeconds: 60,
+          distanceMeters: 100,
+          source: 'guess',
+          computedAt: '2026-05-19T12:00:01.000Z',
+        },
+      },
+    };
+    expect(() => realtimeEnvelopeSchema.parse(bad)).toThrow();
+  });
 });
 
 describe('decodeStreamEntry', () => {

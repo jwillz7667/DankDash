@@ -82,12 +82,35 @@ export const offerExpiredPayloadSchema = z.object({
 });
 export type OfferExpiredPayload = z.infer<typeof offerExpiredPayloadSchema>;
 
+/**
+ * Phase 10.3 — customer-facing ETA refresh. The workers' eta observer
+ * publishes one of these alongside every committed `driver:location`
+ * envelope for an order that is en route to the dropoff. The realtime
+ * service fans it to the customer room only (vendor + driver already
+ * see the location event; the ETA is a customer-experience refinement).
+ *
+ * `source` mirrors `EtaResult.source` so the iOS app can render
+ * "approx ETA" differently when it came from the haversine fallback —
+ * useful for muting overconfident ETAs during a Mapbox outage.
+ */
+export const customerEtaUpdatedPayloadSchema = z.object({
+  orderId: uuid,
+  customerId: uuid,
+  driverId: uuid,
+  etaSeconds: positiveNumber,
+  distanceMeters: z.number().nonnegative(),
+  source: z.enum(['cache', 'mapbox', 'fallback']),
+  computedAt: isoTimestamp,
+});
+export type CustomerEtaUpdatedPayload = z.infer<typeof customerEtaUpdatedPayloadSchema>;
+
 export const REALTIME_EVENT_TYPES = [
   'order:created',
   'order:status_changed',
   'driver:location',
   'offer:new',
   'offer:expired',
+  'customer:eta_updated',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 
@@ -102,6 +125,10 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('driver:location'), payload: driverLocationPayloadSchema }),
   z.object({ type: z.literal('offer:new'), payload: offerNewPayloadSchema }),
   z.object({ type: z.literal('offer:expired'), payload: offerExpiredPayloadSchema }),
+  z.object({
+    type: z.literal('customer:eta_updated'),
+    payload: customerEtaUpdatedPayloadSchema,
+  }),
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 

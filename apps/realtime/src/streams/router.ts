@@ -8,13 +8,14 @@
  * means a routing bug is a typecheck-or-test failure, not a "did the
  * customer get the message?" production mystery.
  *
- * Routing table (mirrors PHASE 9.3):
+ * Routing table (mirrors PHASE 9.3 + 10.3):
  *   order:created          → /vendor[dispensary]
  *   order:status_changed   → /customer[user] + /vendor[dispensary]
  *                            (+ /driver[driver] if driver assigned)
  *   driver:location        → /customer[user] (only the assigned customer)
  *   offer:new              → /driver[driver]
  *   offer:expired          → /driver[driver]
+ *   customer:eta_updated   → /customer[user] (only the assigned customer)
  *
  * Out-of-spec events are dropped (logged once and skipped). The schema
  * validation in decodeStreamEntry already prevents an unknown `type`
@@ -43,6 +44,7 @@ const eventName: Record<RealtimeEventType, string> = {
   'driver:location': 'driver:location',
   'offer:new': 'offer:new',
   'offer:expired': 'offer:expired',
+  'customer:eta_updated': 'customer:eta_updated',
 };
 
 export function routeEnvelope(envelope: RealtimeEnvelope): readonly RoutedBroadcast[] {
@@ -104,6 +106,17 @@ export function routeEnvelope(envelope: RealtimeEnvelope): readonly RoutedBroadc
         {
           namespace: '/driver',
           room: driverRoom(p.driverId),
+          eventName: eventName[event.type],
+          payload: { ...p, envelopeId: envelope.id },
+        },
+      ];
+    }
+    case 'customer:eta_updated': {
+      const p = event.payload;
+      return [
+        {
+          namespace: '/customer',
+          room: userRoom(p.customerId),
           eventName: eventName[event.type],
           payload: { ...p, envelopeId: envelope.id },
         },

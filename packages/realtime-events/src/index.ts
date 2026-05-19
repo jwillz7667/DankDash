@@ -7,6 +7,7 @@ export {
   driverLocationPayloadSchema,
   offerNewPayloadSchema,
   offerExpiredPayloadSchema,
+  customerEtaUpdatedPayloadSchema,
   type RealtimeEvent,
   type RealtimeEventType,
   type RealtimeEnvelope,
@@ -15,6 +16,7 @@ export {
   type DriverLocationPayload,
   type OfferNewPayload,
   type OfferExpiredPayload,
+  type CustomerEtaUpdatedPayload,
 } from './schemas.js';
 
 export {
