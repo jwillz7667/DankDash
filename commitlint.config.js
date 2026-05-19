@@ -57,6 +57,7 @@ const config = {
         'payments',
         'dispatch',
         'driver',
+        'eta',
         'config',
         'types',
         'ui',
