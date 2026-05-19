@@ -32,11 +32,14 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigError, ExternalServiceError, ValidationError } from '@dankdash/types';
+import type { Readable } from 'node:stream';
 
 /**
  * Configuration for a single R2 bucket.
@@ -169,6 +172,64 @@ export class R2Storage {
       );
     }
     return `${this.publicBaseUrl}/${key}`;
+  }
+
+  /**
+   * Server-side single-shot upload for in-memory bodies (≤5MB-ish). Use
+   * {@link putObjectStream} for larger payloads — multipart streaming
+   * avoids the heap pressure of buffering the whole object.
+   *
+   * `contentType` is optional but recommended: it ends up in the object
+   * metadata and influences downstream consumers (browser sniffing,
+   * analytics crawlers that filter by Content-Type, etc.).
+   */
+  async putObject(
+    key: string,
+    body: Buffer | Uint8Array | string,
+    contentType?: string,
+  ): Promise<void> {
+    this.assertKey(key);
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
+      );
+    } catch (cause) {
+      throw new ExternalServiceError(SERVICE_NAME, 'failed to put object', { key }, cause);
+    }
+  }
+
+  /**
+   * Server-side streamed upload. Wraps `@aws-sdk/lib-storage` `Upload`
+   * which transparently performs multipart uploads of 5MB chunks with
+   * up to 4 in-flight at once — that's the right shape for archives
+   * we'd otherwise have to buffer (week-long location partitions land
+   * around 150–300MB Parquet).
+   *
+   * Caller passes a node Readable; this method drives it to completion
+   * and resolves once R2 has acknowledged every part. Errors during the
+   * upload (network, 5xx) propagate as `ExternalServiceError`.
+   */
+  async putObjectStream(key: string, body: Readable, contentType?: string): Promise<void> {
+    this.assertKey(key);
+    try {
+      const upload = new Upload({
+        client: this.client,
+        params: {
+          Bucket: this.bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        },
+      });
+      await upload.done();
+    } catch (cause) {
+      throw new ExternalServiceError(SERVICE_NAME, 'failed to stream object to R2', { key }, cause);
+    }
   }
 
   async deleteObject(key: string): Promise<void> {
