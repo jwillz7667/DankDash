@@ -17,9 +17,11 @@ import {
   DispensariesRepository,
   LedgerEntriesRepository,
   PayoutsRepository,
+  WebhookEventsProcessedRepository,
   createPoolFromEnv,
 } from '@dankdash/db';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
+import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
 function main(): void {
   const env = loadEnv();
@@ -29,6 +31,7 @@ function main(): void {
   const dispensaries = new DispensariesRepository(pool.db);
   const ledger = new LedgerEntriesRepository(pool.db);
   const payouts = new PayoutsRepository(pool.db);
+  const webhookEvents = new WebhookEventsProcessedRepository(pool.db);
 
   const http = new HttpClient({
     dispatcher: createUndiciDispatcher({ maxConnections: 8, keepAliveTimeoutMs: 30_000 }),
@@ -51,12 +54,14 @@ function main(): void {
   });
 
   const payoutTask = schedulePayoutJob({ dispensaries, ledger, payouts, aeropay, logger });
+  const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
 
   logger.info({ env: env.NODE_ENV }, 'workers started');
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'workers shutting down');
     payoutTask.stop();
+    webhookCleanupTask.stop();
     await pool.close();
     process.exit(0);
   };
