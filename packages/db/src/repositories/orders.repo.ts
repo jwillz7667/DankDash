@@ -178,6 +178,54 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
+   * Aggregate earnings for the driver-self dashboard.
+   *
+   * Sums tips + delivery fees + deliveries-count across orders this driver
+   * delivered in [since, until). The window is half-open so day/week/month
+   * buckets stitched at the same instant don't double-count the boundary.
+   *
+   * Only `delivered` orders count — an order that was assigned-then-cancelled
+   * is not a paid trip. The deliveredAt timestamp is the source of truth
+   * (not statusChangedAt, which gets overwritten on every subsequent
+   * status change); deliveredAt is auto-stamped by `STATUS_TIMESTAMP_COLUMN`
+   * the moment the order flips to `delivered` and never moves again.
+   *
+   * COALESCE both SUMs so an all-zero window returns 0 instead of NULL —
+   * the driver app should display "$0 earned today" cleanly.
+   *
+   * Index-supported via `orders_driver_idx` (partial WHERE driver_id IS NOT
+   * NULL). The deliveredAt predicate filters in-memory after the index
+   * lookup, which is fine for a single driver's window — they will not
+   * have enough delivered orders for a sequential scan to bite.
+   */
+  async sumDriverEarningsBetween(
+    driverId: string,
+    since: Date,
+    until: Date,
+  ): Promise<{
+    readonly tipsCents: number;
+    readonly deliveryFeesCents: number;
+    readonly deliveriesCount: number;
+  }> {
+    const [row] = await this.db
+      .select({
+        tipsCents: sql<number>`COALESCE(SUM(${orders.driverTipCents}), 0)::int`,
+        deliveryFeesCents: sql<number>`COALESCE(SUM(${orders.deliveryFeeCents}), 0)::int`,
+        deliveriesCount: sql<number>`COUNT(*)::int`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.driverId, driverId),
+          eq(orders.status, 'delivered'),
+          gte(orders.deliveredAt, since),
+          sql`${orders.deliveredAt} < ${until}`,
+        ),
+      );
+    return row ?? { tipsCents: 0, deliveryFeesCents: 0, deliveriesCount: 0 };
+  }
+
+  /**
    * List all orders currently in a given status, oldest-first. Used by the
    * dispatch worker, which sweeps `awaiting_driver` orders on its tick and
    * decides whether to issue an offer, wait, or fail. Oldest-first ordering
