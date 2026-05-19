@@ -1,0 +1,121 @@
+/**
+ * Drivers feature module.
+ *
+ * Owns:
+ *   - admin onboarding write surface (POST/PATCH /v1/admin/drivers)
+ *   - DriverContextGuard, exported so future driver-self modules (shifts,
+ *     offers, route) can `@UseGuards(DriverContextGuard)` without
+ *     re-declaring the guard's repo provider
+ *
+ * The DocumentHasher provider is global (DocumentHashModule registered
+ * in AppModule), so AdminDriversService only injects the token — no
+ * local provider needed here.
+ *
+ * Repository providers use the same FactoryProvider pattern as the rest
+ * of the codebase: each repo is a thin wrapper around the shared
+ * Database, so a single instance per process is safe; scoped repos for
+ * transactions are constructed inline by the service via the
+ * `scopedReposFor` factory closure.
+ *
+ * AuthModule import gives the admin controller access to RolesGuard;
+ * JwtAuthGuard is already bound globally in the root composition.
+ */
+import {
+  DispatchOffersRepository,
+  DriverLocationHistoryRepository,
+  DriverShiftsRepository,
+  DriversRepository,
+  UsersRepository,
+  type Database,
+  type DocumentHasher,
+} from '@dankdash/db';
+import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
+import { DOCUMENT_HASHER, DocumentHashModule } from '../../infrastructure/document-hash.module.js';
+import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
+import { AuthModule } from '../auth/auth.module.js';
+import { AdminDriversController } from './admin/admin-drivers.controller.js';
+import {
+  AdminDriversService,
+  type AdminDriverScopedRepos,
+  type AdminDriverScopedReposFactory,
+} from './admin/admin-drivers.service.js';
+import { DriverContextGuard } from './context/driver-context.guard.js';
+
+const driversRepoProvider: FactoryProvider<DriversRepository> = {
+  provide: DriversRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriversRepository => new DriversRepository(db),
+};
+
+const driverShiftsRepoProvider: FactoryProvider<DriverShiftsRepository> = {
+  provide: DriverShiftsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriverShiftsRepository => new DriverShiftsRepository(db),
+};
+
+const driverLocationHistoryRepoProvider: FactoryProvider<DriverLocationHistoryRepository> = {
+  provide: DriverLocationHistoryRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriverLocationHistoryRepository =>
+    new DriverLocationHistoryRepository(db),
+};
+
+const dispatchOffersRepoProvider: FactoryProvider<DispatchOffersRepository> = {
+  provide: DispatchOffersRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DispatchOffersRepository => new DispatchOffersRepository(db),
+};
+
+const usersRepoProvider: FactoryProvider<UsersRepository> = {
+  provide: UsersRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): UsersRepository => new UsersRepository(db),
+};
+
+// Closure factory used by AdminDriversService.create so the drivers insert
+// and the user role-promotion run inside one tx. Stateless — the same
+// closure is reused for every onboarding call; only the `db` (tx handle)
+// passed in changes.
+const adminDriverReposFor: AdminDriverScopedReposFactory = (
+  db: Database,
+): AdminDriverScopedRepos => ({
+  drivers: new DriversRepository(db),
+  users: new UsersRepository(db),
+});
+
+const adminDriversServiceProvider: FactoryProvider<AdminDriversService> = {
+  provide: AdminDriversService,
+  inject: [DriversRepository, UsersRepository, DRIZZLE_DB, DOCUMENT_HASHER],
+  useFactory: (
+    drivers: DriversRepository,
+    users: UsersRepository,
+    db: Database,
+    hasher: DocumentHasher,
+  ): AdminDriversService =>
+    new AdminDriversService(drivers, users, db, adminDriverReposFor, hasher),
+};
+
+const providers: Provider[] = [
+  driversRepoProvider,
+  driverShiftsRepoProvider,
+  driverLocationHistoryRepoProvider,
+  dispatchOffersRepoProvider,
+  usersRepoProvider,
+  adminDriversServiceProvider,
+  DriverContextGuard,
+];
+
+@Module({
+  imports: [AuthModule, DocumentHashModule],
+  controllers: [AdminDriversController],
+  providers,
+  exports: [
+    AdminDriversService,
+    DriversRepository,
+    DriverShiftsRepository,
+    DriverLocationHistoryRepository,
+    DispatchOffersRepository,
+    DriverContextGuard,
+  ],
+})
+export class DriversModule {}

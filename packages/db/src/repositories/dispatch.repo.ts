@@ -153,6 +153,42 @@ export class DriversRepository extends BaseRepository {
     return row;
   }
 
+  /**
+   * Patch updatable columns on a drivers row. Identity (userId,
+   * licenseNumberHash) and status fields (currentStatus, currentOrderId,
+   * currentLocation) are deliberately excluded — those flow through
+   * setStatus/setCurrentOrder/updateLocation so the lifecycle invariants
+   * stay in one place.
+   */
+  async update(
+    id: string,
+    patch: Partial<
+      Omit<
+        NewDriver,
+        | 'id'
+        | 'userId'
+        | 'licenseNumberHash'
+        | 'currentStatus'
+        | 'currentOrderId'
+        | 'currentLocation'
+        | 'currentLocationUpdatedAt'
+        | 'lastStatusChangeAt'
+        | 'createdAt'
+        | 'ratingAvg'
+        | 'ratingCount'
+        | 'totalDeliveries'
+      >
+    >,
+  ): Promise<Driver | null> {
+    const [updated] = await this.db
+      .update(drivers)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(drivers.id, id))
+      .returning({ id: drivers.id });
+    if (updated === undefined) return null;
+    return this.findById(updated.id);
+  }
+
   async setStatus(id: string, status: DriverStatus): Promise<void> {
     const now = new Date();
     await this.db

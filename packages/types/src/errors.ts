@@ -285,6 +285,56 @@ export class KycError extends DomainError {
   }
 }
 
+export type DriverErrorCode =
+  | 'DRIVER_NOT_FOUND'
+  | 'DRIVER_ALREADY_REGISTERED'
+  | 'DRIVER_SHIFT_ALREADY_ACTIVE'
+  | 'DRIVER_SHIFT_NOT_ACTIVE'
+  | 'DRIVER_STATUS_INVALID'
+  | 'DRIVER_OFFER_NOT_FOUND'
+  | 'DRIVER_OFFER_EXPIRED'
+  | 'DRIVER_OFFER_NOT_YOURS'
+  | 'DRIVER_OFFER_ALREADY_RESPONDED'
+  | 'DRIVER_BUSY_WITH_ORDER'
+  | 'DRIVER_BACKGROUND_INCOMPLETE'
+  | 'DRIVER_INSURANCE_EXPIRED'
+  | 'DRIVER_NOT_ONLINE';
+
+const DRIVER_STATUS_CODES: Readonly<Record<DriverErrorCode, number>> = {
+  DRIVER_NOT_FOUND: 404,
+  DRIVER_ALREADY_REGISTERED: 409,
+  DRIVER_SHIFT_ALREADY_ACTIVE: 409,
+  DRIVER_SHIFT_NOT_ACTIVE: 422,
+  DRIVER_STATUS_INVALID: 422,
+  DRIVER_OFFER_NOT_FOUND: 404,
+  DRIVER_OFFER_EXPIRED: 410,
+  DRIVER_OFFER_NOT_YOURS: 403,
+  DRIVER_OFFER_ALREADY_RESPONDED: 409,
+  DRIVER_BUSY_WITH_ORDER: 409,
+  DRIVER_BACKGROUND_INCOMPLETE: 422,
+  DRIVER_INSURANCE_EXPIRED: 422,
+  DRIVER_NOT_ONLINE: 422,
+};
+
+/**
+ * Raised by the driver + dispatch surfaces. Each code carries its own HTTP
+ * status from `DRIVER_STATUS_CODES` so callers don't have to memorise the
+ * mapping; 404 for "no such driver/offer", 403 for cross-driver poking, 410
+ * Gone for an offer that timed out, 409 Conflict for state races (already
+ * registered, shift already active, offer already responded), 422 for the
+ * "request is well-formed but the driver state forbids this" cases.
+ */
+export class DriverError extends DomainError {
+  public readonly code: DriverErrorCode;
+  public readonly statusCode: number;
+
+  constructor(code: DriverErrorCode, message: string, details: ErrorDetails = {}, cause?: unknown) {
+    super(message, details, cause);
+    this.code = code;
+    this.statusCode = DRIVER_STATUS_CODES[code];
+  }
+}
+
 export type PasswordErrorCode =
   | 'PASSWORD_HASH_FAILED'
   | 'PASSWORD_HASH_MALFORMED'
