@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import {
   ageVerifications,
   complianceChecks,
@@ -102,6 +102,29 @@ export class MetrcTransactionsRepository extends BaseRepository {
       .limit(limit);
   }
 
+  /**
+   * Receipts the Metrc reconciliation cron compares against
+   * `/sales/v2/receipts/active`. Returns every row that crossed Metrc
+   * inside the window — `reported` rows we are still confirming and
+   * `reconciled` rows we have already matched (so the cron is
+   * idempotent and a re-run produces the same membership). Bounded by
+   * `reportedAt`, not `createdAt`, because the cron compares against
+   * Metrc's `lastModified` window.
+   */
+  async listReportedSince(since: Date, until: Date): Promise<readonly MetrcTransaction[]> {
+    return this.db
+      .select()
+      .from(metrcTransactions)
+      .where(
+        and(
+          inArray(metrcTransactions.status, ['reported', 'reconciled']),
+          gte(metrcTransactions.reportedAt, since),
+          lte(metrcTransactions.reportedAt, until),
+        ),
+      )
+      .orderBy(asc(metrcTransactions.reportedAt));
+  }
+
   async create(
     input: Omit<NewMetrcTransaction, 'id'> & { readonly id?: string },
   ): Promise<MetrcTransaction> {
@@ -114,8 +137,66 @@ export class MetrcTransactionsRepository extends BaseRepository {
   }
 
   /**
+   * Atomically reserves up to `limit` pending rows whose `next_retry_at`
+   * has elapsed, advancing each one's `next_retry_at` by `leaseMs` so a
+   * concurrent claim by another worker pod cannot re-pick the same row.
+   * The lease is the safety net for worker crashes: if this worker dies
+   * before reporting outcome, the next cron tick after the lease window
+   * re-claims the row and tries again. `SELECT … FOR UPDATE SKIP LOCKED`
+   * inside the tx means competing claimers walk past locked rows
+   * instead of stacking up behind them.
+   *
+   * Caller responsibility: every claimed row MUST be terminated by one
+   * of `markReported`, `scheduleRetry`, or `markFailedTerminal` before
+   * the lease elapses — otherwise the row remains in `pending` and
+   * another worker re-claims it after the lease, doubling the upstream
+   * call. The reporting job's per-row timeout is configured tighter
+   * than the lease for exactly this reason.
+   */
+  async claimDueForReporting(
+    now: Date,
+    limit: number,
+    leaseMs: number,
+  ): Promise<readonly MetrcTransaction[]> {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new RepositoryError(
+        `claimDueForReporting: limit must be a positive integer, got ${String(limit)}`,
+      );
+    }
+    if (!Number.isInteger(leaseMs) || leaseMs < 1) {
+      throw new RepositoryError(
+        `claimDueForReporting: leaseMs must be a positive integer, got ${String(leaseMs)}`,
+      );
+    }
+    return this.db.transaction(async (tx) => {
+      const locked = await tx
+        .select()
+        .from(metrcTransactions)
+        .where(
+          and(eq(metrcTransactions.status, 'pending'), lte(metrcTransactions.nextRetryAt, now)),
+        )
+        .orderBy(asc(metrcTransactions.nextRetryAt))
+        .limit(limit)
+        .for('update', { skipLocked: true });
+      if (locked.length === 0) return [];
+      const ids = locked.map((r) => r.id);
+      const leaseUntil = new Date(now.getTime() + leaseMs);
+      await tx
+        .update(metrcTransactions)
+        .set({ nextRetryAt: leaseUntil, updatedAt: now })
+        .where(inArray(metrcTransactions.id, ids));
+      // Surface the leased value to the caller so the worker's logs and
+      // the test harness can assert on the new schedule directly.
+      return locked.map((row) => ({ ...row, nextRetryAt: leaseUntil, updatedAt: now }));
+    });
+  }
+
+  /**
    * Records a successful Metrc submission. Sets `status='reported'`,
-   * `reported_at`, and the receipt id returned by the Metrc API.
+   * `reportedAt`, and the receipt id returned by the Metrc API. Once a
+   * row is reported the reconciliation cron is the only thing that
+   * touches it (to mark `reconciled`), so we also push `nextRetryAt`
+   * far into the future to keep the partial polling index small.
    */
   async markReported(
     id: string,
@@ -130,6 +211,7 @@ export class MetrcTransactionsRepository extends BaseRepository {
         metrcReceiptId: receiptId,
         responsePayload,
         reportedAt,
+        failureReason: null,
         updatedAt: new Date(),
       })
       .where(eq(metrcTransactions.id, id))
@@ -138,11 +220,44 @@ export class MetrcTransactionsRepository extends BaseRepository {
   }
 
   /**
-   * Records a Metrc submission failure and atomically increments the retry
-   * counter. The worker process inspects `retryCount` to decide between
-   * exponential backoff and escalation to the on-call queue.
+   * Records a transient Metrc failure and schedules the next attempt.
+   * The row stays in `pending` — the backoff is encoded by pushing
+   * `nextRetryAt` forward, not by flipping status. Increments
+   * `retryCount` atomically so the worker's backoff-schedule lookup
+   * sees the new attempt count on the next claim.
    */
-  async markFailed(
+  async scheduleRetry(
+    id: string,
+    nextRetryAt: Date,
+    failureReason: string,
+    responsePayload?: unknown,
+  ): Promise<MetrcTransaction | null> {
+    const patch: Partial<NewMetrcTransaction> = {};
+    if (responsePayload !== undefined) {
+      patch.responsePayload = responsePayload;
+    }
+    const [row] = await this.db
+      .update(metrcTransactions)
+      .set({
+        ...patch,
+        failureReason,
+        nextRetryAt,
+        retryCount: sql`${metrcTransactions.retryCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(metrcTransactions.id, id))
+      .returning();
+    return row ?? null;
+  }
+
+  /**
+   * Terminal failure — the worker exhausted the backoff schedule, or
+   * the Metrc response was non-retryable (4xx). Status flips to
+   * `failed`; admin alerting watches `metrc_transactions_failed_idx`.
+   * Also increments `retryCount` so the value reflects total attempts
+   * including the final one.
+   */
+  async markFailedTerminal(
     id: string,
     failureReason: string,
     responsePayload?: unknown,

@@ -57,6 +57,13 @@
       "when": 1748102400000,
       "tag": "0007_dispatch_failed_column",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1748188800000,
+      "tag": "0008_metrc_next_retry",
+      "breakpoints": true
     }
   ]
 }
