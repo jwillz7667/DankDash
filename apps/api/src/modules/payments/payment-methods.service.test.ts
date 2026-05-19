@@ -30,12 +30,13 @@ import {
   type NewPaymentTransaction,
   type Order,
   type OrdersRepository,
-  type OrderStatusTransitionInput,
   type PaymentMethod,
   type PaymentMethodsRepository,
   type PaymentStatus,
   type PaymentTransaction,
   type PaymentTransactionsRepository,
+  type TransitionDecision,
+  type TransitionResolver,
 } from '@dankdash/db';
 import { ConflictError, NotFoundError, PaymentError, RepositoryError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
@@ -114,13 +115,24 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},
     placedAt: new Date('2026-05-01T00:00:00.000Z'),
+    paymentFailedAt: null,
     acceptedAt: null,
+    rejectedAt: null,
+    preppingAt: null,
     preparedAt: null,
+    awaitingDriverAt: null,
+    driverAssignedAt: null,
+    enRoutePickupAt: null,
     pickedUpAt: null,
+    enRouteDropoffAt: null,
+    arrivedAtDropoffAt: null,
+    idScanPendingAt: null,
     deliveredAt: null,
+    returnedToStoreAt: null,
     canceledAt: null,
     canceledBy: null,
     cancelReason: null,
+    disputedAt: null,
     deliveryIdScanRef: null,
     deliveryIdScanPassed: null,
     deliveryIdScanAt: null,
@@ -128,6 +140,7 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     customerReview: null,
     dispensaryRating: null,
     driverRating: null,
+    ratedAt: null,
     createdAt: new Date('2026-05-01T00:00:00.000Z'),
     updatedAt: new Date('2026-05-01T00:00:00.000Z'),
     ...overrides,
@@ -340,7 +353,12 @@ class FakePaymentTransactionsRepo {
 
 class FakeOrdersRepo {
   rows: Order[] = [];
-  transitionStatusCalls: OrderStatusTransitionInput[] = [];
+  // Preserves the historical `{ orderId, ...decision }` shape that the
+  // assertions below check, even though the production code now calls
+  // `applyTransition(orderId, resolver)` — running the resolver against a
+  // stub locked snapshot lets us record the same fields without forcing
+  // every test to read a TransitionResolver back out.
+  transitionStatusCalls: Array<{ orderId: string } & TransitionDecision> = [];
   findByIdCalls: string[] = [];
 
   findById = (id: string): Promise<Order | null> => {
@@ -348,11 +366,19 @@ class FakeOrdersRepo {
     return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
   };
 
-  transitionStatus = (input: OrderStatusTransitionInput): Promise<Order> => {
-    this.transitionStatusCalls.push(input);
+  applyTransition = (orderId: string, resolve: TransitionResolver): Promise<Order> => {
+    const row = this.rows.find((r) => r.id === orderId);
+    const decision = resolve({
+      id: orderId,
+      status: row?.status ?? 'placed',
+      userId: row?.userId ?? '',
+      dispensaryId: row?.dispensaryId ?? '',
+      driverId: row?.driverId ?? null,
+    });
+    this.transitionStatusCalls.push({ orderId, ...decision });
     // Service discards the return value; the cast keeps the signature
     // honest without forcing every test to assemble a full Order row.
-    return Promise.resolve({ id: input.orderId, status: input.toStatus } as unknown as Order);
+    return Promise.resolve({ id: orderId, status: decision.toStatus } as unknown as Order);
   };
 }
 
