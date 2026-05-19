@@ -1,6 +1,6 @@
 /**
  * POST /v1/payment-methods/aeropay/webhook — Aeropay-driven bank-link and
- * (eventually, Phase 6.3) payment-lifecycle ingest.
+ * payment-lifecycle ingest.
  *
  * Public (Aeropay presents no bearer token). The endpoint is authenticated
  * by HMAC: AeropayWebhookVerifier recomputes
@@ -14,27 +14,31 @@
  * Response semantics:
  *
  *   - 204 No Content on every signed event — including ones whose name we
- *     ignore. 2xx drains Aeropay's retry queue; otherwise they retry with
- *     exponential backoff for 72 hours.
+ *     ignore and replays. 2xx drains Aeropay's retry queue; otherwise they
+ *     retry with exponential backoff for 72 hours.
  *   - 401 from a missing / mismatching signature surfaces via
  *     `PaymentError('PAYMENT_WEBHOOK_SIGNATURE_INVALID')` and the global
  *     filter. Aeropay treats 4xx as terminal, which matches our intent —
  *     a forged or expired signature is permanent, not transient.
  *   - 5xx (genuine bugs) goes through to Aeropay's retry queue.
  *
- * Why this controller doesn't dedupe yet: Phase 6.7 introduces a
- * `webhook_events_processed` table that records each `event_id` for 30
- * days; the service-layer handlers in `PaymentMethodsService.applyWebhook`
- * are idempotent by construction (re-applying `bank_account.linked` on an
- * already-active row is a no-op) so the missing controller-level dedup is
- * a defense-in-depth gap, not a correctness gap.
+ * Idempotency (Phase 6.7): after signature + envelope validation we
+ * INSERT a row into `webhook_events_processed` keyed by Aeropay's
+ * `eventId`. ON CONFLICT short-circuits the request — we ack the
+ * redelivery with 204 and skip the service call. Rows are TTL'd at 30
+ * days by the nightly cron in apps/workers (covers Aeropay's 72h retry
+ * window with comfortable slack for human-driven replays). Recording
+ * AFTER signature verification means a forged signature never plants a
+ * dedup row that would silence a future legitimate event with that id.
  */
+import { WebhookEventsProcessedRepository } from '@dankdash/db';
 import { PaymentError } from '@dankdash/types';
 import {
   Controller,
   HttpCode,
   HttpStatus,
   Inject,
+  Logger,
   Post,
   Req,
   type RawBodyRequest,
@@ -45,12 +49,17 @@ import { AEROPAY_WEBHOOK_VERIFIER, type AeropayWebhookVerifierLike } from './tok
 import type { FastifyRequest } from 'fastify';
 
 const SIGNATURE_HEADER = 'aeropay-signature';
+const AEROPAY_PROVIDER = 'aeropay';
+const DEDUP_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 @Controller('payment-methods/aeropay')
 export class AeropayWebhookController {
+  private readonly logger = new Logger(AeropayWebhookController.name);
+
   constructor(
     @Inject(AEROPAY_WEBHOOK_VERIFIER) private readonly verifier: AeropayWebhookVerifierLike,
     private readonly service: PaymentMethodsService,
+    private readonly webhookEvents: WebhookEventsProcessedRepository,
   ) {}
 
   @Public()
@@ -71,6 +80,21 @@ export class AeropayWebhookController {
       );
     }
     const outcome = this.verifier.verify(raw.toString('utf8'), signature);
+    const eventType = outcome.type === 'ignored' ? outcome.eventName : outcome.type;
+
+    const { recorded } = await this.webhookEvents.recordIfAbsent({
+      eventId: outcome.eventId,
+      provider: AEROPAY_PROVIDER,
+      eventType,
+      expiresAt: new Date(Date.now() + DEDUP_TTL_MS),
+    });
+    if (!recorded) {
+      this.logger.log(
+        `aeropay webhook replay ignored event_id=${outcome.eventId} type=${eventType}`,
+      );
+      return;
+    }
+
     await this.service.applyWebhook(outcome);
   }
 }

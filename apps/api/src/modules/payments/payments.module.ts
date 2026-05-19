@@ -44,6 +44,7 @@ import {
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
   RefundsRepository,
+  WebhookEventsProcessedRepository,
   type Database,
 } from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
@@ -190,6 +191,13 @@ const refundsRepoProvider: FactoryProvider<RefundsRepository> = {
   useFactory: (db: Database): RefundsRepository => new RefundsRepository(db),
 };
 
+const webhookEventsRepoProvider: FactoryProvider<WebhookEventsProcessedRepository> = {
+  provide: WebhookEventsProcessedRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): WebhookEventsProcessedRepository =>
+    new WebhookEventsProcessedRepository(db),
+};
+
 const refundsServiceProvider: FactoryProvider<RefundsService> = {
   provide: RefundsService,
   inject: [
@@ -219,6 +227,7 @@ const providers: Provider[] = [
   paymentTransactionsRepoProvider,
   ordersRepoProvider,
   refundsRepoProvider,
+  webhookEventsRepoProvider,
   VendorContextGuard,
   serviceProvider,
   refundsServiceProvider,
