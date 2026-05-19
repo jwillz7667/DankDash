@@ -7,7 +7,11 @@
  * No global side effects beyond the lazy pool initialization.
  */
 import { pino } from 'pino';
-import { createPool, type Pool, seed } from '@dankdash/db';
+// Use a relative import here so the self-reference works even before
+// `pnpm build` has produced `dist/index.d.ts` — the package-name alias
+// `@dankdash/db` only resolves against the built artifacts. Same pattern as
+// `test/global-setup.ts`.
+import { createPool, type Pool, seed } from '../src/index.js';
 
 class TestEnvNotSetError extends Error {
   public override readonly name = 'TestEnvNotSetError';
