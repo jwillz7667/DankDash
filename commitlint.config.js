@@ -52,6 +52,7 @@ const config = {
         'utils',
         'cart',
         'checkout',
+        'orders',
         'aeropay',
         'payments',
         'config',
