@@ -20,12 +20,14 @@ import {
   DriversRepository,
   LedgerEntriesRepository,
   OrdersRepository,
+  PartitionsRepository,
   PayoutsRepository,
   WebhookEventsProcessedRepository,
   createPoolFromEnv,
 } from '@dankdash/db';
 import { EtaService, MapboxClient } from '@dankdash/eta';
 import { publishRealtimeEvent } from '@dankdash/realtime-events';
+import { R2Storage } from '@dankdash/storage';
 import { Redis } from 'ioredis';
 import { uuidv7 } from 'uuidv7';
 import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
@@ -35,6 +37,10 @@ import {
   startLocationIngest,
   type LocationIngestItem,
 } from './jobs/location-ingest/index.js';
+import {
+  ParquetPartitionArchiver,
+  schedulePartitionManagementJob,
+} from './jobs/partition-management/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
@@ -51,6 +57,7 @@ async function main(): Promise<void> {
   const drivers = new DriversRepository(pool.db);
   const dispatchOffers = new DispatchOffersRepository(pool.db);
   const driverLocationHistory = new DriverLocationHistoryRepository(pool.db);
+  const partitions = new PartitionsRepository(pool.db);
 
   const http = new HttpClient({
     dispatcher: createUndiciDispatcher({ maxConnections: 8, keepAliveTimeoutMs: 30_000 }),
@@ -76,6 +83,27 @@ async function main(): Promise<void> {
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
   const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+
+  // Archive bucket shares the same R2 account as the rest of the storage
+  // layer. We construct a dedicated client here rather than reuse one
+  // from `apps/api` because the worker process owns its DI graph.
+  const archiveStorage = new R2Storage({
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    bucket: env.R2_BUCKET_NAME,
+  });
+  const partitionArchiver = new ParquetPartitionArchiver({
+    partitions,
+    storage: archiveStorage,
+    logger,
+  });
+  const partitionTask = schedulePartitionManagementJob({
+    partitions,
+    archiver: partitionArchiver,
+    logger,
+    clock: () => new Date(),
+  });
 
   // Two extra Redis connections for the ETA path:
   //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
@@ -153,6 +181,7 @@ async function main(): Promise<void> {
     webhookCleanupTask.stop();
     dispatchTask.stop();
     offerExpiryTask.stop();
+    partitionTask.stop();
     await locationIngest.stop();
     etaCacheRedis.disconnect();
     etaPublishRedis.disconnect();
