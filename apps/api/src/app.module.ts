@@ -18,6 +18,11 @@
  *   - CartModule         (consumer cart CRUD, user-owned, dispensary-scoped — /v1)
  *   - CheckoutModule     (POST /v1/carts/:id/checkout — the atomic checkout txn)
  *   - PaymentsModule     (Aeropay client + payment-method CRUD + webhook — /v1)
+ *   - OrdersModule       (order lifecycle / state-machine transitions — /v1
+ *                         customer surface + /v1/vendor vendor surface)
+ *   - EventEmitterModule (in-process domain events; OrdersModule emits
+ *                         OrderTransitionedEvent that future Realtime /
+ *                         Dispatch / Notifications modules will subscribe to)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -26,6 +31,7 @@
 import { loadEnv } from '@dankdash/config';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { RateLimitModule } from './common/rate-limit/rate-limit.module.js';
 import { DrizzleModule } from './infrastructure/drizzle.module.js';
 import { EncryptionModule } from './infrastructure/encryption.module.js';
@@ -39,6 +45,7 @@ import { DispensariesModule } from './modules/dispensaries/dispensaries.module.j
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
+import { OrdersModule } from './modules/orders/orders.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 
@@ -48,6 +55,16 @@ import { SearchModule } from './modules/search/search.module.js';
       isGlobal: true,
       validate: (raw: Record<string, unknown>) => loadEnv({ source: raw as NodeJS.ProcessEnv }),
       ignoreEnvFile: true, // env loading is the deployment's responsibility
+    }),
+    // Global in-process event bus. Wildcards enabled so subscribers can
+    // listen on `order.*`; verboseMemoryLeak surfaces dropped subscribers
+    // in dev (off in prod by default). Registered once at the root so any
+    // feature module can emit/subscribe without an extra import.
+    EventEmitterModule.forRoot({
+      wildcard: true,
+      delimiter: '.',
+      maxListeners: 20,
+      verboseMemoryLeak: false,
     }),
     DrizzleModule,
     EncryptionModule,
@@ -64,6 +81,7 @@ import { SearchModule } from './modules/search/search.module.js';
     CartModule,
     CheckoutModule,
     PaymentsModule,
+    OrdersModule,
   ],
 })
 export class AppModule {}
