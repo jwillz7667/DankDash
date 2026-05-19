@@ -268,7 +268,10 @@ class FakeCartsRepo implements Pick<
     }
     const existing = this.rows.get(id);
     if (existing === undefined) return Promise.resolve(null);
-    const now = new Date('2026-05-18T19:00:00.000Z');
+    // Mirror the real CartsRepository.touch which uses Postgres NOW() —
+    // a hardcoded date here would become a time-bomb that breaks any test
+    // asserting `expiresAt > Date.now()` once wall-clock passes the literal.
+    const now = new Date();
     const next: Cart = {
       ...existing,
       updatedAt: now,
