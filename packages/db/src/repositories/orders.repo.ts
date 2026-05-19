@@ -177,6 +177,26 @@ export class OrdersRepository extends BaseRepository {
       .limit(limit);
   }
 
+  /**
+   * List all orders currently in a given status, oldest-first. Used by the
+   * dispatch worker, which sweeps `awaiting_driver` orders on its tick and
+   * decides whether to issue an offer, wait, or fail. Oldest-first ordering
+   * matters — an order that has been waiting longer should get its next
+   * offer or its `DISPATCH_FAILED` first, before fresher arrivals.
+   *
+   * Index-supported via `orders_status_idx (status, placed_at)`. `limit`
+   * defaults to 200 — the worker tick should never have more in flight
+   * for a single status; if it does, telemetry will surface the saturation.
+   */
+  async listInStatus(status: OrderStatus, limit = 200): Promise<readonly Order[]> {
+    return this.db
+      .select()
+      .from(orders)
+      .where(eq(orders.status, status))
+      .orderBy(orders.placedAt)
+      .limit(limit);
+  }
+
   async create(input: Omit<NewOrder, 'id'> & { readonly id?: string }): Promise<Order> {
     const [row] = await this.db
       .insert(orders)
