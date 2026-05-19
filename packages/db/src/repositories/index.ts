@@ -50,4 +50,9 @@ export {
   PayoutsRepository,
   RefundsRepository,
 } from './payments.repo.js';
+export {
+  type DriverLocationHistoryArchiveRow,
+  type PartitionInfo,
+  PartitionsRepository,
+} from './partitions.repo.js';
 export { WebhookEventsProcessedRepository } from './webhook-events.repo.js';
