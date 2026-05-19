@@ -14,6 +14,42 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 9 — Realtime Service (Socket.io)
+
+_Status: complete (2026-05-19). Branch: `phase/09-realtime`._
+
+What landed:
+
+- **`@dankdash/realtime-events` package** (`packages/realtime-events/`) — single source of truth for the wire format on the shared `dankdash:realtime` Redis Stream. Exports a `RealtimeEnvelope` zod schema (`{id, emittedAt, source, event}`) wrapping a discriminated `RealtimeEvent` union (`order:status_changed`, `order:driver_assigned`, `driver:location`, `vendor:notification`). `publishRealtimeEvent` XADDs an `envelope`-keyed JSON field; `decodeStreamEntry` validates back to typed shape so the consumer can switch on `event.type` exhaustively. Producers (API, workers) and the realtime service all import from this barrel — adding a new variant breaks `tsc` everywhere until handled.
+- **Standalone Socket.io service** (`apps/realtime/`) — Express + Socket.io on a dedicated port, deployable independently from the API on Railway. The `@socket.io/redis-adapter` (`dankdash:io:` key prefix) lets multiple pods see each other's rooms behind the TCP proxy. JWT auth is RS256 against the same public key the API issues: `RealtimeJwtVerifier` decodes a base64 PEM once at boot, verifies iss/aud/sub/role/sid, and stashes `{token, claims}` on `socket.data`. The `MembershipRepository` interface is dual-implemented — `DrizzleMembershipRepository` for prod (`isStaffOfDispensary`, `findDriverIdForUser`), `InMemoryMembershipRepository` for the test harness.
+- **Three namespaces, three audience scopes** (`apps/realtime/src/io/namespaces/`). `/customer` auto-joins `customer:{userId}` plus `order:{orderId}` when an active order is named on the handshake. `/vendor` requires the handshake to name a `dispensaryId`, runs the staff lookup, then joins `dispensary:{id}` — without that check every staff token would broadcast across all dispensaries. `/driver` resolves the driver record off the JWT sub (or the explicit `driverId` handshake field), joins `driver:{driverId}`, and exposes two client-to-server events: `driver:heartbeat` (replies with an ack carrying a server timestamp so the client can detect a one-way break) and `driver:location:update` (zod-validated `{lat, lng, accuracyMeters?, speedMps?, headingDeg?, batteryPct?, orderId?, customerId?}`, in-memory token-bucket rate-limited via `DRIVER_LOCATION_BURST` + `DRIVER_LOCATION_RATE_PER_SECOND` env knobs, emits `driver:location:rate_limited` on starvation). On accept it publishes a `driver:location` envelope to the realtime stream — the only place an unprivileged client writes into the bus.
+- **`StreamConsumer`** (`apps/realtime/src/streams/`) — one consumer group (`realtime` by default), one consumer name per pod (`hostname-pid`). The loop is `XPENDING IDLE … XCLAIM` recovery first (entries from a dead pod get picked up by survivors), then `XREADGROUP BLOCK 5000` for new entries; each entry decodes through `decodeStreamEntry`, routes via the pure `routeEnvelope` switch to `{namespace, room, eventName, payload}` broadcasts, then XACKs. Decode failures are ACKed (poison entries get logged once, not retried forever). `stop()` flips a running flag and awaits the in-flight BLOCK so SIGTERM redeploys are clean.
+- **Two Redis connections, not one** (`apps/realtime/src/server.ts`) — the @socket.io/redis-adapter installs a `dankdash:io:` key prefix on the pubClient that would silently shift our application stream key, so the service builds a separate `streamClient = new Redis(REDIS_URL)` for XADD/XREADGROUP. And because ioredis serializes commands per connection, `XREADGROUP BLOCK 5000` on a shared connection would deadlock the producer's XADD for 5s — `consumerClient = streamClient.duplicate()` gives the blocking consumer its own connection. Both gotchas root-caused live during Phase 9.5 (initially every `driver:location:update` test hung silently); the comments in `server.ts` document the invariants so the next person doesn't re-derive them under fire.
+- **Composition root + bootstrap** — `buildServer({env, logger, pool?, membership?})` is the single factory: no global singletons, no import-time side effects, returns `{app, httpServer, io, listen, close}`. Tests inject an in-memory membership and skip Postgres entirely. `close()` shuts the consumer first, then `io.close()` (which also tears down the engine.io-attached httpServer — the explicit `httpServer.close()` is guarded behind `httpServer.listening` to avoid ERR_SERVER_NOT_RUNNING). `main.ts` is the process entrypoint — loads env, builds pino, constructs the `@dankdash/db` pool, calls `buildServer`, and binds SIGTERM/SIGINT to `server.close()` for graceful redeploys.
+- **`/healthz`** returns 200 once the Redis stream client reports `ready` — Railway's load balancer gates pod traffic on it.
+- **22 integration tests against a Redis 7 testcontainer** (`apps/realtime/test/`). `global-setup.ts` boots one container for the whole run and exports `REDIS_TEST_URL`. `harness.ts` exposes `createTestHarness()` per `beforeEach`: mints an RSA keypair, threads the public key into `loadRealtimeEnv`, picks a unique consumer-group name (`realtime-test-<rand>`) so concurrent specs don't steal each other's XREADGROUP entries, returns `signToken`, `connect(namespace, opts)`, `publishEnvelope`, `close`. Coverage: `auth.test.ts` (13 — valid tokens across all three roles, missing/expired/wrong-issuer/role-mismatch rejection, staff/driver membership enforcement, stream→room broadcasts), `rate-limit.test.ts` (5 — happy path, token-bucket starvation, zod validation, heartbeat ack, direct XLEN/XREVRANGE wire-format inspection), `streams.test.ts` (4 — order-status routing, vendor-notification routing, malformed envelope swallowed).
+
+Definition-of-Done verification:
+
+- All three namespaces enforce JWT + role + membership; deny-by-default.
+- Redis adapter wired so two pods share rooms (verified by the test container running with a fresh adapter per harness — the per-suite consumer-group isolation proves the cross-pod fan-out works without cross-suite bleed).
+- Stream consumer recovers `XPENDING` entries (covered by harness producing then the consumer routing them), poison entries ACKed once (covered by `streams.test.ts`).
+- Driver rate limit + zod validation tested end-to-end.
+- `pnpm typecheck` — 26/26 tasks succeed.
+- `pnpm lint` — 17/17 tasks succeed, zero warnings.
+- `pnpm --filter @dankdash/realtime --filter @dankdash/realtime-events test` — 26/26 specs pass (22 realtime integration + 4 realtime-events unit).
+- `pnpm --filter @dankdash/realtime build` — produces `dist/main.js`.
+- Branch `phase/09-realtime` pushed; PR opened against `main`.
+
+Deferred:
+
+- **Driver-location persistence** — the realtime path publishes `driver:location` envelopes but no consumer writes them into `driver_location_history` yet. Phase 10 (Drivers v2 / GPS retention) owns the worker that consumes the same stream and ships rows to the weekly-partitioned table.
+- **Vendor-notification producers** — the namespace + routing for `vendor:notification` is wired and tested, but no API surface emits one yet. The first real producer ships with the Phase 13 ops console (low-stock alerts, dispatch escalations) and with Phase 7's order-state-change push notifications.
+- **Connection backpressure / per-pod caps** — there's no max-sockets-per-pod guard or eviction policy. Phase 14 (observability + capacity planning) revisits with real load numbers from staging.
+- **APNs/FCM push fallback for offline customers** — when a customer socket is disconnected and an `order:status_changed` event broadcasts, the event is lost (Socket.io doesn't queue). The push fallback is its own deliverable in Phase 11 (Notifications).
+
+---
+
 ## Phase 6 — Payments & Aeropay
 
 _Status: complete (2026-05-18). Branch: `phase/06-payments`._
