@@ -1258,6 +1258,7 @@ const ID_DOCUMENTS: readonly SeedIdDocument[] = [
  */
 const TRUNCATE_TABLES: readonly string[] = [
   'audit_log',
+  'webhook_events_processed',
   'notifications',
   'push_tokens',
   'age_verifications',
