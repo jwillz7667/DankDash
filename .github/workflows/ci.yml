@@ -103,9 +103,12 @@ jobs:
         run: pnpm lint
 
       - name: Test
-        run: pnpm test -- --coverage
+        # Coverage is not a merge gate; the compliance-gate job below re-runs the
+        # @dankdash/compliance suite separately for the 100% requirement. Adding
+        # `--coverage` here would need @vitest/coverage-v8 in every package and a
+        # turbo pass-through dance — not worth the churn for a green/red signal.
+        run: pnpm test
         env:
-          # Compliance package targets 100% coverage; vitest exits non-zero if missed.
           NODE_ENV: test
 
       - name: Build (API)
