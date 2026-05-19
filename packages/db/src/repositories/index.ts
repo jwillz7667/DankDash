@@ -34,10 +34,13 @@ export {
 } from './identity.repo.js';
 export { NotificationsRepository, PushTokensRepository } from './notifications.repo.js';
 export {
+  type LockedOrderSnapshot,
   OrderEventsRepository,
   OrderItemsRepository,
   OrdersRepository,
   type OrderStatusTransitionInput,
+  type TransitionDecision,
+  type TransitionResolver,
 } from './orders.repo.js';
 export {
   LedgerEntriesRepository,
