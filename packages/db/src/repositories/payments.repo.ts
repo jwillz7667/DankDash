@@ -318,7 +318,9 @@ export class LedgerEntriesRepository extends BaseRepository {
       )
       .groupBy(ledgerEntries.accountRef);
     return rows.flatMap((row) =>
-      row.accountRef === null ? [] : [{ accountRef: row.accountRef, netCents: row.credits - row.debits }],
+      row.accountRef === null
+        ? []
+        : [{ accountRef: row.accountRef, netCents: row.credits - row.debits }],
     );
   }
 }
@@ -380,7 +382,12 @@ export class PayoutsRepository extends BaseRepository {
       .insert(payouts)
       .values(candidate)
       .onConflictDoNothing({
-        target: [payouts.recipientType, payouts.recipientId, payouts.periodStart, payouts.periodEnd],
+        target: [
+          payouts.recipientType,
+          payouts.recipientId,
+          payouts.periodStart,
+          payouts.periodEnd,
+        ],
       })
       .returning();
     if (inserted[0] !== undefined) {
