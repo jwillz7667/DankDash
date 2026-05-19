@@ -133,6 +133,24 @@ export class DriversRepository extends BaseRepository {
     return row === undefined ? null : inflateDriver(row);
   }
 
+  /**
+   * `SELECT … FOR UPDATE` on a drivers row. Must run inside a
+   * transaction (Postgres rejects FOR UPDATE on an autocommitted
+   * statement) — callers serialise around the lock so concurrent
+   * shift-start / shift-end / offer-accept paths cannot interleave on
+   * the same driver. Returns `null` if no row exists; callers map that
+   * to whatever domain error fits (DriverError NOT_FOUND, etc.).
+   */
+  async findByIdForUpdate(id: string): Promise<Driver | null> {
+    const [row] = await this.db
+      .select(DRIVER_COLUMNS)
+      .from(drivers)
+      .where(eq(drivers.id, id))
+      .for('update')
+      .limit(1);
+    return row === undefined ? null : inflateDriver(row);
+  }
+
   async listOnline(): Promise<readonly Driver[]> {
     const rows = await this.db
       .select(DRIVER_COLUMNS)

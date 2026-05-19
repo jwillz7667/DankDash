@@ -3,8 +3,10 @@
  *
  * Owns:
  *   - admin onboarding write surface (POST/PATCH /v1/admin/drivers)
- *   - DriverContextGuard, exported so future driver-self modules (shifts,
- *     offers, route) can `@UseGuards(DriverContextGuard)` without
+ *   - driver-self shift + status surface (POST /v1/driver/shift/{start,end},
+ *     POST /v1/driver/status)
+ *   - DriverContextGuard, exported so future driver-self modules
+ *     (offers, route) can `@UseGuards(DriverContextGuard)` without
  *     re-declaring the guard's repo provider
  *
  * The DocumentHasher provider is global (DocumentHashModule registered
@@ -40,6 +42,12 @@ import {
   type AdminDriverScopedReposFactory,
 } from './admin/admin-drivers.service.js';
 import { DriverContextGuard } from './context/driver-context.guard.js';
+import { DriverShiftController } from './shift/driver-shift.controller.js';
+import {
+  DriverShiftService,
+  type DriverShiftScopedRepos,
+  type DriverShiftScopedReposFactory,
+} from './shift/driver-shift.service.js';
 
 const driversRepoProvider: FactoryProvider<DriversRepository> = {
   provide: DriversRepository,
@@ -95,6 +103,22 @@ const adminDriversServiceProvider: FactoryProvider<AdminDriversService> = {
     new AdminDriversService(drivers, users, db, adminDriverReposFor, hasher),
 };
 
+// Sibling factory for the driver-self shift surface. Same shape as the
+// admin one but only needs (drivers, shifts) inside the tx — no users
+// table write, since promoting role=driver already happened at onboarding.
+const driverShiftReposFor: DriverShiftScopedReposFactory = (
+  db: Database,
+): DriverShiftScopedRepos => ({
+  drivers: new DriversRepository(db),
+  shifts: new DriverShiftsRepository(db),
+});
+
+const driverShiftServiceProvider: FactoryProvider<DriverShiftService> = {
+  provide: DriverShiftService,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriverShiftService => new DriverShiftService(db, driverShiftReposFor),
+};
+
 const providers: Provider[] = [
   driversRepoProvider,
   driverShiftsRepoProvider,
@@ -102,15 +126,17 @@ const providers: Provider[] = [
   dispatchOffersRepoProvider,
   usersRepoProvider,
   adminDriversServiceProvider,
+  driverShiftServiceProvider,
   DriverContextGuard,
 ];
 
 @Module({
   imports: [AuthModule, DocumentHashModule],
-  controllers: [AdminDriversController],
+  controllers: [AdminDriversController, DriverShiftController],
   providers,
   exports: [
     AdminDriversService,
+    DriverShiftService,
     DriversRepository,
     DriverShiftsRepository,
     DriverLocationHistoryRepository,
