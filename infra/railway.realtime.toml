@@ -1,0 +1,36 @@
+# ============================================================================
+# DankDash — Railway service config for @dankdash/realtime
+#
+# Placeholder config — the Socket.io implementation lands in Phase 9.
+# Keeping the build/deploy contract pinned now means the image shape
+# (and the Railway service wiring) doesn't change when Phase 9 fills in
+# the runtime code.
+# ============================================================================
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "infra/Dockerfile.realtime"
+watchPatterns = [
+  "apps/realtime/**",
+  "packages/**",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "package.json",
+  "tsconfig.base.json",
+  "infra/Dockerfile.realtime",
+  "infra/railway.realtime.toml",
+]
+
+[deploy]
+# Socket.io connections are sticky — Railway's TCP proxy handles
+# session affinity, so multi-replica is safe with the Redis adapter
+# (wired in Phase 9). Until then, one replica.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+numReplicas = 1
+
+[deploy.envs]
+NODE_ENV = "production"
+ALLOW_PARTIAL_ENV = "0"
