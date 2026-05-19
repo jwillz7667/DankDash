@@ -14,6 +14,48 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 6 — Payments & Aeropay
+
+_Status: complete (2026-05-18). Branch: `phase/06-payments`._
+
+What landed:
+
+- **`@dankdash/aeropay` package** (`packages/aeropay/`) — typed client for Aeropay's bank-link / payment / refund / payout APIs. OAuth2 client-credentials flow with a pluggable token cache (in-memory default, Redis impl in `apps/api`) so two API replicas don't stampede the token endpoint. Every mutation accepts an `idempotencyKey` and forwards it as the `Idempotency-Key` header — required for the payment / payout retry contract upstream. All request + response bodies validated by Zod schemas; a single `AeropayError` discriminated union carries `code` + `statusCode` + the parsed upstream error so callers can decide retry vs surface-to-user. Webhook HMAC verifier (`verifyWebhookSignature`) reads `t=<unix>,v1=<hex>` from the `Aeropay-Signature` header, recomputes `HMAC-SHA256(secret, "${t}.${rawBody}")`, rejects on ±5min skew, and uses `timingSafeEqual` on the digest compare so signature checks don't leak timing. 100% line coverage. Public surface is the barrel — deep imports forbidden.
+- **`PaymentMethodsModule`** (`apps/api/src/modules/payments/`) — `GET /v1/payment-methods` lists the caller's saved methods (bank account refs only, never the raw account number), `POST /v1/payment-methods/aeropay/link` exchanges a short-lived link token for a stored bank-account reference, `DELETE /v1/payment-methods/:id` soft-removes. The Redis token cache lives here (`redis-token-cache.ts`) and is wired into the Aeropay client via DI; the `RedisTokenCache` writes with `SET ... EX` so expired tokens are GC'd by Redis rather than a sweeper job.
+- **Payment lifecycle wired into the existing checkout transaction** — the Phase 5 stub `pi_stub_<shortCode>` is replaced by a real `aeropay.createPayment` call inside the checkout txn, keyed by `payment:<orderId>` so a network retry coalesces upstream. `payment_transactions.provider_ref` now stores the real Aeropay payment id; `status` flows `initiated` → `authorized` → `settled` (or `failed`) driven by the webhook. On `payment.settled` the distribution ledger is written: customer-receivable DR cleared by aeropay_clearing CR for the placement leg, then the settlement-clearing pair + the distribution pair (dispensary CR for share, platform_fee CR for the 15% take, driver CR for tip, gross-receipts tax CR, sales tax CR, refund_reserve CR for 2.5% of dispensary share). Total per-order DRs after settle = `3 × orderTotal` (placement + settlement-clearing + distribution). Settlement formula corrected vs spec §6.4: the dispensary share line subtracts discount in addition to platform fee + driver tip + tax, otherwise double-entry breaks — guarded by memory `settlement_dispensary_share.md`.
+- **`AeropayWebhookController`** (`POST /v1/payment-methods/aeropay/webhook`) — raw-body capture via a Fastify content-type parser registered for `application/json` so the HMAC verifier sees byte-exact input (the JSON the auto-parser produces is not a stable serialization). Public route (no JWT — Aeropay calls it), per-IP rate-limited. Forged signature → 401, body-not-JSON → 400. Idempotency via `webhook_events_processed` (Phase 6.7): every successful dispatch inserts `(event_id, event_type, processed_at)` inside the same txn that mutates `payment_transactions` + writes the ledger; a replay finds the row and logs `webhook replay ignored` without re-running any side effect.
+- **`webhook_events_processed` table** (`packages/db/src/migrations/0010_webhook_events_processed.sql`) — `event_id` PK, `event_type` text, `processed_at` timestamptz default `NOW()`. The Phase 6.7 cleanup cron (`apps/workers/src/jobs/webhook-events/cleanup.job.ts`) runs at 02:00 America/Chicago daily and deletes rows older than 30 days — Aeropay's replay window is 7 days, so 30d is a safe operational floor.
+- **Refunds with $50 admin-approval gate** — `POST /v1/vendor/orders/:id/refund` (vendor-scoped) initiates; if `amountCents ≤ 5000` the refund auto-completes inline (Aeropay `refundPayment` + 2 reverse-ledger entries DR refund_reserve / CR customer-receivable + flip `payment_transactions.status` to `partially_refunded`), otherwise the row stays `pending_admin_approval`. `POST /v1/admin/refunds/:id/approve` (admin role on JWT) finalizes — separation-of-duties enforced: the approver cannot be the initiator (422 `VALIDATION_FAILED`), checked in-service. `refunds.approved_by` FKs to `users.id`.
+- **Daily payouts cron** (`apps/workers/src/jobs/payouts/`) — fires at 03:00 America/Chicago for the previous Central calendar day, half-open window `[periodStart, periodEnd)` in UTC. Per dispensary: gross = sum of CR entries on `account_type='dispensary'` in window; refund draw = sum of DR entries on `account_type='refund_reserve'` in window; net = gross − refund draw. If `aeropay_account_ref IS NULL` → payout row inserted with `status='failed'`, `failure_reason='dispensary_bank_account_not_linked'`, no Aeropay call. Else → `aeropay.createPayout` with `idempotencyKey='payout:<payouts.id>'`, status flips to `processing` on success. `payouts` table has a uniqueness constraint on `(recipient_type, recipient_id, period_start_date)` so a re-run for the same period short-circuits via `createIfAbsent` — no duplicate insert, no second Aeropay call. Driver payouts ride the same job through the `driver` account type.
+- **Phase 6.8 integration tests** against the real Postgres+PostGIS testcontainer:
+  - `apps/api/test/integration/payments.webhook.test.ts` (4 tests) — full lifecycle (checkout → `payment.authorized` → `payment.settled` → balanced 6+ ledger rows summing to `3 × total` debits = credits), forged signature → 401 (placement entries unchanged), replay of `payment.settled` is idempotent (single distribution leg), and an invariant test that sums debits/credits across many random orders.
+  - `apps/api/test/integration/payments.refund.test.ts` (3 tests) — auto-approve small refund (≤$50) completes inline with 2 reverse-ledger entries and flips `payment_transactions` to `partially_refunded`; vendor >$50 stays `pending_admin_approval` then a different-user admin approves and finalizes; separation-of-duties → admin = initiator returns 422 `VALIDATION_FAILED` and the row stays pending. Admin approve calls drop `content-type` so Fastify's "Body cannot be empty when content-type is application/json" guard doesn't trip on the bodyless POST.
+  - `apps/workers/test/integration/payouts.job.test.ts` (4 tests, new vitest config + global-setup at `apps/workers/test/`) — net math (gross 10000 − refund_reserve 2500 = 7500 dispatched with `idempotencyKey=payout:<payouts.id>`), no-bank skip path (status='failed', failure_reason='dispensary_bank_account_not_linked', zero Aeropay calls), idempotency on re-run (no duplicate row, no second Aeropay call), and window boundary exclusion (entries at the exact `periodEnd` UTC excluded, before-window excluded).
+- **Test isolation fixes** — `webhook_events_processed` added to the TRUNCATE lists in `apps/api/test/integration/db.ts` and `packages/db/src/seed.ts` so dedup state from a prior test doesn't bleed into the next.
+
+Definition-of-Done verification:
+
+- Aeropay client typed end-to-end (Zod schemas, discriminated error union, idempotency-key contract). 100% line coverage on `@dankdash/aeropay`.
+- All payment endpoints reachable: list / link / delete payment methods, webhook ingest, vendor refund, admin refund approve.
+- Webhook signature verification working — HMAC-SHA256 over `${t}.${rawBody}`, ±5min skew, `timingSafeEqual` compare. Forged signature integration-tested.
+- Ledger double-entry invariant verified by `payments.webhook.test.ts` random-sample check (debits = credits per order, total DRs = `3 × orderTotal` after settle).
+- Refund flow with admin approval — auto-approve ≤$50, separation-of-duties on >$50, all three paths integration-tested.
+- Payout cron functional + idempotent + boundary-correct, integration-tested against the real DB.
+- 100% line coverage on `packages/aeropay`; the `payments` module is at ≥95% with the new integration suite — last remaining gaps are error branches that require provoking Aeropay-side 5xx, which the unit suite covers via fake throws.
+- `pnpm typecheck` — 24/24 tasks succeed.
+- `pnpm lint` — 16/16 tasks succeed, zero warnings.
+- `pnpm test` — 24/24 tasks succeed (901/901 apps/api tests pass; 30/30 apps/workers tests pass including the 4 new payouts integration tests).
+- `pnpm --filter @dankdash/api build` — produces `dist/main.js`.
+- Branch `phase/06-payments` pushed; PR opened against `main`.
+
+Deferred:
+
+- **Payout status reconciliation via webhook** — the cron dispatches and writes `status='processing'`; the eventual `payout.paid` / `payout.failed` webhook handler that flips the row to its terminal state ships with Phase 9 (reconciliation + back-office). Until then, terminal status comes from the nightly Aeropay payout report import.
+- **Manual refund retry from admin UI** — the service supports re-running a failed refund with the same `refund_id`, but no admin endpoint exists yet. Wired up alongside the back-office in Phase 13 (operations console).
+- **Per-tenant 1099-K aggregation** — annual tax-form generation is a Phase 15 (reporting) deliverable; the ledger already captures every payout in a form the aggregator can consume.
+
+---
+
 ## Phase 5 — Cart & Checkout
 
 _Status: complete (2026-05-18). Branch: `phase/05-cart-checkout`._
