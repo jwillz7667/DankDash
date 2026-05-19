@@ -31,6 +31,10 @@ export const EnvSchema = z
       .string()
       .min(44, 'COLUMN_ENCRYPTION_KEY_BASE64 must decode to 32 bytes'),
 
+    DOCUMENT_HASH_PEPPER_BASE64: z
+      .string()
+      .min(44, 'DOCUMENT_HASH_PEPPER_BASE64 must decode to at least 32 bytes'),
+
     R2_ACCOUNT_ID: z.string().min(1),
     R2_ACCESS_KEY_ID: z.string().min(1),
     R2_SECRET_ACCESS_KEY: z.string().min(1),

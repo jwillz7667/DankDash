@@ -55,6 +55,6 @@ const vendorListingsServiceProvider: FactoryProvider<VendorListingsService> = {
   imports: [AuthModule, DispensariesModule],
   controllers: [VendorListingsController],
   providers: [vendorListingsServiceProvider, VendorContextGuard],
-  exports: [VendorListingsService],
+  exports: [VendorListingsService, VendorContextGuard, DispensariesModule],
 })
 export class ListingsModule {}

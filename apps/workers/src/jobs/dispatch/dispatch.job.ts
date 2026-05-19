@@ -1,0 +1,311 @@
+/**
+ * Dispatch worker — Phase 8.3.
+ *
+ * Tick contract: for every order currently in `awaiting_driver`, decide
+ * what the next dispatch step should be (issue an offer, wait for the
+ * one in flight, or fail) and act on it. The decision is delegated to
+ * the pure `@dankdash/dispatch` orchestrator; this file is the I/O
+ * shell — it reads candidates + offer history out of Drizzle, hands
+ * them to `decideNextStep`, and writes the resulting offer / status
+ * transition back.
+ *
+ * Why polling, not Redis Streams (yet): the polling tick is the simplest
+ * thing that correctly serialises against the API's offer-accept and
+ * offer-decline endpoints — both edits go through the same DB row and
+ * either succeed or surface as `ORDER_INVALID_TRANSITION`. Redis Streams
+ * adds a second moving part (consumer groups, claim semantics) for what
+ * is at most a few-second improvement in dispatch latency. Phase 9
+ * (realtime) is the natural home for the cross-process event bus; once
+ * that's wired the tick can become "drained by the bus, only polls as a
+ * defence in depth."
+ *
+ * No transaction wraps the whole tick — each order's persist is its own
+ * unit so a row lock on one order does not stall others. The two
+ * mutations the tick performs (insert dispatch_offers, or transition
+ * orders.status to dispatch_failed) are each idempotent against a
+ * concurrent run: the offer insert is gated by the
+ * `dispatch_offers_active_idx` partial index + the orchestrator's
+ * "don't re-offer to anyone in history" rule, and the dispatch_failed
+ * transition runs through `OrdersRepository.applyTransition` which
+ * `SELECT … FOR UPDATE`s the order — a second worker's tick will see
+ * the new status and bail out via the state machine.
+ */
+import { type Logger } from '@dankdash/config';
+import {
+  type DispatchOffersRepository,
+  type DriversRepository,
+  type Order,
+  type OrdersRepository,
+} from '@dankdash/db';
+import {
+  DEFAULT_ATTEMPT_PARAMS,
+  DEFAULT_SCORING_PARAMS,
+  decideNextStep,
+  type AttemptParams,
+  type AttemptState,
+  type DispatchCandidate,
+  type OfferRecord,
+  type ScoringParams,
+} from '@dankdash/dispatch';
+import { nextOrderState, OrderError } from '@dankdash/orders';
+import { RepositoryError } from '@dankdash/types';
+
+const METERS_PER_MILE = 1609.344;
+
+export interface DispatchJobDeps {
+  readonly orders: OrdersRepository;
+  readonly drivers: DriversRepository;
+  readonly dispatchOffers: DispatchOffersRepository;
+  readonly logger: Logger;
+  /** Override the default attempt params (3min total / 30s per driver). */
+  readonly attemptParams?: AttemptParams;
+  /** Override the default scoring params (10mi radius, weights, etc). */
+  readonly scoringParams?: ScoringParams;
+}
+
+export interface DispatchJobInput {
+  readonly now: Date;
+  readonly deps: DispatchJobDeps;
+}
+
+/**
+ * Tick result counters. Exposed for tests + future telemetry. The
+ * worker doesn't emit metrics yet — when it does, these fields are
+ * the names that go on the histograms.
+ */
+export interface DispatchJobSummary {
+  /** Total `awaiting_driver` orders the tick scanned. */
+  readonly considered: number;
+  /** Tick issued a new offer for this many orders. */
+  readonly offered: number;
+  /** Order had a live offer; tick left it alone. */
+  readonly waited: number;
+  /** Order exhausted candidates → transitioned to `dispatch_failed`. */
+  readonly failedNoDrivers: number;
+  /** Order exhausted total budget → transitioned to `dispatch_failed`. */
+  readonly failedBudgetExhausted: number;
+  /** Order was in `awaiting_driver` without `awaiting_driver_at` — skipped. */
+  readonly skippedMissingTimestamp: number;
+  /**
+   * Tick saw a history row marked `accepted` while the order was still
+   * `awaiting_driver`. Means the accept happened in flight; benign,
+   * next tick will see the order moved to `driver_assigned`.
+   */
+  readonly skippedAcceptInFlight: number;
+  /** Per-order failures (DB error, transition refused) — never blocks other orders. */
+  readonly errors: number;
+}
+
+export async function runDispatchJob(input: DispatchJobInput): Promise<DispatchJobSummary> {
+  const { now, deps } = input;
+  const log = deps.logger.child({ job: 'dispatch' });
+
+  const awaiting = await deps.orders.listInStatus('awaiting_driver');
+  const summary = {
+    considered: awaiting.length,
+    offered: 0,
+    waited: 0,
+    failedNoDrivers: 0,
+    failedBudgetExhausted: 0,
+    skippedMissingTimestamp: 0,
+    skippedAcceptInFlight: 0,
+    errors: 0,
+  };
+
+  for (const order of awaiting) {
+    if (order.awaitingDriverAt === null) {
+      // Should be impossible — the orders.repo auto-stamps the column
+      // on the awaiting_driver transition. If we see this it means a
+      // direct UPDATE bypassed `applyTransition`, which is the kind of
+      // bug Phase 7's spec calls out as deploy-blocking. Skip and log
+      // loudly so it surfaces in the next on-call review.
+      summary.skippedMissingTimestamp += 1;
+      log.error(
+        { orderId: order.id },
+        'dispatch: order in awaiting_driver without awaiting_driver_at — skipping',
+      );
+      continue;
+    }
+
+    try {
+      const outcome = await dispatchSingleOrder(order, order.awaitingDriverAt, now, deps);
+      summary[outcome] += 1;
+    } catch (err) {
+      summary.errors += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      log.error({ orderId: order.id, err: message }, 'dispatch: per-order failure');
+    }
+  }
+
+  log.info({ summary }, 'dispatch tick complete');
+  return summary;
+}
+
+type PerOrderOutcome =
+  | 'offered'
+  | 'waited'
+  | 'failedNoDrivers'
+  | 'failedBudgetExhausted'
+  | 'skippedAcceptInFlight';
+
+async function dispatchSingleOrder(
+  order: Order,
+  attemptStartedAt: Date,
+  now: Date,
+  deps: DispatchJobDeps,
+): Promise<PerOrderOutcome> {
+  const scoringParams = deps.scoringParams ?? DEFAULT_SCORING_PARAMS;
+  const attemptParams = deps.attemptParams ?? DEFAULT_ATTEMPT_PARAMS;
+
+  // Pull candidates + offer history in parallel — no causal dependency
+  // between them, and at peak we want the dispatch latency budget spent
+  // on the SQL round-trips, not on serial waiting.
+  const [candidates, offers] = await Promise.all([
+    deps.drivers.findDispatchCandidatesNearDispensary(
+      order.dispensaryId,
+      scoringParams.maxRadiusMeters,
+    ),
+    deps.dispatchOffers.listForOrder(order.id),
+  ]);
+
+  const state: AttemptState = {
+    orderId: order.id,
+    attemptStartedAt,
+    candidates: candidates.map(
+      (row): DispatchCandidate => ({
+        driverId: row.driverId,
+        distanceMeters: row.distanceMeters,
+        ratingAvg: row.ratingAvg,
+        ratingCount: row.ratingCount,
+        lastDeliveryAt: row.lastDeliveryAt,
+      }),
+    ),
+    history: offers.map(
+      (o): OfferRecord => ({
+        driverId: o.driverId,
+        offeredAt: o.offeredAt,
+        expiresAt: o.expiresAt,
+        // dispatch_offers.status enum is offered/accepted/declined/expired;
+        // `@dankdash/dispatch` also models 'superseded' but we never write it
+        // from this side. Pass-through is exhaustive over the DB enum.
+        status: o.status,
+      }),
+    ),
+    params: attemptParams,
+  };
+
+  const decision = decideNextStep(state, now, scoringParams);
+
+  switch (decision.kind) {
+    case 'OFFER_NEXT':
+      await persistOffer(order, decision.driverId, decision.expiresAt, candidates, now, deps);
+      return 'offered';
+
+    case 'WAIT_FOR_OFFER':
+      return 'waited';
+
+    case 'ACCEPTED':
+      // The offer-accept endpoint runs synchronously: it locks the row,
+      // marks the offer accepted, and transitions the order to
+      // driver_assigned in the same tx. If we observe ACCEPTED on an
+      // order still in awaiting_driver, the accept tx must have started
+      // after our `listInStatus` snapshot — by next tick the order will
+      // be in driver_assigned and we won't see it. Benign; log at info.
+      deps.logger.info(
+        { orderId: order.id, driverId: decision.driverId },
+        'dispatch: ACCEPTED decision on awaiting_driver — accept in flight, next tick will reconcile',
+      );
+      return 'skippedAcceptInFlight';
+
+    case 'FAILED':
+      await failOrder(order, decision.reason, deps);
+      return decision.reason === 'no_eligible_drivers'
+        ? 'failedNoDrivers'
+        : 'failedBudgetExhausted';
+  }
+}
+
+async function persistOffer(
+  order: Order,
+  driverId: string,
+  expiresAt: Date,
+  candidates: readonly { readonly driverId: string; readonly distanceMeters: number }[],
+  now: Date,
+  deps: DispatchJobDeps,
+): Promise<void> {
+  // Re-find the candidate so the persisted distance matches the one the
+  // scorer used. The orchestrator already chose this driverId from the
+  // same array, so the find is guaranteed; the explicit guard exists for
+  // an impossible-but-clear failure mode if the orchestrator regresses.
+  const candidate = candidates.find((c) => c.driverId === driverId);
+  if (candidate === undefined) {
+    throw new RepositoryError(
+      `dispatch: OFFER_NEXT picked driver ${driverId} not present in candidates — orchestrator/repo invariant broken`,
+      { driverId, candidateCount: candidates.length },
+    );
+  }
+  const distanceMiles = (candidate.distanceMeters / METERS_PER_MILE).toFixed(2);
+
+  // Phase 8.3 estimate: delivery fee + tip. The actual payout (Phase 6.6
+  // ledger) layers on per-mile reimbursement computed from the real
+  // route after delivery completes; the offer is just a preview the
+  // driver sees before accepting. Keeping the formula simple and
+  // commented avoids the "is this the real payout?" confusion when ops
+  // reads a `dispatch_offers` row.
+  const payoutEstimateCents = order.deliveryFeeCents + order.driverTipCents;
+
+  await deps.dispatchOffers.create({
+    orderId: order.id,
+    driverId,
+    offeredAt: now,
+    expiresAt,
+    payoutEstimateCents,
+    distanceMiles,
+    status: 'offered',
+  });
+
+  deps.logger.info(
+    { orderId: order.id, driverId, expiresAt, payoutEstimateCents, distanceMiles },
+    'dispatch: offer issued',
+  );
+}
+
+async function failOrder(
+  order: Order,
+  reason: 'budget_exhausted' | 'no_eligible_drivers',
+  deps: DispatchJobDeps,
+): Promise<void> {
+  // applyTransition acquires SELECT … FOR UPDATE on the order row, then
+  // runs our resolver. If a concurrent transition (driver accept,
+  // customer cancel, store cancel) flipped the status between
+  // `listInStatus` and the lock, the resolver throws
+  // ORDER_INVALID_TRANSITION and the tx rolls back — exactly what we
+  // want. Catch + log so the per-order failure does not abort the tick.
+  try {
+    await deps.orders.applyTransition(order.id, (locked) => {
+      if (locked.status !== 'awaiting_driver') {
+        throw OrderError.invalidTransition(locked.status, 'DISPATCH_FAILED');
+      }
+      return {
+        toStatus: nextOrderState(locked.status, 'DISPATCH_FAILED'),
+        eventType: 'DISPATCH_FAILED',
+        actorRole: 'system',
+        payload: { reason },
+        reason: `dispatch failed: ${reason}`,
+      };
+    });
+    deps.logger.info({ orderId: order.id, reason }, 'dispatch: order marked dispatch_failed');
+  } catch (err) {
+    if (err instanceof OrderError) {
+      // Concurrent transition won the race — order is no longer ours
+      // to fail. Log and let the next tick re-evaluate (it won't see
+      // the order in awaiting_driver anymore).
+      deps.logger.info(
+        { orderId: order.id, code: err.code, reason },
+        'dispatch: DISPATCH_FAILED skipped — order moved out of awaiting_driver',
+      );
+      return;
+    }
+    throw err;
+  }
+}

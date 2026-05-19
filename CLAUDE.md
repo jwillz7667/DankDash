@@ -115,9 +115,12 @@ These come from `CLAUDE-CODE-PHASES.md` and `compliance.service.ts`. They are no
 
 **Order lifecycle** — see `DankDash-Technical-Spec.md` §3.3:
 
-- The order state machine is implemented as XState v5 mirroring the DB enum. Server is authoritative; clients request transitions, they don't perform them.
-- Every transition writes an immutable `order_events` row and an `order_status_history` row in the same transaction as the status update. Never bypass this — auditors will read it.
-- `order_events` is append-only — no UPDATE or DELETE permitted to the app role.
+- The order state machine lives in `packages/orders/` (Phase 7) — XState v5 setup via `setup({ types: { events: {} as OrderMachineEvent } }).createMachine(...)`, mirroring the DB `order_status` enum. Server is authoritative; clients request transitions, they don't perform them. The package is pure — no NestJS, no DB, no HTTP — so iOS can mirror the state graph from the same source.
+- **Every status change MUST go through `OrderTransitionService.transition()`** in `apps/api/src/modules/orders/order-transition.service.ts`. It is the single chokepoint that owns the row lock, the authz matrix (`AUTH_BY_EVENT` is exhaustive over `OrderEventType` — adding an event there breaks `tsc` until the matrix is extended), the machine consult, the UPDATE, the `order_events` insert, the `order_status_history` insert, and the post-commit `OrderTransitionedEvent` emit. No other code path is allowed to UPDATE `orders.status` or INSERT into `order_events` / `order_status_history`.
+- The repo-layer entry point is `OrdersRepository.applyTransition(orderId, resolver)` (`packages/db/src/repositories/orders.repo.ts`). It runs `SELECT … FOR UPDATE`, calls the resolver with the locked row, then performs the atomic UPDATE + 2× INSERT inside one tx. The legacy `transitionStatus` is `@deprecated`; do not add new callers.
+- Per-state timestamp columns on `orders` (`accepted_at`, `prepping_at`, `awaiting_driver_at`, `driver_assigned_at`, `en_route_pickup_at`, `picked_up_at`, `en_route_dropoff_at`, `arrived_at_dropoff_at`, `id_scan_pending_at`, `delivered_at`, `returned_to_store_at`, `canceled_at`, `disputed_at`, `payment_failed_at`, `rejected_at`, `rated_at`) are auto-stamped by `STATUS_TIMESTAMP_COLUMN` in the repo — never set them yourself in a `patch`.
+- `order_events` and `order_status_history` are append-only at the DB tier — the `dankdash_block_mutation` trigger rejects UPDATE/DELETE even from the app role. Both tables are partitioned monthly; the rollover function `dankdash_rollover_monthly_partitions` is the single source of truth for which child tables get next month's partition.
+- Cross-module reactions to state changes (realtime broadcast, push notifications, dispatch trigger) go through `OrderTransitionedEvent` via `EventEmitter2` (registered globally by `EventEmitterModule.forRoot` in `AppModule`). Subscribers must not throw fatally — the post-commit emit catches and logs, the DB has already committed, the response is durable.
 
 **Money, IDs, and time:**
 

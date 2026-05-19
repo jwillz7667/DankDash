@@ -50,13 +50,25 @@ export const orders = pgTable(
     deliveryAddressSnapshot: jsonb('delivery_address_snapshot').notNull(),
 
     placedAt: timestamp('placed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    paymentFailedAt: timestamp('payment_failed_at', { withTimezone: true, mode: 'date' }),
     acceptedAt: timestamp('accepted_at', { withTimezone: true, mode: 'date' }),
+    rejectedAt: timestamp('rejected_at', { withTimezone: true, mode: 'date' }),
+    preppingAt: timestamp('prepping_at', { withTimezone: true, mode: 'date' }),
     preparedAt: timestamp('prepared_at', { withTimezone: true, mode: 'date' }),
+    awaitingDriverAt: timestamp('awaiting_driver_at', { withTimezone: true, mode: 'date' }),
+    dispatchFailedAt: timestamp('dispatch_failed_at', { withTimezone: true, mode: 'date' }),
+    driverAssignedAt: timestamp('driver_assigned_at', { withTimezone: true, mode: 'date' }),
+    enRoutePickupAt: timestamp('en_route_pickup_at', { withTimezone: true, mode: 'date' }),
     pickedUpAt: timestamp('picked_up_at', { withTimezone: true, mode: 'date' }),
+    enRouteDropoffAt: timestamp('en_route_dropoff_at', { withTimezone: true, mode: 'date' }),
+    arrivedAtDropoffAt: timestamp('arrived_at_dropoff_at', { withTimezone: true, mode: 'date' }),
+    idScanPendingAt: timestamp('id_scan_pending_at', { withTimezone: true, mode: 'date' }),
     deliveredAt: timestamp('delivered_at', { withTimezone: true, mode: 'date' }),
+    returnedToStoreAt: timestamp('returned_to_store_at', { withTimezone: true, mode: 'date' }),
     canceledAt: timestamp('canceled_at', { withTimezone: true, mode: 'date' }),
     canceledBy: uuid('canceled_by').references(() => users.id),
     cancelReason: text('cancel_reason'),
+    disputedAt: timestamp('disputed_at', { withTimezone: true, mode: 'date' }),
 
     deliveryIdScanRef: text('delivery_id_scan_ref'),
     deliveryIdScanPassed: boolean('delivery_id_scan_passed'),
@@ -66,6 +78,7 @@ export const orders = pgTable(
     customerReview: text('customer_review'),
     dispensaryRating: smallint('dispensary_rating'),
     driverRating: smallint('driver_rating'),
+    ratedAt: timestamp('rated_at', { withTimezone: true, mode: 'date' }),
 
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
@@ -156,9 +169,42 @@ export const orderEvents = pgTable(
   ],
 );
 
+/**
+ * Append-only audit row for every order-state transition. Sibling to
+ * `order_events`: that table is the free-text event stream; this one
+ * pins from/to status as typed columns, partitioned monthly on
+ * `changed_at`. Both are written by the OrderTransitionService inside
+ * the same DB transaction that flips `orders.status`.
+ *
+ * Like `order_events`, the table is partitioned in raw migration SQL
+ * (Drizzle does not emit PARTITION BY today), so this declaration carries
+ * the column shape for the repository layer only.
+ */
+export const orderStatusHistory = pgTable(
+  'order_status_history',
+  {
+    id: uuid('id').notNull().defaultRandom(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'restrict' }),
+    fromStatus: orderStatus('from_status').notNull(),
+    toStatus: orderStatus('to_status').notNull(),
+    eventType: text('event_type').notNull(),
+    changedBy: uuid('changed_by').references(() => users.id),
+    actorRole: text('actor_role'),
+    reason: text('reason'),
+    changedAt: timestamp('changed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  () => [
+    // PK + partition declared in raw migration SQL.
+  ],
+);
+
 export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
 export type OrderItem = typeof orderItems.$inferSelect;
 export type NewOrderItem = typeof orderItems.$inferInsert;
 export type OrderEvent = typeof orderEvents.$inferSelect;
 export type NewOrderEvent = typeof orderEvents.$inferInsert;
+export type OrderStatusHistoryRow = typeof orderStatusHistory.$inferSelect;
+export type NewOrderStatusHistoryRow = typeof orderStatusHistory.$inferInsert;
