@@ -1,0 +1,101 @@
+# Local development stack for DankDash.
+#
+# All services bind to non-default host ports so they do not clash with any
+# Postgres/Redis already running on the developer's machine.
+#
+#   Postgres + PostGIS  -> localhost:5433  (container 5432)
+#   Redis               -> localhost:6380  (container 6379)
+#   Mailhog SMTP        -> localhost:1026  (container 1025)
+#   Mailhog Web UI      -> localhost:8026  (container 8025)
+#   LocalStack (S3)     -> localhost:4566
+#
+# Bring it all up:   docker compose up -d
+# Tear it down:      docker compose down
+# Reset volumes:     docker compose down -v
+#
+# `db` runs initialization SQL from ./infra/postgres/initdb to enable
+# PostGIS / pg_trgm / pgcrypto / citext and to create the test database.
+
+name: dankdash
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: dankdash-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dankdash
+      POSTGRES_PASSWORD: dankdash
+      POSTGRES_DB: dankdash
+      # Ensures init scripts run with consistent locale.
+      LANG: en_US.utf8
+    ports:
+      - "5433:5432"
+    volumes:
+      - dankdash-db-data:/var/lib/postgresql/data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dankdash -d dankdash"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: dankdash-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - dankdash-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: dankdash-mailhog
+    restart: unless-stopped
+    ports:
+      - "1026:1025" # SMTP
+      - "8026:8025" # Web UI
+    healthcheck:
+      # Mailhog has no curl/wget; use the busybox `nc` to probe the SMTP port.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1025 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: dankdash-localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: s3
+      DEBUG: "0"
+      PERSISTENCE: "1"
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - "4566:4566"
+    volumes:
+      - dankdash-localstack-data:/var/lib/localstack
+      - ./infra/localstack/init:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  dankdash-db-data:
+  dankdash-redis-data:
+  dankdash-localstack-data:

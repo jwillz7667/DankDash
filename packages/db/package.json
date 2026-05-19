@@ -1,0 +1,54 @@
+{
+  "name": "@dankdash/db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Drizzle schema, migrations, repository layer, and the Postgres connection pool. Fleshed out in Phase 1.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && pnpm run build:copy-migrations",
+    "build:copy-migrations": "node -e \"require('node:fs').cpSync('src/migrations','dist/migrations',{recursive:true})\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist",
+    "migrate": "tsx src/migrate.cli.ts up",
+    "migrate:rollback": "tsx src/migrate.cli.ts down",
+    "migrate:status": "tsx src/migrate.cli.ts status",
+    "seed": "tsx src/seed.cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.8",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@dankdash/config": "workspace:^",
+    "@dankdash/types": "workspace:^",
+    "@testcontainers/postgresql": "^11.14.0",
+    "decimal.js": "^10.6.0",
+    "drizzle-orm": "^0.45.2",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "postgres": "^3.4.9",
+    "uuidv7": "^1.2.1"
+  }
+}

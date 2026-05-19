@@ -1,0 +1,11 @@
+# Default reviewer for everything in the repo. Per-area owners are added as
+# the codebase grows (e.g. iOS leads on DankDash/, payments leads on
+# packages/payments/, compliance leads on packages/compliance/).
+
+*                              @jwillz7667
+
+# Compliance and money paths require an explicit second pair of eyes — set
+# this when the team grows. For now the default owner stands.
+packages/compliance/**          @jwillz7667
+docs/spec/compliance.service.ts @jwillz7667
+.github/workflows/**            @jwillz7667

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# commit-msg hook: enforces Conventional Commits via commitlint.
+# Installed by `pnpm install` via the root `prepare` script.
+set -euo pipefail
+
+pnpm exec commitlint --edit "$1"

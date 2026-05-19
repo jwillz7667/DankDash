@@ -1,0 +1,32 @@
+{
+  "name": "@dankdash/workers",
+  "version": "0.0.0",
+  "private": true,
+  "description": "BullMQ background workers (Metrc sync, payouts, notifications, reconciliation). Fleshed out in Phases 6, 11, 12.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dankdash/aeropay": "workspace:*",
+    "@dankdash/config": "workspace:*",
+    "@dankdash/db": "workspace:*",
+    "@dankdash/types": "workspace:*",
+    "luxon": "^3.5.0",
+    "node-cron": "^3.0.3",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.10.2",
+    "@types/node-cron": "^3.0.11",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

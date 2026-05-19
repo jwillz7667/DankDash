@@ -1,0 +1,116 @@
+name: deploy-prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_sha:
+        description: "Exact SHA from main to deploy (must already be green on staging)"
+        required: true
+        type: string
+      release_note:
+        description: "One-line change summary recorded in PROGRESS.md"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: "--max-old-space-size=4096"
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  guard:
+    name: verify SHA is on main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Assert SHA exists on main
+        run: |
+          if ! git merge-base --is-ancestor "${{ inputs.git_sha }}" origin/main; then
+            echo "SHA ${{ inputs.git_sha }} is not reachable from origin/main" >&2
+            exit 1
+          fi
+
+  deploy:
+    name: railway production
+    runs-on: ubuntu-latest
+    needs: guard
+    # `production` environment in GitHub repo settings is gated by required
+    # reviewers — at least one human approval is required before this job runs.
+    environment:
+      name: production
+      url: https://api.dankdash.com
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout at requested SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all apps
+        run: pnpm build
+
+      - name: Install Railway CLI
+        run: |
+          curl -fsSL https://railway.app/install.sh | sh
+          echo "${HOME}/.railway/bin" >> "${GITHUB_PATH}"
+
+      - name: Deploy API
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PROD }}
+        run: railway up --service api --detach
+        working-directory: apps/api
+
+      - name: Deploy realtime
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PROD }}
+        run: railway up --service realtime --detach
+        working-directory: apps/realtime
+
+      - name: Deploy workers
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PROD }}
+        run: railway up --service workers --detach
+        working-directory: apps/workers
+
+      - name: Smoke-test API
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS https://api.dankdash.com/health >/dev/null; then
+              echo "API healthy"; exit 0
+            fi
+            sleep 10
+          done
+          echo "API did not become healthy within 5 minutes" >&2
+          exit 1
+
+      - name: Tag release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="prod-$(date -u +%Y%m%d-%H%M%S)"
+          git tag -a "${tag}" "${{ inputs.git_sha }}" -m "${{ inputs.release_note }}"
+          git push origin "${tag}"

@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+.next
+.turbo
+coverage
+pnpm-lock.yaml
+*.generated.*
+DankDash.xcodeproj
+DankDash/Assets.xcassets
+
+# Reference material — checked in for context, not maintained by us. Prettier
+# would reflow YAML/SQL/TS and break the alignment that human reviewers rely
+# on when comparing the spec against the implementation.
+docs/spec/**

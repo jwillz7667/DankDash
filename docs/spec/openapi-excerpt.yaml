@@ -1,0 +1,216 @@
+openapi: 3.1.0
+info:
+  title: DankDash API
+  version: 1.0.0
+  description: |
+    Public API surface for DankDash consumer, vendor, and driver clients.
+    This excerpt covers the critical compliance-gated paths. Full spec
+    is generated from NestJS decorators via @nestjs/swagger.
+servers:
+  - url: https://api.dankdash.com/v1
+    description: Production
+  - url: https://api.staging.dankdash.com/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+paths:
+  /cart/{cartId}/validate:
+    post:
+      summary: Validate cart against MN compliance rules without checking out
+      description: |
+        Returns the same compliance evaluation that would run at checkout.
+        Idempotent. Used by the iOS client to preview a cart before showing the
+        "Place Order" button.
+      parameters:
+        - name: cartId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Compliance evaluation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceEvaluation' }
+
+  /cart/{cartId}/checkout:
+    post:
+      summary: Create an order from the cart
+      description: |
+        Runs compliance evaluation server-side. If any rule fails, returns 422
+        with the failing rule(s). Otherwise creates an order, reserves
+        inventory, and returns a payment intent for Aeropay confirmation.
+      parameters:
+        - name: cartId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delivery_address_id, payment_method_id, driver_tip_cents]
+              properties:
+                delivery_address_id:
+                  type: string
+                  format: uuid
+                payment_method_id:
+                  type: string
+                  format: uuid
+                driver_tip_cents:
+                  type: integer
+                  minimum: 0
+                  maximum: 50000
+                promo_code:
+                  type: string
+                  nullable: true
+                legal_acknowledgments:
+                  type: object
+                  required: [age_21_plus, private_residence, no_resale]
+                  properties:
+                    age_21_plus: { type: boolean, const: true }
+                    private_residence: { type: boolean, const: true }
+                    no_resale: { type: boolean, const: true }
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { $ref: '#/components/schemas/Order' }
+                  payment_intent: { $ref: '#/components/schemas/PaymentIntent' }
+        '422':
+          description: Compliance check failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceError' }
+        '409':
+          description: Inventory unavailable
+        '402':
+          description: Payment setup required
+
+  /driver/orders/{orderId}/id-scan:
+    post:
+      summary: Submit Veriff scan result for delivery handoff
+      description: |
+        Driver calls this after the customer's ID is scanned via the Veriff SDK.
+        Server validates the Veriff session, compares the verified DOB and name
+        against the order's customer record, and either advances the order to
+        `id_scan_passed` (unlocking Delivery Complete) or `id_scan_failed`.
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [veriff_session_id]
+              properties:
+                veriff_session_id:
+                  type: string
+                driver_location:
+                  $ref: '#/components/schemas/Coordinate'
+      responses:
+        '200':
+          description: Scan result evaluated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  passed: { type: boolean }
+                  reason_code:
+                    type: string
+                    nullable: true
+                    enum: [age_below_21, name_mismatch, expired_id, liveness_failed, document_invalid]
+                  retry_allowed: { type: boolean }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ComplianceEvaluation:
+      type: object
+      properties:
+        passed: { type: boolean }
+        cart_totals:
+          type: object
+          properties:
+            flower_grams:     { type: number, format: float }
+            concentrate_grams:{ type: number, format: float }
+            edible_thc_mg:    { type: number, format: float }
+        limits:
+          type: object
+          properties:
+            flower_grams_max:      { type: number, const: 56.7 }   # 2 oz
+            concentrate_grams_max: { type: number, const: 8.0 }
+            edible_thc_mg_max:     { type: number, const: 800.0 }
+        rules:
+          type: array
+          items:
+            type: object
+            properties:
+              rule:    { type: string, enum: [age, hours, per_transaction_limit, geofence, license, kyc] }
+              passed:  { type: boolean }
+              details: { type: object }
+
+    ComplianceError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, enum: [COMPLIANCE_LIMIT_EXCEEDED, OUTSIDE_HOURS, OUT_OF_DELIVERY_AREA, KYC_REQUIRED, ID_SCAN_FAILED] }
+            message: { type: string }
+            details: { type: object }
+
+    Order:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        short_code:  { type: string }
+        status:      { type: string }
+        placed_at:   { type: string, format: date-time }
+        total_cents: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OrderItem' }
+
+    OrderItem:
+      type: object
+      properties:
+        id:               { type: string, format: uuid }
+        product_name:     { type: string }
+        quantity:         { type: integer }
+        unit_price_cents: { type: integer }
+        thc_mg_total:     { type: number, format: float }
+
+    PaymentIntent:
+      type: object
+      properties:
+        provider:         { type: string, const: aeropay }
+        provider_payment_id: { type: string }
+        client_secret:    { type: string }
+        amount_cents:     { type: integer }
+        expires_at:       { type: string, format: date-time }
+
+    Coordinate:
+      type: object
+      required: [latitude, longitude]
+      properties:
+        latitude:  { type: number, format: double }
+        longitude: { type: number, format: double }

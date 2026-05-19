@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Pre-commit hook: runs lint-staged against the staged files only.
+# Installed by `pnpm install` via the root `prepare` script, which calls
+# `git config core.hooksPath .githooks`.
+set -euo pipefail
+
+# Skip on rebases / cherry-picks where staged content is intentionally partial.
+if [[ -f "$(git rev-parse --git-path MERGE_MSG)" ]] || \
+   [[ -f "$(git rev-parse --git-path CHERRY_PICK_HEAD)" ]] || \
+   [[ -f "$(git rev-parse --git-path REBASE_HEAD)" ]]; then
+  exit 0
+fi
+
+pnpm exec lint-staged --concurrent false
