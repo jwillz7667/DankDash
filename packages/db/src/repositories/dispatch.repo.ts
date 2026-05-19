@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { type GeoPoint } from '../schema/custom-types.js';
 import {
   dispatchOffers,
@@ -271,7 +271,7 @@ export class DriversRepository extends BaseRepository {
       .where(
         and(
           eq(drivers.id, id),
-          sql`(${drivers.currentLocationUpdatedAt} IS NULL OR ${drivers.currentLocationUpdatedAt} < ${stamp})`,
+          or(isNull(drivers.currentLocationUpdatedAt), lt(drivers.currentLocationUpdatedAt, stamp)),
         ),
       );
   }
