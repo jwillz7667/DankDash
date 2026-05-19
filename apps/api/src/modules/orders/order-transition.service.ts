@@ -137,6 +137,26 @@ export interface ScopedOrderRepos {
 
 export type OrderScopedReposFactory = (db: Database) => ScopedOrderRepos;
 
+export interface TransitionResult {
+  readonly orderId: string;
+  readonly fromStatus: OrderState;
+  readonly toStatus: OrderState;
+}
+
+/**
+ * Composer-friendly transition result — `result` is the transition outcome,
+ * `deferredEvent` is the `OrderTransitionedEvent` that the outer caller
+ * MUST emit AFTER their tx commits. Returned by `transitionWithinTx` so
+ * a composing service (e.g. `DriverOffersService.accept`) can run the
+ * order transition inside one outer tx alongside related mutations
+ * (offer flip + driver assignment) without firing event subscribers
+ * before the data is durable.
+ */
+export interface DeferredTransitionResult {
+  readonly result: TransitionResult;
+  readonly deferredEvent: OrderTransitionedEvent;
+}
+
 @Injectable()
 export class OrderTransitionService {
   private readonly logger = new Logger(OrderTransitionService.name);
@@ -147,31 +167,58 @@ export class OrderTransitionService {
     private readonly events: EventEmitter2,
   ) {}
 
-  async transition(req: TransitionRequest): Promise<{
-    readonly orderId: string;
-    readonly fromStatus: OrderState;
-    readonly toStatus: OrderState;
-  }> {
+  /**
+   * Standalone transition — opens its own tx via `applyTransition`,
+   * commits, then emits the `OrderTransitionedEvent`. This is the path
+   * the vendor + customer + system HTTP controllers all use.
+   */
+  async transition(req: TransitionRequest): Promise<TransitionResult> {
+    const { result, deferredEvent } = await this.transitionWithinTx(req, this.db);
+    // Emit AFTER commit so downstream subscribers (notifications, realtime,
+    // dispatch) never observe a state that has been rolled back. A
+    // subscriber that throws must NOT abort the response — the DB has
+    // already committed, so the caller's mutation is durable regardless
+    // of whether the side-effect chain succeeded. We log and continue.
+    this.emitDeferred(deferredEvent);
+    return result;
+  }
+
+  /**
+   * Composer transition — runs `applyTransition` against the supplied tx
+   * (Drizzle creates a SAVEPOINT when `applyTransition` calls
+   * `tx.transaction(...)` on a tx-bound repo) so the order UPDATE +
+   * `order_events` + `order_status_history` writes share durability
+   * with whatever else the outer caller is doing in the same tx.
+   *
+   * Does NOT emit the event — the caller must do that *after* their
+   * outer tx commits, by calling `emitDeferred(deferredEvent)` or
+   * emitting directly via the EventEmitter2 they hold.
+   */
+  async transitionWithinTx(
+    req: TransitionRequest,
+    tx: Database,
+  ): Promise<DeferredTransitionResult> {
     const authFn = AUTH_BY_EVENT[req.event];
-    // The repo opens the tx, acquires SELECT … FOR UPDATE on the order
-    // row, and hands us the locked snapshot. We resolve the transition
-    // (authz → terminal check → state machine) using the LOCKED status,
-    // not the pre-lock status — so two concurrent VENDOR_ACCEPTs on the
-    // same `placed` order serialise: the first sees `placed` and writes
-    // `accepted`; the second sees `accepted` and bails via the machine's
+    // The repo opens a (savepoint-or-tx) on the tx handle we pass in,
+    // acquires SELECT … FOR UPDATE on the order row, and hands us the
+    // locked snapshot. We resolve the transition (authz → terminal check
+    // → state machine) using the LOCKED status, not the pre-lock status
+    // — so two concurrent VENDOR_ACCEPTs on the same `placed` order
+    // serialise: the first sees `placed` and writes `accepted`; the
+    // second sees `accepted` and bails via the machine's
     // ORDER_INVALID_TRANSITION. Without the in-lock resolution, both
     // would pass the machine check and silently double-write.
     //
-    // The closure throws OrderError on any failure; the repo's tx rolls
-    // back automatically so no order_events / order_status_history row
-    // is left dangling on a refused transition.
+    // The closure throws OrderError on any failure; the repo's
+    // (savepoint-or-tx) rolls back automatically so no order_events /
+    // order_status_history row is left dangling on a refused transition.
     // The resolver runs inside the row lock. We capture the locked
-    // status into a holder so that, after `applyTransition` commits, we
+    // status into a holder so that, after `applyTransition` returns, we
     // can return both `fromStatus` and `toStatus` without re-querying.
     // A holder (rather than `let`) keeps the post-commit unwrap a single
-    // explicit `RepositoryError` instead of a non-null assertion.
+    // explicit `OrderError` instead of a non-null assertion.
     const fromStatusHolder: { value?: OrderState } = {};
-    const repos = this.reposFactory(this.db);
+    const repos = this.reposFactory(tx);
     let updated;
     try {
       updated = await repos.orders.applyTransition(req.orderId, (locked) => {
@@ -234,36 +281,38 @@ export class OrderTransitionService {
         { orderId: req.orderId },
       );
     }
-    const result = {
+    const result: TransitionResult = {
       orderId: updated.id,
       fromStatus: resolvedFromStatus,
       toStatus: updated.status,
     };
+    const deferredEvent = new OrderTransitionedEvent({
+      orderId: result.orderId,
+      fromStatus: result.fromStatus,
+      toStatus: result.toStatus,
+      event: req.event,
+      actor: req.actor,
+      occurredAt: new Date(),
+    });
+    return { result, deferredEvent };
+  }
 
-    // Emit AFTER commit so downstream subscribers (notifications, realtime,
-    // dispatch) never observe a state that has been rolled back. A
-    // subscriber that throws must NOT abort the response — the DB has
-    // already committed, so the caller's mutation is durable regardless
-    // of whether the side-effect chain succeeded. We log and continue.
+  /**
+   * Emit a deferred `OrderTransitionedEvent` (returned from
+   * `transitionWithinTx`) AFTER the caller's outer tx commits.
+   * Swallows subscriber exceptions so a notifier crash does not abort
+   * the caller's response — the DB is already committed, the
+   * transition is durable, and the most we can do for a downstream
+   * failure is log it.
+   */
+  emitDeferred(deferredEvent: OrderTransitionedEvent): void {
     try {
-      this.events.emit(
-        ORDER_TRANSITIONED_EVENT,
-        new OrderTransitionedEvent({
-          orderId: result.orderId,
-          fromStatus: result.fromStatus,
-          toStatus: result.toStatus,
-          event: req.event,
-          actor: req.actor,
-          occurredAt: new Date(),
-        }),
-      );
+      this.events.emit(ORDER_TRANSITIONED_EVENT, deferredEvent);
     } catch (err) {
       this.logger.error(
-        { orderId: result.orderId, event: req.event, err },
+        { orderId: deferredEvent.orderId, event: deferredEvent.event, err },
         'OrderTransitionedEvent subscriber threw — transition is durable, downstream side-effects may be missed',
       );
     }
-
-    return result;
   }
 }
