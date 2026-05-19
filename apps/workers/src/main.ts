@@ -14,12 +14,16 @@
 import { AeropayAuth, AeropayClient, HttpClient, createUndiciDispatcher } from '@dankdash/aeropay';
 import { createLogger, loadEnv } from '@dankdash/config';
 import {
+  DispatchOffersRepository,
   DispensariesRepository,
+  DriversRepository,
   LedgerEntriesRepository,
+  OrdersRepository,
   PayoutsRepository,
   WebhookEventsProcessedRepository,
   createPoolFromEnv,
 } from '@dankdash/db';
+import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
@@ -32,6 +36,9 @@ function main(): void {
   const ledger = new LedgerEntriesRepository(pool.db);
   const payouts = new PayoutsRepository(pool.db);
   const webhookEvents = new WebhookEventsProcessedRepository(pool.db);
+  const orders = new OrdersRepository(pool.db);
+  const drivers = new DriversRepository(pool.db);
+  const dispatchOffers = new DispatchOffersRepository(pool.db);
 
   const http = new HttpClient({
     dispatcher: createUndiciDispatcher({ maxConnections: 8, keepAliveTimeoutMs: 30_000 }),
@@ -55,6 +62,8 @@ function main(): void {
 
   const payoutTask = schedulePayoutJob({ dispensaries, ledger, payouts, aeropay, logger });
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
+  const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
+  const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
 
   logger.info({ env: env.NODE_ENV }, 'workers started');
 
@@ -62,6 +71,8 @@ function main(): void {
     logger.info({ signal }, 'workers shutting down');
     payoutTask.stop();
     webhookCleanupTask.stop();
+    dispatchTask.stop();
+    offerExpiryTask.stop();
     await pool.close();
     process.exit(0);
   };

@@ -227,6 +227,12 @@ importers:
       '@dankdash/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@dankdash/dispatch':
+        specifier: workspace:*
+        version: link:../../packages/dispatch
+      '@dankdash/orders':
+        specifier: workspace:*
+        version: link:../../packages/orders
       '@dankdash/types':
         specifier: workspace:*
         version: link:../../packages/types
