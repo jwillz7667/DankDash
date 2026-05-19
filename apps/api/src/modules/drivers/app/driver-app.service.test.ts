@@ -460,6 +460,47 @@ describe('DriverAppService.shifts', () => {
   });
 });
 
+/**
+ * Tenant-isolation tests for the driver-self surface (Phase 8.6 DOD:
+ * "Driver can only see their own offers/earnings"). The structural
+ * guarantee is that every repo call uses `ctx.driverId` and only
+ * `ctx.driverId`. These tests pin that by making the call history
+ * directly assertable — a regression that read e.g. `order.driverId`
+ * or some shared id would flunk these immediately.
+ *
+ * Authorization at the offer surface is covered separately in
+ * `driver-offers.service.test.ts` (DRIVER_OFFER_NOT_YOURS).
+ */
+describe('DriverAppService — driver isolation', () => {
+  const OTHER_DRIVER_ID = '01935f3d-0000-7000-8000-0000000000ff';
+
+  it('currentRoute looks up ONLY the calling driver, never another id', async () => {
+    const { service, drivers } = setup();
+    drivers.row = makeDriver({ id: OTHER_DRIVER_ID, currentOrderId: null });
+
+    await service.currentRoute(makeContext({ driverId: DRIVER_ID }));
+
+    expect(drivers.findByIdCalls).toEqual([DRIVER_ID]);
+  });
+
+  it('earnings forwards ONLY the calling driver id to sumDriverEarningsBetween', async () => {
+    const { service, orders } = setup();
+    const now = new Date('2026-05-19T19:30:00.000Z');
+
+    await service.earnings(makeContext({ driverId: DRIVER_ID }), { period: 'today' }, now);
+
+    expect(orders.earningsCalls.map((c) => c.driverId)).toEqual([DRIVER_ID]);
+  });
+
+  it('shifts forwards ONLY the calling driver id to listForDriver', async () => {
+    const { service, shifts } = setup();
+
+    await service.shifts(makeContext({ driverId: DRIVER_ID }));
+
+    expect(shifts.listCalls).toEqual([DRIVER_ID]);
+  });
+});
+
 // Suppress unused-warning on Database — kept imported so the rig
 // signature mirrors the production service constructor exactly.
 void (null as unknown as Database);
