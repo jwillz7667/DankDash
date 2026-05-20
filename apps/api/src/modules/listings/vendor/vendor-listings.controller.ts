@@ -54,7 +54,7 @@ import { CurrentDispensary } from './current-dispensary.decorator.js';
 import { CreateListingRequestDto, PatchListingRequestDto } from './dto/index.js';
 import { VendorContextGuard } from './vendor-context.guard.js';
 import { VendorListingsService } from './vendor-listings.service.js';
-import type { ListingListResponse, ListingResponse } from './dto/index.js';
+import type { ListingListResponse, ListingResponse, SyncListingsResponse } from './dto/index.js';
 import type { VendorContext } from './vendor-context.types.js';
 
 @Controller('vendor/listings')
@@ -77,6 +77,18 @@ export class VendorListingsController {
     @Body() body: CreateListingRequestDto,
   ): Promise<ListingResponse> {
     return this.listings.create(ctx, body);
+  }
+
+  /**
+   * Manual POS sync. Stamps `lastSyncedAt = now` on every active listing
+   * the dispensary owns. Rate-limited tighter than the read paths because
+   * a sync invalidates the catalog cache.
+   */
+  @Post('sync')
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({ name: 'vendor-listing-sync', tracker: 'user', limit: 12, windowMs: 60_000 })
+  sync(@CurrentDispensary() ctx: VendorContext): Promise<SyncListingsResponse> {
+    return this.listings.sync(ctx);
   }
 
   @Patch(':id')

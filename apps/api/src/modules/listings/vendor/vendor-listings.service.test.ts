@@ -113,11 +113,13 @@ function makeListing(overrides: Partial<DispensaryListing> = {}): DispensaryList
 class FakeListingsRepo implements Pick<
   DispensaryListingsRepository,
   | 'listAllForDispensary'
+  | 'listAllForDispensaryWithProducts'
   | 'findByIdForDispensary'
   | 'findByDispensaryAndSku'
   | 'create'
   | 'updateForDispensary'
   | 'softDeleteForDispensary'
+  | 'stampActiveSyncedForDispensary'
 > {
   public rows = new Map<string, DispensaryListing>();
   public createCalls: (Omit<NewDispensaryListing, 'id'> & { id?: string })[] = [];
@@ -127,6 +129,9 @@ class FakeListingsRepo implements Pick<
     patch: Partial<Omit<NewDispensaryListing, 'id' | 'createdAt' | 'dispensaryId'>>;
   }[] = [];
   public deleteCalls: { id: string; dispensaryId: string }[] = [];
+  public syncCalls: string[] = [];
+  public stampNow: Date = new Date('2026-05-20T12:00:00.000Z');
+  public productsByListing = new Map<string, Product>();
 
   seed(row: DispensaryListing): void {
     this.rows.set(row.id, row);
@@ -140,6 +145,23 @@ class FakeListingsRepo implements Pick<
       return b.createdAt.getTime() - a.createdAt.getTime();
     });
     return Promise.resolve(rows);
+  }
+
+  listAllForDispensaryWithProducts(
+    dispensaryId: string,
+  ): Promise<readonly { readonly listing: DispensaryListing; readonly product: Product }[]> {
+    const rows = [...this.rows.values()].filter((r) => r.dispensaryId === dispensaryId);
+    rows.sort((a, b) => {
+      const u = b.updatedAt.getTime() - a.updatedAt.getTime();
+      if (u !== 0) return u;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+    return Promise.resolve(
+      rows.map((listing) => ({
+        listing,
+        product: this.productsByListing.get(listing.id) ?? makeProduct({ id: listing.productId }),
+      })),
+    );
   }
 
   findByIdForDispensary(id: string, dispensaryId: string): Promise<DispensaryListing | null> {
@@ -202,6 +224,20 @@ class FakeListingsRepo implements Pick<
     }
     this.rows.set(id, { ...existing, isActive: false, updatedAt: new Date() });
     return Promise.resolve(true);
+  }
+
+  stampActiveSyncedForDispensary(
+    dispensaryId: string,
+  ): Promise<{ readonly updated: number; readonly syncedAt: Date }> {
+    this.syncCalls.push(dispensaryId);
+    const now = this.stampNow;
+    let updated = 0;
+    for (const [id, row] of this.rows) {
+      if (row.dispensaryId !== dispensaryId || !row.isActive) continue;
+      this.rows.set(id, { ...row, lastSyncedAt: now, updatedAt: now });
+      updated += 1;
+    }
+    return Promise.resolve({ updated, syncedAt: now });
   }
 }
 
@@ -306,6 +342,53 @@ describe('VendorListingsService.list', () => {
     expect(res.listings[0]?.lastSyncedAt).toBe('2026-04-01T12:00:00.000Z');
     expect(res.listings[0]?.createdAt).toBe('2026-03-01T00:00:00.000Z');
     expect(res.listings[0]?.updatedAt).toBe('2026-03-15T00:00:00.000Z');
+  });
+
+  it('embeds a product summary on every row (brand, name, type, imageKeys)', async () => {
+    const rig = makeRig();
+    rig.listings.seed(makeListing());
+    rig.listings.productsByListing.set(
+      LISTING_ID,
+      makeProduct({
+        brand: 'North Star',
+        name: 'Pineapple Express 3.5g',
+        productType: 'flower',
+        strainType: 'sativa',
+        imageKeys: ['catalog/north-star-pe.jpg'],
+        thcMgPerUnit: '875.000',
+        weightGramsPerUnit: '3.500',
+      }),
+    );
+
+    const res = await rig.service.list(CTX);
+
+    expect(res.listings).toHaveLength(1);
+    expect(res.listings[0]?.product).toMatchObject({
+      brand: 'North Star',
+      name: 'Pineapple Express 3.5g',
+      productType: 'flower',
+      strainType: 'sativa',
+      imageKeys: ['catalog/north-star-pe.jpg'],
+      thcMgPerUnit: '875.000',
+      weightGramsPerUnit: '3.500',
+      isActive: true,
+      deletedAt: null,
+    });
+  });
+
+  it('surfaces soft-deleted products so the vendor knows why the listing is hidden', async () => {
+    const rig = makeRig();
+    rig.listings.seed(makeListing());
+    rig.listings.productsByListing.set(
+      LISTING_ID,
+      makeProduct({
+        deletedAt: new Date('2026-04-01T00:00:00.000Z'),
+      }),
+    );
+
+    const res = await rig.service.list(CTX);
+
+    expect(res.listings[0]?.product.deletedAt).toBe('2026-04-01T00:00:00.000Z');
   });
 });
 
@@ -590,5 +673,51 @@ describe('VendorListingsService.delete', () => {
     rig.listings.seed(makeListing({ dispensaryId: OTHER_DISPENSARY_ID }));
 
     await expect(rig.service.delete(CTX, LISTING_ID)).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('VendorListingsService.sync', () => {
+  it('stamps every active listing scoped to the dispensary and returns ISO syncedAt', async () => {
+    const rig = makeRig();
+    rig.listings.stampNow = new Date('2026-05-20T12:00:00.000Z');
+    rig.listings.seed(makeListing({ id: LISTING_ID, isActive: true }));
+    rig.listings.seed(makeListing({ id: OTHER_LISTING_ID, sku: 'NS-OTHER', isActive: true }));
+    rig.listings.seed(
+      makeListing({ id: '01935f3d-0000-7000-8000-000000000099', sku: 'inactive', isActive: false }),
+    );
+    rig.listings.seed(
+      makeListing({
+        id: '01935f3d-0000-7000-8000-0000000000ee',
+        sku: 'cross-vendor',
+        dispensaryId: OTHER_DISPENSARY_ID,
+      }),
+    );
+
+    const res = await rig.service.sync(CTX);
+
+    expect(rig.listings.syncCalls).toEqual([DISPENSARY_ID]);
+    expect(res).toEqual({ updated: 2, syncedAt: '2026-05-20T12:00:00.000Z' });
+    // The two active rows in the dispensary should now show the new stamp.
+    expect(rig.listings.rows.get(LISTING_ID)?.lastSyncedAt?.toISOString()).toBe(
+      '2026-05-20T12:00:00.000Z',
+    );
+    expect(rig.listings.rows.get(OTHER_LISTING_ID)?.lastSyncedAt?.toISOString()).toBe(
+      '2026-05-20T12:00:00.000Z',
+    );
+    // The inactive row in this dispensary must NOT be stamped — public menu
+    // doesn't show it; stamping would be a misleading freshness signal.
+    expect(rig.listings.rows.get('01935f3d-0000-7000-8000-000000000099')?.lastSyncedAt).toBeNull();
+    // Cross-vendor row must not be touched.
+    expect(rig.listings.rows.get('01935f3d-0000-7000-8000-0000000000ee')?.lastSyncedAt).toBeNull();
+  });
+
+  it('returns updated=0 when the dispensary has no active listings', async () => {
+    const rig = makeRig();
+    rig.listings.seed(makeListing({ isActive: false }));
+
+    const res = await rig.service.sync(CTX);
+
+    expect(res.updated).toBe(0);
+    expect(typeof res.syncedAt).toBe('string');
   });
 });
