@@ -1,0 +1,99 @@
+name: ios
+
+on:
+  pull_request:
+    paths:
+      - "DankDash/**"
+      - "DankDashKit/**"
+      - "DankDash.xcodeproj/**"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [main]
+    paths:
+      - "DankDash/**"
+      - "DankDashKit/**"
+      - "DankDash.xcodeproj/**"
+      - ".github/workflows/ios.yml"
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  swift-test:
+    name: swift test (DankDashKit)
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin to the Xcode version that matches IPHONEOS_DEPLOYMENT_TARGET = 26.4
+      # in the Xcode project. macos-15 ships multiple Xcode toolchains; we
+      # select the newest 26.x available on the image.
+      - name: Select Xcode
+        run: |
+          xcodes=$(ls /Applications | grep -E '^Xcode_26' | sort -V | tail -n1)
+          if [ -z "$xcodes" ]; then
+            echo "No Xcode 26.x found on runner; falling back to the default."
+            xcrun --find xcodebuild
+          else
+            sudo xcode-select -s "/Applications/$xcodes/Contents/Developer"
+          fi
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/SourcePackages
+            DankDashKit/.build
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('DankDashKit/Package.resolved', 'DankDashKit/Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
+      - name: swift test
+        run: swift test --package-path DankDashKit --parallel
+
+  xcode-build:
+    name: xcodebuild build (DankDash)
+    runs-on: macos-15
+    timeout-minutes: 30
+    needs: swift-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          xcodes=$(ls /Applications | grep -E '^Xcode_26' | sort -V | tail -n1)
+          if [ -z "$xcodes" ]; then
+            xcrun --find xcodebuild
+          else
+            sudo xcode-select -s "/Applications/$xcodes/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/SourcePackages
+            DankDashKit/.build
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('DankDashKit/Package.resolved', 'DankDashKit/Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
+      - name: List available simulators
+        run: xcrun simctl list devices available iOS
+
+      - name: xcodebuild build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project DankDash.xcodeproj \
+            -scheme DankDash \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
