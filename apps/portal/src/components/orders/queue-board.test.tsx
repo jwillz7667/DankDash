@@ -5,6 +5,8 @@ import type {
   VendorOrderDetail,
   VendorQueueOrderSummary,
 } from '../../lib/api/vendor-orders.js';
+import type { ChimePlayer } from '../../lib/notifications/audio.js';
+import { NOTIFICATION_MUTE_STORAGE_KEY } from '../../lib/notifications/preferences.js';
 import type { VendorOrderActions } from '../../lib/orders/order-actions.js';
 import {
   RealtimeClient,
@@ -509,6 +511,224 @@ describe('QueueBoard', () => {
       const cards = container.querySelectorAll('[data-testid="queue-card"]');
       expect(cards).toHaveLength(1);
       expect(cards[0]?.getAttribute('data-order-id')).toBe('a');
+    });
+  });
+
+  describe('notification alerts on order:created', () => {
+    interface FakeNotificationInstance {
+      title: string;
+      tag?: string;
+      onclick: ((event: unknown) => void) | null;
+    }
+    interface FakeNotificationCtor {
+      (this: FakeNotificationInstance, title: string, options?: NotificationOptions): void;
+      permission: NotificationPermission;
+      requestPermission: (
+        cb?: (permission: NotificationPermission) => void,
+      ) => Promise<NotificationPermission>;
+      instances: FakeNotificationInstance[];
+    }
+    let originalNotification: typeof Notification | undefined;
+
+    function installFakeNotification(initial: NotificationPermission): FakeNotificationCtor {
+      const instances: FakeNotificationInstance[] = [];
+      function Fake(
+        this: FakeNotificationInstance,
+        title: string,
+        options?: NotificationOptions,
+      ): void {
+        this.title = title;
+        if (options?.tag !== undefined) (this as { tag?: string }).tag = options.tag;
+        this.onclick = null;
+        instances.push(this);
+      }
+      Fake.permission = initial;
+      Fake.requestPermission = vi.fn(async () => Fake.permission);
+      Fake.instances = instances;
+      (globalThis as unknown as { Notification: FakeNotificationCtor }).Notification =
+        Fake as unknown as FakeNotificationCtor;
+      return Fake as unknown as FakeNotificationCtor;
+    }
+
+    function fakeChime(): ChimePlayer & {
+      readonly plays: { count: number };
+      readonly primes: { count: number };
+    } {
+      const plays = { count: 0 };
+      const primes = { count: 0 };
+      return {
+        plays,
+        primes,
+        play: vi.fn(async () => {
+          plays.count += 1;
+        }),
+        prime: vi.fn(async () => {
+          primes.count += 1;
+        }),
+        dispose: vi.fn(async () => undefined),
+      };
+    }
+
+    beforeEach(() => {
+      originalNotification = (globalThis as unknown as { Notification?: typeof Notification })
+        .Notification;
+      window.sessionStorage.clear();
+    });
+
+    afterEach(() => {
+      if (originalNotification !== undefined) {
+        (globalThis as unknown as { Notification: typeof Notification }).Notification =
+          originalNotification;
+      } else {
+        delete (globalThis as unknown as { Notification?: unknown }).Notification;
+      }
+    });
+
+    it('plays the chime when a new queue-visible order arrives', () => {
+      const fake = new FakeClient();
+      const chime = fakeChime();
+      installFakeNotification('default');
+
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => fake}
+          alertOptions={{ playerFactory: (): ChimePlayer => chime }}
+        />,
+      );
+
+      act(() => {
+        fake.emitCreated({
+          orderId: 'new-1',
+          customerId: 'c1',
+          dispensaryId: 'd1',
+          shortCode: 'ZZ99',
+          totalCents: 1500,
+          status: 'placed',
+          placedAt: NOW.toISOString(),
+        });
+      });
+
+      expect(chime.plays.count).toBe(1);
+    });
+
+    it('shows a browser notification when permission is granted', () => {
+      const fake = new FakeClient();
+      const chime = fakeChime();
+      const notifications = installFakeNotification('granted');
+
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => fake}
+          alertOptions={{ playerFactory: (): ChimePlayer => chime }}
+        />,
+      );
+
+      act(() => {
+        fake.emitCreated({
+          orderId: 'new-2',
+          customerId: 'c1',
+          dispensaryId: 'd1',
+          shortCode: 'AA11',
+          totalCents: 2500,
+          status: 'placed',
+          placedAt: NOW.toISOString(),
+        });
+      });
+
+      expect(notifications.instances).toHaveLength(1);
+      expect(notifications.instances[0]?.title).toBe('New order #AA11');
+      expect(notifications.instances[0]?.tag).toBe('dankdash-order-new-2');
+    });
+
+    it('does not chime or notify for orders past the queue surface (delivered, canceled)', () => {
+      const fake = new FakeClient();
+      const chime = fakeChime();
+      const notifications = installFakeNotification('granted');
+
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => fake}
+          alertOptions={{ playerFactory: (): ChimePlayer => chime }}
+        />,
+      );
+
+      act(() => {
+        fake.emitCreated({
+          orderId: 'gone-1',
+          customerId: 'c1',
+          dispensaryId: 'd1',
+          shortCode: 'BB22',
+          totalCents: 1500,
+          status: 'delivered',
+          placedAt: NOW.toISOString(),
+        });
+      });
+
+      expect(chime.plays.count).toBe(0);
+      expect(notifications.instances).toHaveLength(0);
+    });
+
+    it('respects the mute toggle: muted = no chime, no notification', () => {
+      const fake = new FakeClient();
+      const chime = fakeChime();
+      const notifications = installFakeNotification('granted');
+      window.sessionStorage.setItem(NOTIFICATION_MUTE_STORAGE_KEY, '1');
+
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => fake}
+          alertOptions={{ playerFactory: (): ChimePlayer => chime }}
+        />,
+      );
+
+      // The toggle reflects the rehydrated muted state.
+      const toggle = screen.getByTestId('notification-mute-toggle');
+      expect(toggle.getAttribute('data-muted')).toBe('true');
+
+      act(() => {
+        fake.emitCreated({
+          orderId: 'muted-1',
+          customerId: 'c1',
+          dispensaryId: 'd1',
+          shortCode: 'CC33',
+          totalCents: 1500,
+          status: 'placed',
+          placedAt: NOW.toISOString(),
+        });
+      });
+
+      expect(chime.plays.count).toBe(0);
+      expect(notifications.instances).toHaveLength(0);
+    });
+
+    it('clicking the toggle primes the audio context (Chrome autoplay unblock)', () => {
+      const chime = fakeChime();
+      installFakeNotification('default');
+
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          alertOptions={{ playerFactory: (): ChimePlayer => chime }}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('notification-mute-toggle'));
+      expect(chime.primes.count).toBe(1);
+    });
+
+    it('renders the controls cluster next to the realtime badge', () => {
+      installFakeNotification('default');
+      render(<QueueBoard initialOrders={[]} />);
+      expect(screen.getByTestId('notification-controls')).toBeInTheDocument();
+      expect(screen.getByTestId('realtime-status-badge')).toBeInTheDocument();
     });
   });
 

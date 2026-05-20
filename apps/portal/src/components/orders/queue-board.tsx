@@ -33,12 +33,18 @@ import {
 import { Activity, AlertCircle, Loader2, Plug, Wifi, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  asOrderStatus,
   type OrderStatus,
   type TransitionResponse,
   type VendorQueueOrderSummary,
 } from '../../lib/api/vendor-orders.js';
+import { useOrderAlert, type UseOrderAlertOptions } from '../../lib/notifications/hooks.js';
 import { type VendorOrderActions } from '../../lib/orders/order-actions.js';
-import { QUEUE_COLUMNS, bucketByColumn } from '../../lib/orders/queue-columns.js';
+import {
+  QUEUE_COLUMNS,
+  bucketByColumn,
+  columnKeyForStatus,
+} from '../../lib/orders/queue-columns.js';
 import {
   dispatchDragAction,
   resolveDragDrop,
@@ -47,10 +53,11 @@ import {
 import { applyOrderCreated, applyOrderStatusChanged } from '../../lib/orders/realtime-reducer.js';
 import { useRealtimeOrders, type UseRealtimeOrdersOptions } from '../../lib/realtime/hooks.js';
 import { Badge, type BadgeProps } from '../ui/badge.js';
+import { NotificationControls } from './notification-controls.js';
 import { OrderDetailDrawer } from './order-detail-drawer.js';
 import { QueueCard } from './queue-card.js';
 import { QueueColumn } from './queue-column.js';
-import type { RealtimeStatus } from '../../lib/realtime/client.js';
+import type { OrderSummary, RealtimeStatus } from '../../lib/realtime/client.js';
 
 const ALL_DRAGGABLE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
   'placed',
@@ -104,6 +111,12 @@ export interface QueueBoardProps {
    * events don't need to simulate a real drag distance.
    */
   readonly dragActivationDistance?: number;
+  /**
+   * Test seam — production omits and the chime + permission hook
+   * builds its own player. Tests pass a fake `ChimePlayer` plus
+   * options to drive `useOrderAlert` deterministically.
+   */
+  readonly alertOptions?: UseOrderAlertOptions;
 }
 
 export function QueueBoard({
@@ -114,6 +127,7 @@ export function QueueBoard({
   tickIntervalMs = 60_000,
   clientFactory,
   dragActivationDistance = 6,
+  alertOptions,
 }: QueueBoardProps): ReactNode {
   const now = useNow(nowFactory, tickIntervalMs);
   const [orders, setOrders] = useState<readonly VendorQueueOrderSummary[]>(() => initialOrders);
@@ -121,9 +135,33 @@ export function QueueBoard({
   const [draggingOrderId, setDraggingOrderId] = useState<string | null>(null);
   const [dragError, setDragError] = useState<string | null>(null);
 
-  const handleCreated = useCallback((payload: Parameters<typeof applyOrderCreated>[1]) => {
-    setOrders((prev) => applyOrderCreated(prev, payload));
-  }, []);
+  const alert = useOrderAlert(alertOptions ?? {});
+
+  // The chime + browser notification fire from inside the same realtime
+  // reducer that mutates the snapshot. Keeping the side effect at the
+  // boundary (rather than in a `useEffect` that watches `orders`) is
+  // the single mutation chokepoint principle applied to alerts —
+  // exactly one place where a new-order event becomes a sensory cue.
+  const handleCreated = useCallback(
+    (payload: OrderSummary) => {
+      // Filter alerts to *queue-visible* statuses. The server may emit
+      // `order:created` for an order that's already past the queue
+      // surface (rare — payment-failed pre-paint, instant Metrc revoke),
+      // and we don't want to chime for an order the operator will
+      // never see on the board.
+      const status = asOrderStatus(payload.status);
+      if (status !== null && columnKeyForStatus(status) !== undefined) {
+        alert.trigger({
+          orderId: payload.orderId,
+          shortCode: payload.shortCode,
+          totalCents: payload.totalCents,
+          customerName: null,
+        });
+      }
+      setOrders((prev) => applyOrderCreated(prev, payload));
+    },
+    [alert],
+  );
   const handleStatusChanged = useCallback(
     (payload: Parameters<typeof applyOrderStatusChanged>[1]) => {
       setOrders((prev) => applyOrderStatusChanged(prev, payload));
@@ -230,7 +268,18 @@ export function QueueBoard({
         ) : (
           <span aria-hidden="true" />
         )}
-        <RealtimeBadge status={status} enabled={realtime !== undefined} />
+        <div className="flex items-center gap-3">
+          <NotificationControls
+            isMuted={alert.isMuted}
+            onToggleMuted={alert.toggleMuted}
+            permission={alert.permission}
+            onRequestPermission={(): void => {
+              void alert.requestPermission();
+            }}
+            onUserGesture={alert.primeFromGesture}
+          />
+          <RealtimeBadge status={status} enabled={realtime !== undefined} />
+        </div>
       </div>
       <div
         aria-label="Order queue"
