@@ -172,7 +172,7 @@ export function OrderDetailDrawer({
         onClick={onClose}
         data-testid="order-detail-backdrop"
       />
-      <aside
+      <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="order-detail-title"
@@ -241,7 +241,7 @@ export function OrderDetailDrawer({
             }
           />
         )}
-      </aside>
+      </div>
     </div>
   );
 }
