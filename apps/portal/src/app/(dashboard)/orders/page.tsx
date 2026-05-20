@@ -1,26 +1,117 @@
+import { AlertTriangle, Wifi } from 'lucide-react';
 import { type Metadata } from 'next';
 import { type ReactNode } from 'react';
-import { PagePlaceholder } from '../../../components/shell/page-placeholder.js';
+import { QueueBoard } from '../../../components/orders/queue-board.js';
+import { Badge } from '../../../components/ui/badge.js';
+import { Card, CardBody } from '../../../components/ui/card.js';
+import { buildServerApiClient } from '../../../lib/api/server-client.js';
+import { listVendorQueue, type VendorQueueOrderSummary } from '../../../lib/api/vendor-orders.js';
 
 export const metadata: Metadata = {
   title: 'Orders — DankDash for Business',
 };
 
-export default function OrdersPage(): ReactNode {
+/**
+ * Vendor order queue. Server-component entry — fetches the initial
+ * snapshot synchronously (Next.js will block first paint until the
+ * API responds, which on a healthy queue is < 100ms), then hands the
+ * orders to the client `QueueBoard` for reactive rendering.
+ *
+ * Realtime patching, polling fallback, and action affordances land in
+ * follow-up phases (14.2 – 14.4); the page boundary stays here so
+ * those layers only have to extend the board state, not re-introduce
+ * the server-side fetch.
+ *
+ * Cache disabled (`force-dynamic`) — the queue is operator-critical
+ * and must never serve a stale Next.js cache hit. Realtime keeps the
+ * client snapshot fresh between page loads anyway.
+ */
+export const dynamic = 'force-dynamic';
+
+export default async function OrdersPage(): Promise<ReactNode> {
+  const ctx = await buildServerApiClient();
+  if (ctx?.dispensary == null) {
+    return <NoDispensaryContext />;
+  }
+
+  let initialOrders: readonly VendorQueueOrderSummary[];
+  try {
+    const result = await listVendorQueue(ctx.client);
+    initialOrders = result.orders;
+  } catch (error) {
+    return <QueueFetchError storeName={ctx.dispensary.name} error={error} />;
+  }
+
   return (
-    <PagePlaceholder
-      title="Orders"
-      description="Live queue across pending, accepted, prepping, en-route, and delivered orders."
-      phase="Phase 14"
-    >
-      <p>
-        Phase 14 will plug the column-board into the realtime client (already wired in Phase 13:{' '}
-        <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-700">
-          useRealtimeOrders
-        </code>
-        ) and the Orders REST API so accept/reject/transition actions flow through the
-        server-authoritative state machine.
-      </p>
-    </PagePlaceholder>
+    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-1.5">
+          <p className="text-2xs font-semibold uppercase tracking-wider text-moss-600">
+            {ctx.dispensary.name}
+          </p>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Live order queue</h1>
+          <p className="max-w-2xl text-sm text-slate-500">
+            New orders, prepping work, ready-for-pickup bags, and out-for-delivery handoffs — every
+            transition flows through the server-authoritative state machine.
+          </p>
+        </div>
+        <Badge tone="info" icon={<Wifi className="h-3 w-3" />}>
+          Realtime — Phase 14.2
+        </Badge>
+      </header>
+      <QueueBoard initialOrders={initialOrders} />
+    </div>
+  );
+}
+
+function NoDispensaryContext(): ReactNode {
+  return (
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
+      <Card>
+        <CardBody className="space-y-3 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
+            <AlertTriangle aria-hidden="true" className="h-5 w-5" />
+          </div>
+          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+            No dispensary context
+          </h2>
+          <p className="text-sm text-slate-500">
+            Your account isn't yet linked to an active dispensary. Accept your invitation or contact
+            your owner to grant access — the queue will appear here once a membership is active.
+          </p>
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
+function QueueFetchError({
+  storeName,
+  error,
+}: {
+  readonly storeName: string;
+  readonly error: unknown;
+}): ReactNode {
+  // We don't surface raw error messages — leaks API internals and
+  // confuses operators who can't act on them. The compliance team
+  // gets the full envelope from server logs instead.
+  void error;
+  return (
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
+      <Card>
+        <CardBody className="space-y-3 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-700">
+            <AlertTriangle aria-hidden="true" className="h-5 w-5" />
+          </div>
+          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+            Couldn't load the queue
+          </h2>
+          <p className="text-sm text-slate-500">
+            The queue for {storeName} didn't load. Refresh the page; if this keeps happening, ping
+            DankDash support.
+          </p>
+        </CardBody>
+      </Card>
+    </div>
   );
 }
