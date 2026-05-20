@@ -80,10 +80,16 @@ private struct AuthFlowView: View {
 
 /// Lightweight post-auth surface — Phase 17 swaps this for the catalog
 /// flow. The sign-out button verifies the end-to-end auth → keychain
-/// round-trip works in a dev build.
+/// round-trip works in a dev build. In DEBUG builds, long-pressing the
+/// version label opens the Design Gallery — a regression check for the
+/// component surface, never compiled into Release.
 private struct SignedInPlaceholderView: View {
   let user: UserSummaryDTO?
   let onSignOut: () -> Void
+
+  #if DEBUG
+  @State private var galleryShown = false
+  #endif
 
   var body: some View {
     VStack(spacing: DankSpacing.lg) {
@@ -99,10 +105,33 @@ private struct SignedInPlaceholderView: View {
       }
 
       DankButton("Sign out", style: .ghost, size: .medium, action: onSignOut)
+
+      Spacer(minLength: 0)
+
+      versionFooter
     }
     .padding(DankSpacing.lg)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)
+    #if DEBUG
+    .sheet(isPresented: $galleryShown) {
+      DesignGalleryView()
+    }
+    #endif
+  }
+
+  private var versionFooter: some View {
+    let text = Text(versionString)
+      .font(DankFont.caption)
+      .foregroundStyle(DankColor.Text.muted)
+
+    #if DEBUG
+    return text.onLongPressGesture(minimumDuration: 1.0) {
+      galleryShown = true
+    }
+    #else
+    return text
+    #endif
   }
 
   private var greeting: String {
@@ -111,5 +140,11 @@ private struct SignedInPlaceholderView: View {
     } else {
       "Welcome"
     }
+  }
+
+  private var versionString: String {
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0"
+    let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+    return "DankDash \(version) (\(build))"
   }
 }
