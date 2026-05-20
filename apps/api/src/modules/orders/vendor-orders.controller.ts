@@ -19,11 +19,13 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
@@ -31,8 +33,15 @@ import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { CurrentDispensary } from '../listings/vendor/current-dispensary.decorator.js';
 import { VendorContextGuard } from '../listings/vendor/vendor-context.guard.js';
-import { RejectOrderRequestDto, type TransitionResponse } from './dto/index.js';
+import {
+  ListVendorOrdersQueryDto,
+  RejectOrderRequestDto,
+  type ListVendorQueueResponse,
+  type OrderResponse,
+  type TransitionResponse,
+} from './dto/index.js';
 import { OrderTransitionService } from './order-transition.service.js';
+import { projectOrder, projectVendorQueueOrder } from './order.projection.js';
 import { OrdersService } from './orders.service.js';
 import type { VendorContext } from '../listings/vendor/vendor-context.types.js';
 
@@ -44,6 +53,47 @@ export class VendorOrdersController {
     private readonly transitions: OrderTransitionService,
     private readonly orders: OrdersService,
   ) {}
+
+  /**
+   * Live queue feed for the portal kanban. The default status set is
+   * the six "active vendor work" statuses; callers can narrow via
+   * `?statuses=placed,accepted`. Ordered oldest-first so the longest-
+   * waiting order in each column floats to the top.
+   *
+   * The limit is generous (200 default, 200 max) because the portal
+   * paints all four columns from a single response — a busy dispensary
+   * during peak can legitimately have 100+ active orders.
+   */
+  @Get()
+  @RateLimit({ name: 'vendor-orders-list', tracker: 'user', limit: 120, windowMs: 60_000 })
+  async list(
+    @CurrentDispensary() ctx: VendorContext,
+    @Query() query: ListVendorOrdersQueryDto,
+  ): Promise<ListVendorQueueResponse> {
+    const rows = await this.orders.listForDispensaryQueue(
+      ctx.dispensaryId,
+      query.statuses,
+      query.limit,
+    );
+    return { orders: rows.map(projectVendorQueueOrder) };
+  }
+
+  /**
+   * Single-order detail for the drawer view. Returns the canonical
+   * {@link OrderResponse} (same shape the customer-side surfaces use)
+   * since the drawer renders timestamps, ratings, and the full money
+   * breakdown. Ownership pre-check surfaces 404 not 403 on a
+   * cross-tenant probe — same posture as the transition endpoints.
+   */
+  @Get(':id')
+  @RateLimit({ name: 'vendor-orders-get', tracker: 'user', limit: 240, windowMs: 60_000 })
+  async get(
+    @CurrentDispensary() ctx: VendorContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<OrderResponse> {
+    const order = await this.orders.findForDispensary(ctx.dispensaryId, id);
+    return projectOrder(order);
+  }
 
   @Post(':id/accept')
   @HttpCode(HttpStatus.OK)

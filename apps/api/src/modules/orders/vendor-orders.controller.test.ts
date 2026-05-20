@@ -16,7 +16,7 @@ import { VendorOrdersController } from './vendor-orders.controller.js';
 import type { OrderTransitionService } from './order-transition.service.js';
 import type { OrdersService } from './orders.service.js';
 import type { VendorContext } from '../listings/vendor/vendor-context.types.js';
-import type { Order } from '@dankdash/db';
+import type { Order, OrderStatus, VendorQueueOrderRow } from '@dankdash/db';
 import type { OrderEventType } from '@dankdash/orders';
 
 const USER_ID = '01935f3d-0000-7000-8000-000000000003';
@@ -86,11 +86,26 @@ function makeOrder(status: Order['status'] = 'placed'): Order {
 
 class FakeOrdersService {
   public findForDispensaryCalls: { dispensaryId: string; orderId: string }[] = [];
+  public listQueueCalls: {
+    dispensaryId: string;
+    statuses: readonly OrderStatus[];
+    limit: number;
+  }[] = [];
   public order: Order = makeOrder();
+  public queueRows: readonly VendorQueueOrderRow[] = [];
 
   findForDispensary = (dispensaryId: string, orderId: string): Promise<Order> => {
     this.findForDispensaryCalls.push({ dispensaryId, orderId });
     return Promise.resolve(this.order);
+  };
+
+  listForDispensaryQueue = (
+    dispensaryId: string,
+    statuses: readonly OrderStatus[],
+    limit: number,
+  ): Promise<readonly VendorQueueOrderRow[]> => {
+    this.listQueueCalls.push({ dispensaryId, statuses, limit });
+    return Promise.resolve(this.queueRows);
   };
 }
 
@@ -147,6 +162,67 @@ function makeController(): {
 }
 
 describe('VendorOrdersController', () => {
+  describe('list (queue feed)', () => {
+    it('threads statuses + limit through to OrdersService and projects each row', async () => {
+      const { controller, svc } = makeController();
+      svc.queueRows = [
+        {
+          ...makeOrder('placed'),
+          customerFirstName: 'Ada',
+          customerLastName: 'Lovelace',
+          itemCount: 3,
+        },
+      ];
+
+      const res = await controller.list(CTX, {
+        statuses: ['placed', 'accepted'],
+        limit: 50,
+      });
+
+      expect(svc.listQueueCalls).toEqual([
+        { dispensaryId: DISPENSARY_ID, statuses: ['placed', 'accepted'], limit: 50 },
+      ]);
+      expect(res.orders).toHaveLength(1);
+      expect(res.orders[0]).toMatchObject({
+        id: ORDER_ID,
+        customerName: 'Ada Lovelace',
+        itemCount: 3,
+        status: 'placed',
+      });
+    });
+
+    it('emits customerName = null when both first/last are missing', async () => {
+      const { controller, svc } = makeController();
+      svc.queueRows = [
+        {
+          ...makeOrder('placed'),
+          customerFirstName: null,
+          customerLastName: null,
+          itemCount: 1,
+        },
+      ];
+
+      const res = await controller.list(CTX, { statuses: ['placed'], limit: 200 });
+
+      expect(res.orders[0]!.customerName).toBeNull();
+    });
+  });
+
+  describe('get (drawer detail)', () => {
+    it('returns the full OrderResponse for the dispensary-owned order', async () => {
+      const { controller, svc } = makeController();
+
+      const res = await controller.get(CTX, ORDER_ID);
+
+      expect(svc.findForDispensaryCalls).toEqual([
+        { dispensaryId: DISPENSARY_ID, orderId: ORDER_ID },
+      ]);
+      expect(res.id).toBe(ORDER_ID);
+      expect(res.status).toBe('placed');
+      expect(res.timestamps.placedAt).toBe(PINNED_NOW.toISOString());
+    });
+  });
+
   it('accept → VENDOR_ACCEPT, with ownership pre-check', async () => {
     const { controller, svc, tx } = makeController();
     tx.nextToStatus = 'accepted';

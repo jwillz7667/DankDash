@@ -13,7 +13,13 @@
  *     distinguish "no such order" from "exists but not yours" — same
  *     pattern as the cart and listings surfaces.
  */
-import { type Database, type Order, type OrdersRepository, type OrderStatus } from '@dankdash/db';
+import {
+  type Database,
+  type Order,
+  type OrdersRepository,
+  type OrderStatus,
+  type VendorQueueOrderRow,
+} from '@dankdash/db';
 import { OrderError } from '@dankdash/orders';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
@@ -62,6 +68,23 @@ export class OrdersService {
       throw OrderError.notFound(orderId);
     }
     return order;
+  }
+
+  /**
+   * Vendor-portal queue feed. Returns oldest-first orders within the
+   * supplied status set, joined with customer name + item count for the
+   * kanban-card projection. Tenant scoping is enforced inside the
+   * query (the `dispensaryId` predicate joins the WHERE); we don't need
+   * a post-fetch authz pass because there is no per-row decision —
+   * the entire set is by definition the vendor's own.
+   */
+  async listForDispensaryQueue(
+    dispensaryId: string,
+    statuses: readonly OrderStatus[],
+    limit: number,
+  ): Promise<readonly VendorQueueOrderRow[]> {
+    const repos = this.reposFactory(this.db);
+    return repos.orders.listForDispensaryQueue(dispensaryId, statuses, limit);
   }
 
   /**

@@ -7,8 +7,8 @@
  * (and obviously) instead of silently widening the contract.
  */
 import { describe, expect, it } from 'vitest';
-import { projectOrder } from './order.projection.js';
-import type { Order } from '@dankdash/db';
+import { projectOrder, projectVendorQueueOrder } from './order.projection.js';
+import type { Order, VendorQueueOrderRow } from '@dankdash/db';
 
 const PLACED_AT = new Date('2026-05-18T19:00:00.000Z');
 const STATUS_CHANGED_AT = new Date('2026-05-18T19:01:00.000Z');
@@ -124,5 +124,58 @@ describe('projectOrder', () => {
     const driverId = '01935f3d-0000-7000-8000-000000000002';
     const projected = projectOrder(makeRow({ driverId, status: 'driver_assigned' }));
     expect(projected.driverId).toBe(driverId);
+  });
+});
+
+describe('projectVendorQueueOrder', () => {
+  function makeQueueRow(overrides: Partial<VendorQueueOrderRow> = {}): VendorQueueOrderRow {
+    return {
+      ...makeRow(),
+      customerFirstName: 'Ada',
+      customerLastName: 'Lovelace',
+      itemCount: 4,
+      ...overrides,
+    };
+  }
+
+  it('joins first + last name into customerName', () => {
+    const projected = projectVendorQueueOrder(makeQueueRow());
+    expect(projected.customerName).toBe('Ada Lovelace');
+    expect(projected.itemCount).toBe(4);
+  });
+
+  it('falls back to just last name when first name is null', () => {
+    const projected = projectVendorQueueOrder(
+      makeQueueRow({ customerFirstName: null, customerLastName: 'Lovelace' }),
+    );
+    expect(projected.customerName).toBe('Lovelace');
+  });
+
+  it('emits null when both first and last name are missing', () => {
+    const projected = projectVendorQueueOrder(
+      makeQueueRow({ customerFirstName: null, customerLastName: null }),
+    );
+    expect(projected.customerName).toBeNull();
+  });
+
+  it('treats whitespace-only names as missing', () => {
+    const projected = projectVendorQueueOrder(
+      makeQueueRow({ customerFirstName: '  ', customerLastName: '' }),
+    );
+    expect(projected.customerName).toBeNull();
+  });
+
+  it('serialises placed/status/accepted timestamps as ISO strings', () => {
+    const projected = projectVendorQueueOrder(
+      makeQueueRow({
+        status: 'prepping',
+        acceptedAt: new Date('2026-05-18T19:05:00.000Z'),
+        preppingAt: new Date('2026-05-18T19:10:00.000Z'),
+      }),
+    );
+    expect(projected.placedAt).toBe('2026-05-18T19:00:00.000Z');
+    expect(projected.acceptedAt).toBe('2026-05-18T19:05:00.000Z');
+    expect(projected.preppingAt).toBe('2026-05-18T19:10:00.000Z');
+    expect(projected.preparedAt).toBeNull();
   });
 });
