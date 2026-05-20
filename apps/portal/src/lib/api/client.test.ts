@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiClient, ApiError } from './client.js';
-import type { TokenPair } from './types.js';
+import type { DispensaryMembershipsResponse, TokenPair } from './types.js';
 
 interface CapturedRequest {
   readonly url: string;
@@ -291,6 +291,100 @@ describe('ApiClient', () => {
     });
     await expect(client.request('/v1/me')).rejects.toBeInstanceOf(ApiError);
     expect(captured).toHaveLength(1);
+  });
+
+  it('sends X-Dispensary-Id when configured, on every request', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured.push(captureRequest(input, init));
+      return buildResponse(200, { ok: true });
+    });
+    const client = new ApiClient({
+      baseUrl: 'https://api.test',
+      accessToken: 'access-1',
+      dispensaryId: '01935f3d-0000-7000-8000-0000000000d1',
+      fetchImpl,
+    });
+    await client.request('/v1/vendor/orders');
+    await client.request('/v1/me');
+    expect(captured).toHaveLength(2);
+    expect(captured[0]?.headers['X-Dispensary-Id']).toBe('01935f3d-0000-7000-8000-0000000000d1');
+    // Sent on all routes — API only reads it on vendor controllers,
+    // identity ignores it. Mirroring that here keeps the client simple.
+    expect(captured[1]?.headers['X-Dispensary-Id']).toBe('01935f3d-0000-7000-8000-0000000000d1');
+  });
+
+  it('omits X-Dispensary-Id when no dispensary id is configured', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured.push(captureRequest(input, init));
+      return buildResponse(200, { ok: true });
+    });
+    const client = new ApiClient({ baseUrl: 'https://api.test', accessToken: 'a', fetchImpl });
+    await client.request('/v1/vendor/orders');
+    expect(captured[0]?.headers['X-Dispensary-Id']).toBeUndefined();
+  });
+
+  it('forwards the dispensary id on the retry after refresh', async () => {
+    const newTokens: TokenPair = {
+      accessToken: 'access-2',
+      refreshToken: 'refresh-2',
+      accessTokenExpiresAt: '2030-01-01T00:00:00Z',
+      refreshTokenExpiresAt: '2030-01-14T00:00:00Z',
+      tokenType: 'Bearer',
+    };
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = captureRequest(input, init);
+      captured.push(req);
+      if (req.url.endsWith('/v1/auth/refresh')) {
+        return buildResponse(200, { tokens: newTokens });
+      }
+      if (req.headers['Authorization'] === 'Bearer access-1') {
+        return buildResponse(401, {
+          error: { code: 'TOKEN_EXPIRED', message: 'expired', details: {} },
+        });
+      }
+      return buildResponse(200, { ok: true });
+    });
+    const client = new ApiClient({
+      baseUrl: 'https://api.test',
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+      dispensaryId: '01935f3d-0000-7000-8000-0000000000d1',
+      fetchImpl,
+    });
+    await client.request('/v1/vendor/orders');
+    // 3 calls: original 401, refresh, retry. The retry must carry both
+    // the new bearer AND the dispensary id — buildHeaders rebuilds on
+    // each call, so the dispensary id is not lost across the retry.
+    expect(captured).toHaveLength(3);
+    expect(captured[2]?.headers['X-Dispensary-Id']).toBe('01935f3d-0000-7000-8000-0000000000d1');
+    expect(captured[2]?.headers['Authorization']).toBe('Bearer access-2');
+  });
+
+  it('listMyDispensaries GETs /v1/me/dispensaries and returns the typed body', async () => {
+    const body: DispensaryMembershipsResponse = {
+      memberships: [
+        {
+          id: '01935f3d-0000-7000-8000-0000000000d1',
+          displayName: 'North Loop',
+          staffRole: 'manager',
+          acceptedAt: '2026-04-02T00:00:00.000+00:00',
+          joinedAt: '2026-04-02T00:00:00.000+00:00',
+        },
+      ],
+    };
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured.push(captureRequest(input, init));
+      return buildResponse(200, body);
+    });
+    const client = new ApiClient({
+      baseUrl: 'https://api.test',
+      accessToken: 'access-1',
+      fetchImpl,
+    });
+    const result = await client.listMyDispensaries();
+    expect(result).toEqual(body);
+    expect(captured[0]?.url).toBe('https://api.test/v1/me/dispensaries');
+    expect(captured[0]?.method).toBe('GET');
   });
 
   it('forwards the abort signal to fetch', async () => {

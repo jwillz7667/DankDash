@@ -19,7 +19,7 @@
  *     under `moduleResolution: 'bundler'` because it `export *`s from
  *     `@auth/core/jwt`. We augment the underlying module instead.
  */
-import type { UserRole } from '../api/types.js';
+import type { StaffRole, UserRole } from '../api/types.js';
 
 declare module 'next-auth' {
   interface Session {
@@ -36,6 +36,16 @@ declare module 'next-auth' {
     accessTokenExpiresAt: string;
     refreshTokenExpiresAt: string;
     mfaRequired: boolean;
+    /**
+     * Active dispensary context resolved at sign-in. Null when the user
+     * holds no accepted memberships (e.g. a global admin without store
+     * staffing) — the dashboard renders a "no dispensary context" state
+     * and vendor-scoped requests will 403 until the user accepts an
+     * invite.
+     */
+    dispensaryId: string | null;
+    dispensaryName: string | null;
+    staffRole: StaffRole | null;
     error?: 'RefreshAccessTokenError';
   }
 }
@@ -51,6 +61,9 @@ declare module '@auth/core/jwt' {
     accessTokenExpiresAt: string;
     refreshTokenExpiresAt: string;
     mfaRequired: boolean;
+    dispensaryId: string | null;
+    dispensaryName: string | null;
+    staffRole: StaffRole | null;
     error?: 'RefreshAccessTokenError';
   }
 }

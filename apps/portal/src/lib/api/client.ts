@@ -21,13 +21,26 @@
  *      with `status`, `code`, and the typed error envelope from the API.
  *      Consumers never see a bare `Error`.
  */
-import type { LoginResponse, RefreshResponse, TokenPair } from './types.js';
+import type {
+  DispensaryMembershipsResponse,
+  LoginResponse,
+  RefreshResponse,
+  TokenPair,
+} from './types.js';
 import type { ErrorEnvelope } from '@dankdash/types';
 
 export interface ApiClientOptions {
   readonly baseUrl: string;
   readonly accessToken?: string;
   readonly refreshToken?: string;
+  /**
+   * Active dispensary id. When set, every outgoing request includes
+   * `X-Dispensary-Id: <id>`. Safe to send on all routes — the API only
+   * reads it on vendor-scoped controllers; the auth/identity surfaces
+   * ignore it. Set per request-scoped client from the Auth.js session,
+   * never globally.
+   */
+  readonly dispensaryId?: string;
   /**
    * Called when the client refreshes successfully. The consumer is
    * expected to persist the new token pair (e.g., write into the
@@ -71,6 +84,7 @@ export class ApiClient {
   private readonly baseUrl: string;
   private accessToken: string | undefined;
   private refreshToken: string | undefined;
+  private readonly dispensaryId: string | undefined;
   private readonly onTokenRefreshed: ((tokens: TokenPair) => Promise<void> | void) | undefined;
   private readonly fetchImpl: typeof fetch;
 
@@ -78,6 +92,7 @@ export class ApiClient {
     this.baseUrl = trimTrailingSlash(options.baseUrl);
     this.accessToken = options.accessToken;
     this.refreshToken = options.refreshToken;
+    this.dispensaryId = options.dispensaryId;
     this.onTokenRefreshed = options.onTokenRefreshed;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
@@ -109,6 +124,16 @@ export class ApiClient {
       body: { refreshToken },
       skipRefresh: true,
     });
+  }
+
+  /**
+   * `GET /v1/me/dispensaries` — the dispensary memberships the
+   * authenticated user holds. The portal calls this once in the
+   * Auth.js jwt callback at sign-in to resolve the active dispensary
+   * id; later refreshes do not re-fetch.
+   */
+  async listMyDispensaries(): Promise<DispensaryMembershipsResponse> {
+    return this.request<DispensaryMembershipsResponse>('/v1/me/dispensaries');
   }
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -175,6 +200,9 @@ export class ApiClient {
     }
     if (this.accessToken !== undefined) {
       headers['Authorization'] = `Bearer ${this.accessToken}`;
+    }
+    if (this.dispensaryId !== undefined) {
+      headers['X-Dispensary-Id'] = this.dispensaryId;
     }
     return headers;
   }
