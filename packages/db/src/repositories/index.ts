@@ -42,6 +42,7 @@ export {
   type OrderStatusTransitionInput,
   type TransitionDecision,
   type TransitionResolver,
+  type VendorQueueOrderRow,
 } from './orders.repo.js';
 export {
   LedgerEntriesRepository,
