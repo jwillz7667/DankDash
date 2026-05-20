@@ -68,6 +68,9 @@ public extension TokenStore {
     clear: {}
   )
 
+  /// Keychain account names shared by `TokenStore.live` and any matching
+  /// `AuthInterceptor` implementation in the app target. Lives here so
+  /// the two halves of the auth flow agree on a single name pair.
   enum AccountKey {
     public static let access = "auth.access_token"
     public static let refresh = "auth.refresh_token"
