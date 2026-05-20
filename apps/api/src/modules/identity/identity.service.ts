@@ -30,11 +30,23 @@
  * the repository already executes atomically. When Phase 3 introduces a
  * KYC-event ledger, that write will join the user UPDATE in one transaction.
  */
-import { UsersRepository } from '@dankdash/db';
+import {
+  DispensariesRepository,
+  DispensaryStaffRepository,
+  UsersRepository,
+  type Dispensary,
+  type DispensaryStaffMember,
+} from '@dankdash/db';
 import { NotFoundError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
 import { PersonaService, type WebhookOutcome } from './persona/persona.service.js';
-import type { KycStartResponse, MeResponse, UpdateMeRequestDto } from './dto/index.js';
+import type {
+  DispensaryMembership,
+  DispensaryMembershipsResponse,
+  KycStartResponse,
+  MeResponse,
+  UpdateMeRequestDto,
+} from './dto/index.js';
 
 const PROVIDER_NAME = 'persona';
 
@@ -43,6 +55,8 @@ export class IdentityService {
   constructor(
     private readonly users: UsersRepository,
     private readonly persona: PersonaService,
+    private readonly dispensaryStaff: DispensaryStaffRepository,
+    private readonly dispensaries: DispensariesRepository,
   ) {}
 
   async getMe(userId: string): Promise<MeResponse> {
@@ -75,6 +89,56 @@ export class IdentityService {
       throw new NotFoundError('User', userId);
     }
     return this.getMe(userId);
+  }
+
+  /**
+   * Active staff memberships for the authenticated user, projected to
+   * the wire shape the portal needs to thread `X-Dispensary-Id`.
+   *
+   * Returns rows where `dispensary_staff.removed_at IS NULL`; an
+   * invited-but-unaccepted membership is included (acceptedAt is null
+   * on the wire) so the portal can render a pending-invite affordance
+   * without a second roundtrip. The DispensaryStaffRepository already
+   * filters by `removedAt IS NULL`, so this method only does the
+   * dispensary lookup + projection.
+   *
+   * The dispensary fetch is parallelised per row — for a single-store
+   * staff member that is one DB call, for a five-store owner it is
+   * five concurrent calls. We deliberately do not push this into a
+   * SQL join inside the staff repo: the staff repo is the only
+   * `dispensary_staff` accessor and the dispensaries projection
+   * (geo columns) is repo-owned. Keeping the joinery here means a
+   * future addition to either repo does not silently widen this API
+   * surface.
+   *
+   * Soft-deleted or non-active dispensaries are filtered out — a staff
+   * member of a dispensary that has been deactivated by the admin
+   * shouldn't see it in the picker. The same is true for soft-deleted
+   * dispensaries; the foreign key uses `ON DELETE RESTRICT` so a
+   * `deletedAt IS NOT NULL` is the only "gone" signal.
+   */
+  async listDispensaries(userId: string): Promise<DispensaryMembershipsResponse> {
+    const memberships = await this.dispensaryStaff.listActiveForUser(userId);
+    if (memberships.length === 0) return { memberships: [] };
+
+    const dispensaryRows = await Promise.all(
+      memberships.map((m) => this.dispensaries.findById(m.dispensaryId)),
+    );
+
+    const projected: DispensaryMembership[] = [];
+    for (let i = 0; i < memberships.length; i += 1) {
+      const membership = memberships[i];
+      const dispensary = dispensaryRows[i];
+      if (membership === undefined || dispensary === null || dispensary === undefined) continue;
+      if (dispensary.deletedAt !== null) continue;
+      if (dispensary.status !== 'active') continue;
+      projected.push(projectMembership(membership, dispensary));
+    }
+
+    // Oldest-joined first so a multi-store owner sees their primary
+    // store at the top of the picker, with newer acquisitions trailing.
+    projected.sort((a, b) => Date.parse(a.joinedAt) - Date.parse(b.joinedAt));
+    return { memberships: projected };
   }
 
   async startKyc(userId: string): Promise<KycStartResponse> {
@@ -111,4 +175,23 @@ export class IdentityService {
     //   through the inbound LoggingInterceptor — once Phase 4 ships the
     //   kyc_events ledger, that becomes an explicit row here.
   }
+}
+
+function projectMembership(
+  membership: DispensaryStaffMember,
+  dispensary: Dispensary,
+): DispensaryMembership {
+  const displayName = dispensary.dba ?? dispensary.legalName;
+  const acceptedAt = membership.acceptedAt;
+  // joinedAt = acceptedAt when accepted, otherwise the invited_at marker.
+  // Both columns are NOT NULL in the schema (invited_at has a default), so
+  // the fallback is always a real date.
+  const joinedAt = acceptedAt ?? membership.invitedAt;
+  return {
+    id: dispensary.id,
+    displayName,
+    staffRole: membership.role,
+    acceptedAt: acceptedAt === null ? null : acceptedAt.toISOString(),
+    joinedAt: joinedAt.toISOString(),
+  };
 }

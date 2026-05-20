@@ -17,7 +17,12 @@
  */
 import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
-import { UpdateMeRequestDto, type KycStartResponse, type MeResponse } from './dto/index.js';
+import {
+  UpdateMeRequestDto,
+  type DispensaryMembershipsResponse,
+  type KycStartResponse,
+  type MeResponse,
+} from './dto/index.js';
 import { IdentityService } from './identity.service.js';
 import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
 
@@ -28,6 +33,18 @@ export class IdentityController {
   @Get('me')
   getMe(@CurrentUser() user: AuthenticatedUser): Promise<MeResponse> {
     return this.identity.getMe(user.userId);
+  }
+
+  /**
+   * Active staff memberships for the authenticated user — the portal
+   * calls this once after login to resolve which `X-Dispensary-Id` to
+   * thread on subsequent vendor-scoped requests. Empty array for users
+   * with no memberships (e.g. global admin) — the portal handles that
+   * as "no dispensary context yet, surface the multi-store picker".
+   */
+  @Get('me/dispensaries')
+  listDispensaries(@CurrentUser() user: AuthenticatedUser): Promise<DispensaryMembershipsResponse> {
+    return this.identity.listDispensaries(user.userId);
   }
 
   @Patch('me')

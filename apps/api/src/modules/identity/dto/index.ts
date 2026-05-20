@@ -1,4 +1,11 @@
 export {
+  DispensaryMembershipSchema,
+  DispensaryMembershipsResponseDto,
+  DispensaryMembershipsResponseSchema,
+  type DispensaryMembership,
+  type DispensaryMembershipsResponse,
+} from './dispensaries.dto.js';
+export {
   KycStartRequestDto,
   KycStartResponseSchema,
   KycWebhookEnvelopeSchema,
