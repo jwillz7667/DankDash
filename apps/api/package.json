@@ -22,6 +22,7 @@
     "@dankdash/notifications": "workspace:*",
     "@dankdash/orders": "workspace:*",
     "@dankdash/pricing": "workspace:*",
+    "@dankdash/realtime-events": "workspace:*",
     "@dankdash/types": "workspace:*",
     "@dankdash/utils": "workspace:*",
     "@fastify/helmet": "^13.0.2",
