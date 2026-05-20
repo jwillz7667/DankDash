@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="DankDash">
+  <!-- Placeholder mark. Replace with production artwork (see brand/README.md). -->
+  <rect width="64" height="64" rx="14" fill="#3C9322" />
+  <path
+    d="M19 41V23a1 1 0 0 1 1-1h9.5a10.5 10.5 0 0 1 0 21H20a1 1 0 0 1-1-1Zm6-15v12h4.5a6 6 0 0 0 0-12H25Z"
+    fill="#FFFFFF"
+  />
+  <circle cx="44" cy="22" r="3.25" fill="#DDEFCF" />
+</svg>
