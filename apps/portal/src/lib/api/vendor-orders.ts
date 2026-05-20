@@ -172,3 +172,98 @@ export async function getVendorOrder(
 ): Promise<VendorOrderDetail> {
   return client.request<VendorOrderDetail>(`/v1/vendor/orders/${encodeURIComponent(orderId)}`);
 }
+
+/**
+ * Wire shape of every transition action response. Mirrors
+ * `TransitionResponseSchema` in `apps/api/src/modules/orders/dto/index.ts`.
+ * The drawer and the drag-drop layer fold this onto the local snapshot
+ * via {@link import('../orders/realtime-reducer.js').applyOrderStatusChanged}
+ * so the optimistic UI matches what the realtime channel will also
+ * deliver moments later.
+ */
+export interface TransitionResponse {
+  readonly id: string;
+  readonly status: OrderStatus;
+  readonly statusChangedAt: string;
+}
+
+function orderActionPath(orderId: string, action: string): string {
+  return `/v1/vendor/orders/${encodeURIComponent(orderId)}/${action}`;
+}
+
+/**
+ * POST /v1/vendor/orders/:id/accept — fires `VENDOR_ACCEPT` server-side
+ * (`placed` → `accepted`). No body. The OK response carries the new
+ * canonical status; consumers should treat this as the source of truth
+ * even if a realtime event is in flight from the same transition.
+ */
+export async function acceptVendorOrder(
+  client: ApiClient,
+  orderId: string,
+): Promise<TransitionResponse> {
+  return client.request<TransitionResponse>(orderActionPath(orderId, 'accept'), {
+    method: 'POST',
+  });
+}
+
+/**
+ * POST /v1/vendor/orders/:id/reject — fires `VENDOR_REJECT` with the
+ * supplied reason (trimmed, 1–500 chars per the API's Zod schema). The
+ * order moves to `rejected` and falls off the queue surface. The caller
+ * is responsible for confirming intent in the UI — there is no undo.
+ */
+export async function rejectVendorOrder(
+  client: ApiClient,
+  orderId: string,
+  reason: string,
+): Promise<TransitionResponse> {
+  return client.request<TransitionResponse>(orderActionPath(orderId, 'reject'), {
+    method: 'POST',
+    body: { reason },
+  });
+}
+
+/**
+ * POST /v1/vendor/orders/:id/prepped — fires `VENDOR_PREPPING`
+ * (`accepted` → `prepping`). The endpoint is named "prepped" by
+ * convention (the action the staff member just completed: "I've started
+ * prepping"); the resulting status is `prepping`.
+ */
+export async function markVendorOrderPrepped(
+  client: ApiClient,
+  orderId: string,
+): Promise<TransitionResponse> {
+  return client.request<TransitionResponse>(orderActionPath(orderId, 'prepped'), {
+    method: 'POST',
+  });
+}
+
+/**
+ * POST /v1/vendor/orders/:id/ready — fires `VENDOR_READY`
+ * (`prepping` → `ready_for_pickup`). Triggers dispatch search; the
+ * order will reappear as `awaiting_driver` or `driver_assigned` once
+ * the dispatcher matches a driver.
+ */
+export async function markVendorOrderReady(
+  client: ApiClient,
+  orderId: string,
+): Promise<TransitionResponse> {
+  return client.request<TransitionResponse>(orderActionPath(orderId, 'ready'), {
+    method: 'POST',
+  });
+}
+
+/**
+ * POST /v1/vendor/orders/:id/handoff — vendor confirms the driver took
+ * possession. Fires `DRIVER_PICKED_UP`; the order moves to `picked_up`
+ * and leaves the vendor queue surface (the driver-side has its own
+ * `picked-up` endpoint in Phase 8; whichever fires first wins).
+ */
+export async function markVendorOrderHandoff(
+  client: ApiClient,
+  orderId: string,
+): Promise<TransitionResponse> {
+  return client.request<TransitionResponse>(orderActionPath(orderId, 'handoff'), {
+    method: 'POST',
+  });
+}
