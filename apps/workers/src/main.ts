@@ -45,6 +45,7 @@ import {
   startLocationIngest,
   type LocationIngestItem,
 } from './jobs/location-ingest/index.js';
+import { scheduleMetrcReconciliationJob } from './jobs/metrc-reconciliation/index.js';
 import { scheduleMetrcReportingJob } from './jobs/metrc-reporting/index.js';
 import {
   ParquetPartitionArchiver,
@@ -146,6 +147,21 @@ async function main(): Promise<void> {
       })
     : null;
 
+  // Reconciliation cron pairs with the reporting cron — same gate
+  // (`ENABLE_METRC`) and same DI graph, distinct schedule. Runs daily
+  // at 04:00 Central so the local row that the reporting cron just
+  // POSTed is settled in Metrc's backend by the time we look for it.
+  const metrcReconciliationTask = env.ENABLE_METRC
+    ? scheduleMetrcReconciliationJob({
+        metricTransactions,
+        orders,
+        dispensaries,
+        metrc: metrcClient,
+        encryption,
+        logger,
+      })
+    : null;
+
   // Two extra Redis connections for the ETA path:
   //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
   //   - etaPublishRedis: XADD to dankdash:realtime.
@@ -224,6 +240,7 @@ async function main(): Promise<void> {
     offerExpiryTask.stop();
     partitionTask.stop();
     metrcReportingTask?.stop();
+    metrcReconciliationTask?.stop();
     await locationIngest.stop();
     etaCacheRedis.disconnect();
     etaPublishRedis.disconnect();
