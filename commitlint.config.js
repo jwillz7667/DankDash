@@ -59,6 +59,7 @@ const config = {
         'driver',
         'eta',
         'metrc',
+        'notifications',
         'config',
         'types',
         'ui',
