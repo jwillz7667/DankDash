@@ -61,7 +61,20 @@ export const EnvSchema = z
 
     TWILIO_ACCOUNT_SID: z.string().min(1),
     TWILIO_AUTH_TOKEN: z.string().min(1),
+    // Used by the masked-number Proxy product for driver↔customer calls
+    // and texts during an active delivery — distinct from the messaging
+    // service used for transactional SMS (`TWILIO_MESSAGING_SERVICE_SID`).
     TWILIO_PROXY_SERVICE_SID: z.string().min(1),
+    // Outbound transactional SMS (order updates, payment failures, refund
+    // notices). Either a Messaging Service SID (`MGxxxx`, preferred — lets
+    // Twilio pick the best sender from a pool) or, when unset, the
+    // provider falls back to `TWILIO_FROM_NUMBER`. Exactly one must be
+    // configured for SMS delivery to be enabled at runtime.
+    TWILIO_MESSAGING_SERVICE_SID: z.string().min(1).optional(),
+    TWILIO_FROM_NUMBER: z
+      .string()
+      .regex(/^\+\d{8,15}$/u, 'TWILIO_FROM_NUMBER must be in E.164 format')
+      .optional(),
 
     RESEND_API_KEY: z.string().min(1),
     RESEND_FROM_EMAIL: z.string().email().default('orders@dankdash.com'),
