@@ -80,7 +80,10 @@ export function LoginForm({ callbackUrl, initialError }: LoginFormProps): ReactN
         setError('Unexpected response from sign-in. Please try again.');
         return;
       }
-      if (result.error === undefined) {
+      // Auth.js v5 returns `error: null` on success (the TypeScript type
+      // is `string | undefined` but the runtime value is null). Loose
+      // equality covers both nullish branches.
+      if (result.error == null) {
         // Success — session cookie set. Move to the callback URL.
         router.replace(callbackUrl);
         router.refresh();
@@ -120,7 +123,7 @@ export function LoginForm({ callbackUrl, initialError }: LoginFormProps): ReactN
       setError('Unexpected response from sign-in. Please try again.');
       return;
     }
-    if (result.error === undefined) {
+    if (result.error == null) {
       router.replace(callbackUrl);
       router.refresh();
       return;
