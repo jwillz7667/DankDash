@@ -193,14 +193,18 @@ export class MetrcTransactionsRepository extends BaseRepository {
 
   /**
    * Records a successful Metrc submission. Sets `status='reported'`,
-   * `reportedAt`, and the receipt id returned by the Metrc API. Once a
-   * row is reported the reconciliation cron is the only thing that
-   * touches it (to mark `reconciled`), so we also push `nextRetryAt`
-   * far into the future to keep the partial polling index small.
+   * `reportedAt`, and the raw response payload. Metrc's
+   * `POST /sales/v2/receipts` returns 200 with an empty body and does
+   * not echo the freshly-minted receipt id — discovery is the
+   * reconciliation cron's job, via `/sales/v2/receipts/active` on a
+   * window bounded by `reportedAt`. We deliberately leave
+   * `metricReceiptId` NULL here and let `markReconciled` fill it.
+   *
+   * Also clears `failureReason` so a subsequent admin view of the row
+   * does not show a stale error from a prior retry.
    */
   async markReported(
     id: string,
-    receiptId: string,
     responsePayload: unknown,
     reportedAt = new Date(),
   ): Promise<MetrcTransaction | null> {
@@ -208,7 +212,6 @@ export class MetrcTransactionsRepository extends BaseRepository {
       .update(metrcTransactions)
       .set({
         status: 'reported',
-        metrcReceiptId: receiptId,
         responsePayload,
         reportedAt,
         failureReason: null,
@@ -280,10 +283,25 @@ export class MetrcTransactionsRepository extends BaseRepository {
     return row ?? null;
   }
 
-  async markReconciled(id: string): Promise<MetrcTransaction | null> {
+  /**
+   * Records the outcome of the reconciliation cron matching a reported
+   * row to an upstream Metrc receipt discovered via
+   * `/sales/v2/receipts/active`. Sets `status='reconciled'` and stamps
+   * the Metrc-assigned receipt id onto the row so admin views can
+   * cross-link an order to its receipt without re-querying Metrc.
+   *
+   * `receiptId` is required — if reconciliation cannot identify the
+   * receipt, the row stays in `reported` until the next cron tick. The
+   * spec calls out emailing discrepancies to admin after the 7-day
+   * window elapses without a match (Phase 11.4).
+   */
+  async markReconciled(id: string, receiptId: string): Promise<MetrcTransaction | null> {
+    if (receiptId.length === 0) {
+      throw new RepositoryError('markReconciled: receiptId must be a non-empty string');
+    }
     const [row] = await this.db
       .update(metrcTransactions)
-      .set({ status: 'reconciled', updatedAt: new Date() })
+      .set({ status: 'reconciled', metrcReceiptId: receiptId, updatedAt: new Date() })
       .where(eq(metrcTransactions.id, id))
       .returning();
     return row ?? null;

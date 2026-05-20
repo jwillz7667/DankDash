@@ -1097,9 +1097,13 @@ describe('repository coverage', () => {
       expect(secondClaimIds.has(tB.id)).toBe(false);
       expect(secondClaimIds.has(tC.id)).toBe(false);
 
-      const reported = await metrc.markReported(tA.id, 'metrc-receipt-1', { ok: true });
+      // markReported leaves metricReceiptId NULL — Metrc's POST returns
+      // an empty body and the receipt id only surfaces later via the
+      // reconciliation cron's /receipts/active query.
+      const reported = await metrc.markReported(tA.id, { ok: true });
       expect(reported?.status).toBe('reported');
-      expect(reported?.metrcReceiptId).toBe('metrc-receipt-1');
+      expect(reported?.metrcReceiptId).toBeNull();
+      expect(reported?.failureReason).toBeNull();
 
       // Transient failure → row stays in pending, retry_count bumps,
       // nextRetryAt advances to the caller-supplied window.
@@ -1122,8 +1126,15 @@ describe('repository coverage', () => {
       expect(failed?.failureReason).toBe('invalid package tag');
       expect(failed?.retryCount).toBe(1);
 
-      const reconciled = await metrc.markReconciled(tA.id);
+      // Reconciliation cron matched the reported row to an upstream
+      // receipt; markReconciled stamps the receipt id and flips status.
+      const reconciled = await metrc.markReconciled(tA.id, 'metrc-receipt-1');
       expect(reconciled?.status).toBe('reconciled');
+      expect(reconciled?.metrcReceiptId).toBe('metrc-receipt-1');
+
+      // Empty receipt id is rejected — caller passed the cron a row it
+      // could not actually match.
+      await expect(metrc.markReconciled(tA.id, '')).rejects.toThrow(/receiptId/);
 
       // Reconciliation window query: reported + reconciled rows whose
       // reportedAt falls inside [since, until].
