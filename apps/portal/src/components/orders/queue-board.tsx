@@ -21,11 +21,16 @@
  */
 import { Activity, Loader2, Plug, Wifi, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { type VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
+import {
+  type TransitionResponse,
+  type VendorQueueOrderSummary,
+} from '../../lib/api/vendor-orders.js';
+import { type VendorOrderActions } from '../../lib/orders/order-actions.js';
 import { QUEUE_COLUMNS, bucketByColumn } from '../../lib/orders/queue-columns.js';
 import { applyOrderCreated, applyOrderStatusChanged } from '../../lib/orders/realtime-reducer.js';
 import { useRealtimeOrders, type UseRealtimeOrdersOptions } from '../../lib/realtime/hooks.js';
 import { Badge, type BadgeProps } from '../ui/badge.js';
+import { OrderDetailDrawer } from './order-detail-drawer.js';
 import { QueueColumn } from './queue-column.js';
 import type { RealtimeStatus } from '../../lib/realtime/client.js';
 
@@ -43,6 +48,13 @@ export interface QueueBoardProps {
    * by the no-dispensary-context fallback page.
    */
   readonly realtime?: QueueBoardRealtimeConfig;
+  /**
+   * Vendor-orders surface the drawer uses to fetch the detail and fire
+   * transition actions. When omitted, cards are not clickable and the
+   * drawer is not rendered — tests for pure board behavior use this
+   * shape; production always supplies the server-action implementation.
+   */
+  readonly actions?: VendorOrderActions;
   /**
    * Test seam — production omits this and the board uses the real
    * `Date.now()` clock. Tests pass a deterministic constructor so the
@@ -67,12 +79,14 @@ export interface QueueBoardProps {
 export function QueueBoard({
   initialOrders,
   realtime,
+  actions,
   nowFactory,
   tickIntervalMs = 60_000,
   clientFactory,
 }: QueueBoardProps): ReactNode {
   const now = useNow(nowFactory, tickIntervalMs);
   const [orders, setOrders] = useState<readonly VendorQueueOrderSummary[]>(() => initialOrders);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
 
   const handleCreated = useCallback((payload: Parameters<typeof applyOrderCreated>[1]) => {
     setOrders((prev) => applyOrderCreated(prev, payload));
@@ -96,6 +110,33 @@ export function QueueBoard({
 
   const buckets = useMemo(() => bucketByColumn(orders), [orders]);
 
+  // Translate the action's `TransitionResponse` into the same payload
+  // shape the realtime channel emits, then run it through the same
+  // reducer. That keeps a single mutation chokepoint regardless of
+  // whether the change came from a button click or a websocket event.
+  const handleTransition = useCallback((response: TransitionResponse): void => {
+    setOrders((prev) =>
+      applyOrderStatusChanged(prev, {
+        orderId: response.id,
+        customerId: '',
+        dispensaryId: '',
+        driverId: null,
+        fromStatus: 'placed',
+        toStatus: response.status,
+        changedAt: response.statusChangedAt,
+      }),
+    );
+  }, []);
+
+  const handleSelect = useCallback((orderId: string): void => {
+    setSelectedOrderId(orderId);
+  }, []);
+  const handleCloseDrawer = useCallback((): void => {
+    setSelectedOrderId(null);
+  }, []);
+
+  const cardOnSelect = actions !== undefined ? handleSelect : undefined;
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-end">
@@ -107,9 +148,24 @@ export function QueueBoard({
         className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
       >
         {QUEUE_COLUMNS.map((column) => (
-          <QueueColumn key={column.key} column={column} orders={buckets[column.key]} now={now} />
+          <QueueColumn
+            key={column.key}
+            column={column}
+            orders={buckets[column.key]}
+            now={now}
+            {...(cardOnSelect !== undefined ? { onSelect: cardOnSelect } : {})}
+          />
         ))}
       </div>
+      {actions !== undefined && (
+        <OrderDetailDrawer
+          orderId={selectedOrderId}
+          onClose={handleCloseDrawer}
+          onTransition={handleTransition}
+          actions={actions}
+          now={now}
+        />
+      )}
     </div>
   );
 }

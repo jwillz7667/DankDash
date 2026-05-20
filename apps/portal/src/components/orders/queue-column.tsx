@@ -8,6 +8,12 @@ export interface QueueColumnProps {
   readonly column: QueueColumnConfig;
   readonly orders: readonly VendorQueueOrderSummary[];
   readonly now: Date;
+  /**
+   * Fires when the operator selects a card. Forwarded verbatim to each
+   * `QueueCard` so the board can centralize the drawer state without
+   * the column knowing about the drawer at all.
+   */
+  readonly onSelect?: (orderId: string) => void;
 }
 
 /**
@@ -16,7 +22,7 @@ export interface QueueColumnProps {
  * a single muted line so the four-up layout doesn't collapse when one
  * lane is quiet — keeps spatial muscle memory intact for the operator.
  */
-export function QueueColumn({ column, orders, now }: QueueColumnProps): ReactNode {
+export function QueueColumn({ column, orders, now, onSelect }: QueueColumnProps): ReactNode {
   return (
     <section
       aria-label={`${column.label} column`}
@@ -40,7 +46,14 @@ export function QueueColumn({ column, orders, now }: QueueColumnProps): ReactNod
             No orders.
           </p>
         ) : (
-          orders.map((order) => <QueueCard key={order.id} order={order} now={now} />)
+          orders.map((order) => (
+            <QueueCard
+              key={order.id}
+              order={order}
+              now={now}
+              {...(onSelect !== undefined ? { onSelect } : {})}
+            />
+          ))
         )}
       </div>
     </section>

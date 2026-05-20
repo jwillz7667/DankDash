@@ -1,6 +1,11 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
+import type {
+  TransitionResponse,
+  VendorOrderDetail,
+  VendorQueueOrderSummary,
+} from '../../lib/api/vendor-orders.js';
+import type { VendorOrderActions } from '../../lib/orders/order-actions.js';
 import {
   RealtimeClient,
   type OrderStatusChange,
@@ -91,9 +96,71 @@ class FakeClient extends RealtimeClient {
 
 const REALTIME = { url: 'wss://test', token: 'jwt-1' } as const;
 
+function orderDetail(overrides: Partial<VendorOrderDetail> = {}): VendorOrderDetail {
+  return {
+    id: overrides.id ?? '01935f3d-0000-7000-8000-000000000001',
+    shortCode: overrides.shortCode ?? 'A1B2',
+    userId: '01935f3d-0000-7000-8000-000000000abc',
+    dispensaryId: '01935f3d-0000-7000-8000-0000000000d1',
+    driverId: null,
+    status: overrides.status ?? 'placed',
+    statusChangedAt: '2026-05-19T11:55:00.000Z',
+    subtotalCents: 5400,
+    cannabisTaxCents: 540,
+    salesTaxCents: 270,
+    deliveryFeeCents: 500,
+    driverTipCents: 0,
+    discountCents: 0,
+    totalCents: 6210,
+    timestamps: {
+      placedAt: '2026-05-19T11:55:00.000Z',
+      paymentFailedAt: null,
+      acceptedAt: null,
+      rejectedAt: null,
+      preppingAt: null,
+      preparedAt: null,
+      awaitingDriverAt: null,
+      dispatchFailedAt: null,
+      driverAssignedAt: null,
+      enRoutePickupAt: null,
+      pickedUpAt: null,
+      enRouteDropoffAt: null,
+      arrivedAtDropoffAt: null,
+      idScanPendingAt: null,
+      deliveredAt: null,
+      returnedToStoreAt: null,
+      canceledAt: null,
+      disputedAt: null,
+      ratedAt: null,
+    },
+    ratings: { customer: null, review: null, dispensary: null, driver: null },
+    ...overrides,
+  };
+}
+
+function transition(id: string, status: TransitionResponse['status']): TransitionResponse {
+  return { id, status, statusChangedAt: '2026-05-19T12:01:00.000Z' };
+}
+
+function buildActions(overrides: Partial<VendorOrderActions> = {}): VendorOrderActions {
+  return {
+    fetch: vi.fn(async () => orderDetail()),
+    accept: vi.fn(async () => transition('a', 'accepted')),
+    reject: vi.fn(async () => transition('a', 'rejected')),
+    markPrepped: vi.fn(async () => transition('a', 'prepping')),
+    markReady: vi.fn(async () => transition('a', 'ready_for_pickup')),
+    markHandoff: vi.fn(async () => transition('a', 'picked_up')),
+    ...overrides,
+  };
+}
+
 describe('QueueBoard', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    // `shouldAdvanceTime: true` lets `findBy*` polling (which uses
+    // setTimeout) progress while keeping `vi.setSystemTime` + the
+    // explicit `vi.advanceTimersByTime` calls below deterministic for
+    // the tick test.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
   });
 
@@ -213,6 +280,39 @@ describe('QueueBoard', () => {
       });
       const badge = screen.getByTestId('realtime-status-badge');
       expect(badge).toHaveTextContent('Reconnecting');
+    });
+  });
+
+  describe('drawer integration', () => {
+    it('cards are not interactive when actions are not supplied', () => {
+      const { container } = render(
+        <QueueBoard
+          initialOrders={[order({ id: 'a', status: 'placed', customerName: 'Aaron' })]}
+        />,
+      );
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.tagName).toBe('ARTICLE');
+      expect(screen.queryByTestId('order-detail-drawer')).toBeNull();
+    });
+
+    it('clicking a card opens the drawer; the close button hides it', async () => {
+      const actions = buildActions({
+        fetch: vi.fn(async () => orderDetail({ id: 'a', shortCode: 'AAAA' })),
+      });
+      render(
+        <QueueBoard
+          initialOrders={[order({ id: 'a', status: 'placed', customerName: 'Aaron' })]}
+          actions={actions}
+        />,
+      );
+
+      expect(screen.queryByTestId('order-detail-drawer')).toBeNull();
+      fireEvent.click(screen.getByText('Aaron'));
+      expect(await screen.findByTestId('order-detail-drawer')).toBeInTheDocument();
+      expect(await screen.findByText('#AAAA')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('order-detail-close'));
+      expect(screen.queryByTestId('order-detail-drawer')).toBeNull();
     });
   });
 
@@ -344,6 +444,44 @@ describe('QueueBoard', () => {
       expect(screen.queryByText('Aaron')).toBeNull();
       const allCards = container.querySelectorAll('[data-testid="queue-card"]');
       expect(allCards).toHaveLength(0);
+    });
+
+    it('folds a transition response onto the snapshot via the same status-change reducer', async () => {
+      const fake = new FakeClient();
+      const actions = buildActions({
+        fetch: vi.fn(async () => orderDetail({ id: 'a', status: 'placed' })),
+        accept: vi.fn(async () => transition('a', 'accepted')),
+      });
+      const { container } = render(
+        <QueueBoard
+          initialOrders={[order({ id: 'a', status: 'placed', customerName: 'Aaron' })]}
+          realtime={REALTIME}
+          actions={actions}
+          clientFactory={(): FakeClient => fake}
+        />,
+      );
+
+      // Open the drawer by clicking the card.
+      fireEvent.click(screen.getByText('Aaron'));
+      // Wait for the drawer to load.
+      expect(await screen.findByTestId('order-detail-drawer')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('order-detail-action-accept'));
+      });
+
+      expect(actions.accept).toHaveBeenCalledWith('a');
+      // Card moved into the Prepping column (accepted is bucketed there).
+      expect(
+        within(container.querySelector<HTMLElement>('[data-column-key="prepping"]')!).getByText(
+          'Aaron',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(container.querySelector<HTMLElement>('[data-column-key="new"]')!).queryByText(
+          'Aaron',
+        ),
+      ).toBeNull();
     });
 
     it('ignores status changes for unknown order ids (stale tab safety)', () => {

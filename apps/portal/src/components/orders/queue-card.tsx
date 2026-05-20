@@ -19,6 +19,11 @@ export interface QueueCardProps {
    * `new Date()` and ages would drift by a few ms across renders).
    */
   readonly now: Date;
+  /**
+   * Fires when the operator taps the card. The parent opens the order
+   * detail drawer (Phase 14.3). Omit on read-only contexts (no-op).
+   */
+  readonly onSelect?: (orderId: string) => void;
 }
 
 /**
@@ -34,11 +39,44 @@ export interface QueueCardProps {
  *     hover precision; the visible label is the human-friendly
  *     relative time.
  */
-export function QueueCard({ order, now }: QueueCardProps): ReactNode {
+export function QueueCard({ order, now, onSelect }: QueueCardProps): ReactNode {
   const ageLabel = formatRelativeTime(order.statusChangedAt, now);
   const tone = ageTone(order.statusChangedAt, now);
   const customerLabel = order.customerName ?? 'Guest customer';
   const itemLabel = order.itemCount === 1 ? '1 item' : `${order.itemCount.toString()} items`;
+  const interactive = onSelect !== undefined;
+
+  // We render the card as a `<button>` when interactive so it gets
+  // keyboard (Enter/Space) + screen-reader semantics for free, and as
+  // a plain `<article>` otherwise (Storybook, no-op contexts). Both
+  // shapes preserve `data-testid` and `data-order-id` for the realtime
+  // patching reducer's lookup paths.
+  if (interactive) {
+    return (
+      <button
+        type="button"
+        onClick={(): void => {
+          onSelect(order.id);
+        }}
+        className={cn(
+          'w-full rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm',
+          'transition-colors duration-150 hover:border-slate-300 hover:shadow-md',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50',
+        )}
+        data-testid="queue-card"
+        data-order-id={order.id}
+        data-age-tone={tone}
+      >
+        <CardContent
+          order={order}
+          customerLabel={customerLabel}
+          itemLabel={itemLabel}
+          ageLabel={ageLabel}
+          tone={tone}
+        />
+      </button>
+    );
+  }
 
   return (
     <article
@@ -47,6 +85,34 @@ export function QueueCard({ order, now }: QueueCardProps): ReactNode {
       data-order-id={order.id}
       data-age-tone={tone}
     >
+      <CardContent
+        order={order}
+        customerLabel={customerLabel}
+        itemLabel={itemLabel}
+        ageLabel={ageLabel}
+        tone={tone}
+      />
+    </article>
+  );
+}
+
+interface CardContentProps {
+  readonly order: VendorQueueOrderSummary;
+  readonly customerLabel: string;
+  readonly itemLabel: string;
+  readonly ageLabel: string;
+  readonly tone: AgeTone;
+}
+
+function CardContent({
+  order,
+  customerLabel,
+  itemLabel,
+  ageLabel,
+  tone,
+}: CardContentProps): ReactNode {
+  return (
+    <>
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
           <p className="truncate text-sm font-semibold tracking-tight text-slate-900">
@@ -78,7 +144,7 @@ export function QueueCard({ order, now }: QueueCardProps): ReactNode {
           <dd className="font-tabular">{order.userId.slice(0, 6)}</dd>
         </div>
       </dl>
-    </article>
+    </>
   );
 }
 

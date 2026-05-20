@@ -9,6 +9,15 @@ import { Card, CardBody } from '../../../components/ui/card.js';
 import { buildServerApiClient } from '../../../lib/api/server-client.js';
 import { listVendorQueue, type VendorQueueOrderSummary } from '../../../lib/api/vendor-orders.js';
 import { loadPublicEnv } from '../../../lib/env.js';
+import {
+  acceptVendorOrderAction,
+  fetchVendorOrderAction,
+  markVendorOrderHandoffAction,
+  markVendorOrderPreppedAction,
+  markVendorOrderReadyAction,
+  rejectVendorOrderAction,
+} from '../../../lib/orders/actions.js';
+import { type VendorOrderActions } from '../../../lib/orders/order-actions.js';
 
 export const metadata: Metadata = {
   title: 'Orders — DankDash for Business',
@@ -57,6 +66,15 @@ export default async function OrdersPage(): Promise<ReactNode> {
     dispensaryId: ctx.dispensary.id,
   };
 
+  const actions: VendorOrderActions = {
+    fetch: fetchVendorOrderAction,
+    accept: acceptVendorOrderAction,
+    reject: rejectVendorOrderAction,
+    markPrepped: markVendorOrderPreppedAction,
+    markReady: markVendorOrderReadyAction,
+    markHandoff: markVendorOrderHandoffAction,
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -71,7 +89,7 @@ export default async function OrdersPage(): Promise<ReactNode> {
           </p>
         </div>
       </header>
-      <QueueBoard initialOrders={initialOrders} realtime={realtime} />
+      <QueueBoard initialOrders={initialOrders} realtime={realtime} actions={actions} />
     </div>
   );
 }

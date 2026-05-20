@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import type { VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
 import { QueueCard } from './queue-card.js';
 
@@ -56,6 +56,25 @@ describe('QueueCard', () => {
     const { container } = render(<QueueCard order={order()} now={NOW} />);
     const titled = container.querySelector('[title="2026-05-19T11:55:00.000Z"]');
     expect(titled).not.toBeNull();
+  });
+
+  describe('interactivity (onSelect)', () => {
+    it('renders as a button and fires onSelect with the order id on click', () => {
+      const onSelect = vi.fn();
+      const { container } = render(<QueueCard order={order()} now={NOW} onSelect={onSelect} />);
+
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.tagName).toBe('BUTTON');
+
+      fireEvent.click(card!);
+      expect(onSelect).toHaveBeenCalledWith('01935f3d-0000-7000-8000-000000000001');
+    });
+
+    it('falls back to a non-interactive article when onSelect is not supplied', () => {
+      const { container } = render(<QueueCard order={order()} now={NOW} />);
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.tagName).toBe('ARTICLE');
+    });
   });
 
   describe('age escalation tone', () => {
