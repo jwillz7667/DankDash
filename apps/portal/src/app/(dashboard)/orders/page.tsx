@@ -1,11 +1,14 @@
-import { AlertTriangle, Wifi } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { type Metadata } from 'next';
 import { type ReactNode } from 'react';
-import { QueueBoard } from '../../../components/orders/queue-board.js';
-import { Badge } from '../../../components/ui/badge.js';
+import {
+  QueueBoard,
+  type QueueBoardRealtimeConfig,
+} from '../../../components/orders/queue-board.js';
 import { Card, CardBody } from '../../../components/ui/card.js';
 import { buildServerApiClient } from '../../../lib/api/server-client.js';
 import { listVendorQueue, type VendorQueueOrderSummary } from '../../../lib/api/vendor-orders.js';
+import { loadPublicEnv } from '../../../lib/env.js';
 
 export const metadata: Metadata = {
   title: 'Orders — DankDash for Business',
@@ -17,8 +20,13 @@ export const metadata: Metadata = {
  * API responds, which on a healthy queue is < 100ms), then hands the
  * orders to the client `QueueBoard` for reactive rendering.
  *
- * Realtime patching, polling fallback, and action affordances land in
- * follow-up phases (14.2 – 14.4); the page boundary stays here so
+ * The realtime config (URL + access token + dispensary id) is read
+ * here on the server and passed as a prop so the client component
+ * doesn't have to know about Auth.js — the access token leaves the
+ * server boundary only when an active dispensary is resolved.
+ *
+ * Drag-drop, the order detail drawer, and the polling fallback land
+ * in follow-up phases (14.3 – 14.4); the page boundary stays here so
  * those layers only have to extend the board state, not re-introduce
  * the server-side fetch.
  *
@@ -42,6 +50,13 @@ export default async function OrdersPage(): Promise<ReactNode> {
     return <QueueFetchError storeName={ctx.dispensary.name} error={error} />;
   }
 
+  const { NEXT_PUBLIC_REALTIME_URL } = loadPublicEnv();
+  const realtime: QueueBoardRealtimeConfig = {
+    url: NEXT_PUBLIC_REALTIME_URL,
+    token: ctx.accessToken,
+    dispensaryId: ctx.dispensary.id,
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -55,11 +70,8 @@ export default async function OrdersPage(): Promise<ReactNode> {
             transition flows through the server-authoritative state machine.
           </p>
         </div>
-        <Badge tone="info" icon={<Wifi className="h-3 w-3" />}>
-          Realtime — Phase 14.2
-        </Badge>
       </header>
-      <QueueBoard initialOrders={initialOrders} />
+      <QueueBoard initialOrders={initialOrders} realtime={realtime} />
     </div>
   );
 }

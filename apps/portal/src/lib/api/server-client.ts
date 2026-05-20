@@ -30,6 +30,13 @@ export interface ServerApiContext {
     readonly name: string;
     readonly staffRole: StaffRole;
   } | null;
+  /**
+   * Raw access token, surfaced so the page can hand it to the realtime
+   * Socket.io handshake. The token is encapsulated inside `client` for
+   * REST calls; it has to leak here for the client component, which
+   * cannot call `auth()` itself.
+   */
+  readonly accessToken: string;
 }
 
 /**
@@ -72,5 +79,6 @@ export async function buildServerApiClient(): Promise<ServerApiContext | null> {
       role: session.user.role,
     },
     dispensary,
+    accessToken: session.accessToken,
   };
 }

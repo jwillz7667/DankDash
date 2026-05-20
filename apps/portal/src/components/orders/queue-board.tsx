@@ -3,29 +3,46 @@
 /**
  * Client-side container that owns the queue's reactive state.
  *
- * Phase 14.1 (this commit): receives the server-fetched initial
- * snapshot as a prop, buckets it into columns, and re-buckets on a
- * single shared `now` clock that ticks once a minute so every card's
- * relative-age label stays fresh without thrashing.
+ *   - Seeds local state from the server-fetched initial snapshot.
+ *   - Re-buckets into columns on every state change.
+ *   - Re-paints relative-time labels on a single shared `now` clock
+ *     so every card's age stays in sync within a paint (tested in
+ *     queue-board.test.tsx).
+ *   - When `realtime` is supplied, opens a vendor-namespace Socket.io
+ *     connection (via `useRealtimeOrders`) and patches the snapshot in
+ *     place on `order:created` / `order:status_changed` events. The
+ *     reducer is in `lib/orders/realtime-reducer.ts` so the merge logic
+ *     is testable without React.
  *
- * Phase 14.2+ will layer in:
- *   - realtime `order:created` / `order:status_changed` patching of
- *     the local snapshot,
- *   - drag-drop transitions (forward-only) via the orders REST API,
- *   - audio chime + browser notification on `order:created`,
- *   - polling fallback when the socket disconnects.
- *
- * Keeping the board a client component now means each follow-up
- * phase only has to extend the local reducer, not rewire the page.
+ * Phase 14.3+ extends this with drag-drop transitions and the order
+ * detail drawer; Phase 14.4 adds the polling fallback that activates
+ * when the realtime status drops to `disconnected`/`error` for longer
+ * than a grace window.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { type ReactNode } from 'react';
+import { Activity, Loader2, Plug, Wifi, WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { type VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
 import { QUEUE_COLUMNS, bucketByColumn } from '../../lib/orders/queue-columns.js';
+import { applyOrderCreated, applyOrderStatusChanged } from '../../lib/orders/realtime-reducer.js';
+import { useRealtimeOrders, type UseRealtimeOrdersOptions } from '../../lib/realtime/hooks.js';
+import { Badge, type BadgeProps } from '../ui/badge.js';
 import { QueueColumn } from './queue-column.js';
+import type { RealtimeStatus } from '../../lib/realtime/client.js';
+
+export interface QueueBoardRealtimeConfig {
+  readonly url: string;
+  readonly token: string;
+  readonly dispensaryId?: string;
+}
 
 export interface QueueBoardProps {
   readonly initialOrders: readonly VendorQueueOrderSummary[];
+  /**
+   * Realtime connection coordinates. When omitted, the board renders
+   * the seeded snapshot but never opens a socket — used by tests and
+   * by the no-dispensary-context fallback page.
+   */
+  readonly realtime?: QueueBoardRealtimeConfig;
   /**
    * Test seam — production omits this and the board uses the real
    * `Date.now()` clock. Tests pass a deterministic constructor so the
@@ -34,31 +51,65 @@ export interface QueueBoardProps {
   readonly nowFactory?: () => Date;
   /**
    * How often (ms) to recompute the relative-time labels. Defaults to
-   * 60_000 — the smallest unit the human-friendly formatter emits
-   * past 30 seconds is "Xm ago", so anything more granular is wasted
-   * paint. Tests override to a smaller value when exercising the
-   * tick behavior.
+   * 60_000 — the smallest unit the human-friendly formatter emits past
+   * 30 seconds is "Xm ago", so anything more granular is wasted paint.
+   * Tests override to a smaller value when exercising the tick.
    */
   readonly tickIntervalMs?: number;
+  /**
+   * Test seam — production omits this and the realtime hook builds a
+   * real `RealtimeClient`. Tests inject a fake so the board's reducer
+   * integration can be driven end-to-end without socket.io.
+   */
+  readonly clientFactory?: UseRealtimeOrdersOptions['clientFactory'];
 }
 
 export function QueueBoard({
   initialOrders,
+  realtime,
   nowFactory,
   tickIntervalMs = 60_000,
+  clientFactory,
 }: QueueBoardProps): ReactNode {
   const now = useNow(nowFactory, tickIntervalMs);
-  const buckets = useMemo(() => bucketByColumn(initialOrders), [initialOrders]);
+  const [orders, setOrders] = useState<readonly VendorQueueOrderSummary[]>(() => initialOrders);
+
+  const handleCreated = useCallback((payload: Parameters<typeof applyOrderCreated>[1]) => {
+    setOrders((prev) => applyOrderCreated(prev, payload));
+  }, []);
+  const handleStatusChanged = useCallback(
+    (payload: Parameters<typeof applyOrderStatusChanged>[1]) => {
+      setOrders((prev) => applyOrderStatusChanged(prev, payload));
+    },
+    [],
+  );
+
+  const { status } = useRealtimeOrders({
+    url: realtime?.url ?? '',
+    token: realtime?.token ?? '',
+    ...(realtime?.dispensaryId !== undefined ? { dispensaryId: realtime.dispensaryId } : {}),
+    enabled: realtime !== undefined,
+    onCreated: handleCreated,
+    onStatusChanged: handleStatusChanged,
+    ...(clientFactory !== undefined ? { clientFactory } : {}),
+  });
+
+  const buckets = useMemo(() => bucketByColumn(orders), [orders]);
 
   return (
-    <div
-      aria-label="Order queue"
-      role="region"
-      className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
-    >
-      {QUEUE_COLUMNS.map((column) => (
-        <QueueColumn key={column.key} column={column} orders={buckets[column.key]} now={now} />
-      ))}
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-end">
+        <RealtimeBadge status={status} enabled={realtime !== undefined} />
+      </div>
+      <div
+        aria-label="Order queue"
+        role="region"
+        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
+      >
+        {QUEUE_COLUMNS.map((column) => (
+          <QueueColumn key={column.key} column={column} orders={buckets[column.key]} now={now} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -89,4 +140,81 @@ function useNow(factory: (() => Date) | undefined, intervalMs: number): Date {
   }, [intervalMs, make]);
 
   return now;
+}
+
+interface RealtimeBadgeProps {
+  readonly status: RealtimeStatus;
+  readonly enabled: boolean;
+}
+
+interface RealtimeBadgeDisplay {
+  readonly tone: NonNullable<BadgeProps['tone']>;
+  readonly icon: ReactNode;
+  readonly label: string;
+  readonly hint: string;
+}
+
+function RealtimeBadge({ status, enabled }: RealtimeBadgeProps): ReactNode {
+  const display = describeRealtimeStatus(status, enabled);
+  return (
+    <Badge
+      tone={display.tone}
+      icon={display.icon}
+      aria-label={display.hint}
+      data-testid="realtime-status-badge"
+      data-status={status}
+      title={display.hint}
+    >
+      {display.label}
+    </Badge>
+  );
+}
+
+function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): RealtimeBadgeDisplay {
+  if (!enabled) {
+    return {
+      tone: 'neutral',
+      icon: <Plug aria-hidden="true" className="h-3 w-3" />,
+      label: 'Offline',
+      hint: 'Realtime is not configured for this session.',
+    };
+  }
+  switch (status) {
+    case 'connected':
+      return {
+        tone: 'success',
+        icon: <Wifi aria-hidden="true" className="h-3 w-3" />,
+        label: 'Live',
+        hint: 'Realtime connected — new orders and status changes patch the board automatically.',
+      };
+    case 'connecting':
+      return {
+        tone: 'info',
+        icon: <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />,
+        label: 'Connecting',
+        hint: 'Opening the realtime connection…',
+      };
+    case 'disconnected':
+      return {
+        tone: 'warning',
+        icon: <WifiOff aria-hidden="true" className="h-3 w-3" />,
+        label: 'Reconnecting',
+        hint: 'Realtime dropped — reconnecting. The polling fallback will kick in if this persists.',
+      };
+    case 'error':
+      return {
+        tone: 'danger',
+        icon: <WifiOff aria-hidden="true" className="h-3 w-3" />,
+        label: 'Offline',
+        hint: 'Realtime could not connect. Refresh the page or check your network.',
+      };
+    case 'idle':
+    default:
+      return {
+        tone: 'neutral',
+        icon: <Activity aria-hidden="true" className="h-3 w-3" />,
+        label: 'Standby',
+        hint: 'Realtime is paused — actions will trigger reconnect.',
+      };
+  }
 }
