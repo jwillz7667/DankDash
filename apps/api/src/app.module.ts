@@ -33,6 +33,11 @@
  *                         worker (apps/workers) polls those rows on a
  *                         60s tick and submits to Metrc with retry +
  *                         reconciliation per spec §7.2.)
+ *   - NotificationsModule (Phase 12: push-token CRUD under /v1/me +
+ *                         the order-lifecycle notification listener
+ *                         that fans out through the
+ *                         @dankdash/notifications APNs/Twilio/Resend
+ *                         providers. Tokens are APNs-only in v1.)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -58,6 +63,7 @@ import { DriversModule } from './modules/drivers/drivers.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
+import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
 import { SearchModule } from './modules/search/search.module.js';
@@ -98,6 +104,7 @@ import { SearchModule } from './modules/search/search.module.js';
     OrdersModule,
     DriversModule,
     ComplianceModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}
