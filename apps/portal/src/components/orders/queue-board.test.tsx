@@ -779,4 +779,234 @@ describe('QueueBoard', () => {
       expect(droppables).toHaveLength(4);
     });
   });
+
+  describe('polling fallback on WS disconnect', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(NOW);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    interface DeferredFetcher {
+      readonly fn: () => Promise<{ readonly orders: readonly VendorQueueOrderSummary[] }>;
+      readonly callCount: () => number;
+      resolveNext(value: { readonly orders: readonly VendorQueueOrderSummary[] }): Promise<void>;
+    }
+
+    function deferredFetcher(): DeferredFetcher {
+      let resolveFn: ((v: { readonly orders: readonly VendorQueueOrderSummary[] }) => void) | null =
+        null;
+      let calls = 0;
+      const fn = (): Promise<{ readonly orders: readonly VendorQueueOrderSummary[] }> => {
+        calls += 1;
+        return new Promise<{ readonly orders: readonly VendorQueueOrderSummary[] }>((resolve) => {
+          resolveFn = resolve;
+        });
+      };
+      return {
+        fn,
+        callCount: (): number => calls,
+        async resolveNext(value): Promise<void> {
+          const r = resolveFn;
+          resolveFn = null;
+          r?.(value);
+          await Promise.resolve();
+          await Promise.resolve();
+        },
+      };
+    }
+
+    it('does not poll while the socket reports connected', () => {
+      const client = new FakeClient();
+      const fetcher = deferredFetcher();
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => client}
+          pollFetcher={fetcher.fn}
+          pollIntervalMs={50}
+          pollGracePeriodMs={20}
+        />,
+      );
+      act(() => {
+        client.emitStatus('connected');
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(fetcher.callCount()).toBe(0);
+      expect(screen.getByTestId('realtime-status-badge')).toHaveAttribute('data-mode', 'live');
+    });
+
+    it('kicks in after the grace window when the socket drops to disconnected', async () => {
+      const client = new FakeClient();
+      const fetcher = deferredFetcher();
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => client}
+          pollFetcher={fetcher.fn}
+          pollIntervalMs={50}
+          pollGracePeriodMs={20}
+        />,
+      );
+      act(() => {
+        client.emitStatus('connected');
+        client.emitStatus('disconnected');
+      });
+
+      // Before the grace window expires, no poll has fired.
+      act(() => {
+        vi.advanceTimersByTime(15);
+      });
+      expect(fetcher.callCount()).toBe(0);
+      expect(screen.getByTestId('realtime-status-badge')).toHaveAttribute(
+        'data-mode',
+        'reconnecting',
+      );
+
+      // After the grace window, the first poll fires and the badge
+      // flips to "Polling".
+      act(() => {
+        vi.advanceTimersByTime(10);
+      });
+      expect(fetcher.callCount()).toBe(1);
+      expect(screen.getByTestId('realtime-status-badge')).toHaveAttribute('data-mode', 'polling');
+
+      await act(async () => {
+        await fetcher.resolveNext({
+          orders: [order({ id: 'p1', status: 'placed', customerName: 'Polled User' })],
+        });
+      });
+
+      // The polled snapshot is folded into the board state.
+      expect(screen.getByText('Polled User')).toBeInTheDocument();
+    });
+
+    it('merges the polled snapshot, dropping rows that disappeared from the active queue', async () => {
+      const client = new FakeClient();
+      const fetcher = deferredFetcher();
+      render(
+        <QueueBoard
+          initialOrders={[
+            order({ id: 'a', status: 'placed', customerName: 'Aaron' }),
+            order({ id: 'b', status: 'placed', customerName: 'Beth' }),
+          ]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => client}
+          pollFetcher={fetcher.fn}
+          pollIntervalMs={50}
+          pollGracePeriodMs={10}
+        />,
+      );
+      act(() => {
+        client.emitStatus('connected');
+        client.emitStatus('disconnected');
+      });
+      act(() => {
+        vi.advanceTimersByTime(15);
+      });
+      expect(fetcher.callCount()).toBe(1);
+
+      // Server says Beth is gone (transitioned off the queue while we
+      // were offline) and Aaron's status moved to accepted.
+      await act(async () => {
+        await fetcher.resolveNext({
+          orders: [order({ id: 'a', status: 'accepted', customerName: 'Aaron' })],
+        });
+      });
+
+      expect(screen.getByText('Aaron')).toBeInTheDocument();
+      expect(screen.queryByText('Beth')).not.toBeInTheDocument();
+    });
+
+    it('stops polling and returns the badge to Live when the socket reconnects', async () => {
+      const client = new FakeClient();
+      const fetcher = deferredFetcher();
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => client}
+          pollFetcher={fetcher.fn}
+          pollIntervalMs={30}
+          pollGracePeriodMs={10}
+        />,
+      );
+
+      act(() => {
+        client.emitStatus('connected');
+        client.emitStatus('disconnected');
+      });
+      act(() => {
+        vi.advanceTimersByTime(15);
+      });
+      expect(fetcher.callCount()).toBe(1);
+      await act(async () => {
+        await fetcher.resolveNext({ orders: [] });
+      });
+      expect(screen.getByTestId('realtime-status-badge')).toHaveAttribute('data-mode', 'polling');
+
+      // Socket recovers.
+      act(() => {
+        client.emitStatus('connected');
+      });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      // No further fetcher calls — polling stopped.
+      expect(fetcher.callCount()).toBe(1);
+      expect(screen.getByTestId('realtime-status-badge')).toHaveAttribute('data-mode', 'live');
+    });
+
+    it('also activates on the error status (server refused the handshake)', () => {
+      const client = new FakeClient();
+      const fetcher = deferredFetcher();
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => client}
+          pollFetcher={fetcher.fn}
+          pollIntervalMs={50}
+          pollGracePeriodMs={10}
+        />,
+      );
+      act(() => {
+        client.emitStatus('error');
+      });
+      act(() => {
+        vi.advanceTimersByTime(15);
+      });
+      expect(fetcher.callCount()).toBe(1);
+    });
+
+    it('is inert when no pollFetcher prop is supplied (test/no-context shape)', () => {
+      const client = new FakeClient();
+      render(
+        <QueueBoard
+          initialOrders={[]}
+          realtime={REALTIME}
+          clientFactory={(): FakeClient => client}
+          pollIntervalMs={50}
+          pollGracePeriodMs={10}
+        />,
+      );
+      act(() => {
+        client.emitStatus('disconnected');
+      });
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      // No crash, no badge flip — we stay on the underlying status.
+      expect(screen.getByTestId('realtime-status-badge')).toHaveAttribute(
+        'data-mode',
+        'reconnecting',
+      );
+    });
+  });
 });

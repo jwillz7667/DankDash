@@ -30,7 +30,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { Activity, AlertCircle, Loader2, Plug, Wifi, WifiOff } from 'lucide-react';
+import { Activity, AlertCircle, Loader2, Plug, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   asOrderStatus,
@@ -51,7 +51,9 @@ import {
   validTargetColumnsFor,
 } from '../../lib/orders/queue-dnd.js';
 import { applyOrderCreated, applyOrderStatusChanged } from '../../lib/orders/realtime-reducer.js';
+import { mergePolledSnapshot } from '../../lib/orders/snapshot-merge.js';
 import { useRealtimeOrders, type UseRealtimeOrdersOptions } from '../../lib/realtime/hooks.js';
+import { useQueueSnapshotPolling } from '../../lib/realtime/polling-fallback.js';
 import { Badge, type BadgeProps } from '../ui/badge.js';
 import { NotificationControls } from './notification-controls.js';
 import { OrderDetailDrawer } from './order-detail-drawer.js';
@@ -117,6 +119,22 @@ export interface QueueBoardProps {
    * options to drive `useOrderAlert` deterministically.
    */
   readonly alertOptions?: UseOrderAlertOptions;
+  /**
+   * Polling fallback (Phase 14.4). When the realtime socket drops to
+   * `disconnected`/`error` past the grace window, this fetcher is
+   * called every {@link pollIntervalMs} to re-seed the snapshot from
+   * the REST endpoint. When omitted, the fallback is disabled — used
+   * by tests and by the no-dispensary-context fallback page.
+   */
+  readonly pollFetcher?: () => Promise<{ readonly orders: readonly VendorQueueOrderSummary[] }>;
+  /** Polling interval in ms. Defaults to 15_000 per Phase 14.4 spec. */
+  readonly pollIntervalMs?: number;
+  /**
+   * Grace window before the first poll fires after a WS drop. Defaults
+   * to 10_000 — short enough that a real outage gets a snapshot inside
+   * one polling cycle, long enough to ride out a brief reconnect.
+   */
+  readonly pollGracePeriodMs?: number;
 }
 
 export function QueueBoard({
@@ -128,6 +146,9 @@ export function QueueBoard({
   clientFactory,
   dragActivationDistance = 6,
   alertOptions,
+  pollFetcher,
+  pollIntervalMs,
+  pollGracePeriodMs,
 }: QueueBoardProps): ReactNode {
   const now = useNow(nowFactory, tickIntervalMs);
   const [orders, setOrders] = useState<readonly VendorQueueOrderSummary[]>(() => initialOrders);
@@ -177,6 +198,28 @@ export function QueueBoard({
     onCreated: handleCreated,
     onStatusChanged: handleStatusChanged,
     ...(clientFactory !== undefined ? { clientFactory } : {}),
+  });
+
+  // Polling fallback kicks in when the socket has been down past the
+  // grace window. We re-seed the snapshot from the same projection
+  // the server-component page loader uses; the merge preserves row
+  // identity for unchanged rows so React's reconciliation stays cheap.
+  const handlePolledSnapshot = useCallback(
+    (snapshot: { readonly orders: readonly VendorQueueOrderSummary[] }): void => {
+      setOrders((prev) => mergePolledSnapshot(prev, snapshot.orders));
+    },
+    [],
+  );
+  const pollingEnabled =
+    pollFetcher !== undefined &&
+    realtime !== undefined &&
+    (status === 'disconnected' || status === 'error');
+  const polling = useQueueSnapshotPolling<{ readonly orders: readonly VendorQueueOrderSummary[] }>({
+    enabled: pollingEnabled,
+    fetcher: pollFetcher ?? noopPollFetcher,
+    onSnapshot: handlePolledSnapshot,
+    ...(pollIntervalMs !== undefined ? { intervalMs: pollIntervalMs } : {}),
+    ...(pollGracePeriodMs !== undefined ? { gracePeriodMs: pollGracePeriodMs } : {}),
   });
 
   const buckets = useMemo(() => bucketByColumn(orders), [orders]);
@@ -278,7 +321,12 @@ export function QueueBoard({
             }}
             onUserGesture={alert.primeFromGesture}
           />
-          <RealtimeBadge status={status} enabled={realtime !== undefined} />
+          <RealtimeBadge
+            status={status}
+            enabled={realtime !== undefined}
+            polling={polling.active}
+            lastPolledAt={polling.lastPolledAt}
+          />
         </div>
       </div>
       <div
@@ -395,6 +443,8 @@ function useNow(factory: (() => Date) | undefined, intervalMs: number): Date {
 interface RealtimeBadgeProps {
   readonly status: RealtimeStatus;
   readonly enabled: boolean;
+  readonly polling: boolean;
+  readonly lastPolledAt: Date | null;
 }
 
 interface RealtimeBadgeDisplay {
@@ -402,10 +452,11 @@ interface RealtimeBadgeDisplay {
   readonly icon: ReactNode;
   readonly label: string;
   readonly hint: string;
+  readonly dataMode: 'idle' | 'live' | 'connecting' | 'reconnecting' | 'polling' | 'offline';
 }
 
-function RealtimeBadge({ status, enabled }: RealtimeBadgeProps): ReactNode {
-  const display = describeRealtimeStatus(status, enabled);
+function RealtimeBadge({ status, enabled, polling, lastPolledAt }: RealtimeBadgeProps): ReactNode {
+  const display = describeRealtimeStatus(status, enabled, polling, lastPolledAt);
   return (
     <Badge
       tone={display.tone}
@@ -413,6 +464,7 @@ function RealtimeBadge({ status, enabled }: RealtimeBadgeProps): ReactNode {
       aria-label={display.hint}
       data-testid="realtime-status-badge"
       data-status={status}
+      data-mode={display.dataMode}
       title={display.hint}
     >
       {display.label}
@@ -420,13 +472,33 @@ function RealtimeBadge({ status, enabled }: RealtimeBadgeProps): ReactNode {
   );
 }
 
-function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): RealtimeBadgeDisplay {
+function describeRealtimeStatus(
+  status: RealtimeStatus,
+  enabled: boolean,
+  polling: boolean,
+  lastPolledAt: Date | null,
+): RealtimeBadgeDisplay {
   if (!enabled) {
     return {
       tone: 'neutral',
       icon: <Plug aria-hidden="true" className="h-3 w-3" />,
       label: 'Offline',
       hint: 'Realtime is not configured for this session.',
+      dataMode: 'offline',
+    };
+  }
+  // Polling supersedes the underlying socket status label — when the
+  // fallback is actively delivering snapshots, the operator should
+  // see "Polling" not "Reconnecting". The data is still flowing,
+  // just over a different channel.
+  if (polling) {
+    const ts = lastPolledAt !== null ? ` Last sync ${lastPolledAt.toLocaleTimeString()}.` : '';
+    return {
+      tone: 'warning',
+      icon: <RefreshCw aria-hidden="true" className="h-3 w-3 animate-spin" />,
+      label: 'Polling',
+      hint: `Realtime is down — pulling the queue on a 15s interval until it reconnects.${ts}`,
+      dataMode: 'polling',
     };
   }
   switch (status) {
@@ -436,6 +508,7 @@ function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): Realt
         icon: <Wifi aria-hidden="true" className="h-3 w-3" />,
         label: 'Live',
         hint: 'Realtime connected — new orders and status changes patch the board automatically.',
+        dataMode: 'live',
       };
     case 'connecting':
       return {
@@ -443,6 +516,7 @@ function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): Realt
         icon: <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />,
         label: 'Connecting',
         hint: 'Opening the realtime connection…',
+        dataMode: 'connecting',
       };
     case 'disconnected':
       return {
@@ -450,6 +524,7 @@ function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): Realt
         icon: <WifiOff aria-hidden="true" className="h-3 w-3" />,
         label: 'Reconnecting',
         hint: 'Realtime dropped — reconnecting. The polling fallback will kick in if this persists.',
+        dataMode: 'reconnecting',
       };
     case 'error':
       return {
@@ -457,6 +532,7 @@ function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): Realt
         icon: <WifiOff aria-hidden="true" className="h-3 w-3" />,
         label: 'Offline',
         hint: 'Realtime could not connect. Refresh the page or check your network.',
+        dataMode: 'offline',
       };
     case 'idle':
     default:
@@ -465,6 +541,17 @@ function describeRealtimeStatus(status: RealtimeStatus, enabled: boolean): Realt
         icon: <Activity aria-hidden="true" className="h-3 w-3" />,
         label: 'Standby',
         hint: 'Realtime is paused — actions will trigger reconnect.',
+        dataMode: 'idle',
       };
   }
+}
+
+/**
+ * Placeholder fetcher injected when no `pollFetcher` prop is provided.
+ * `useQueueSnapshotPolling` guards every fire on `enabled`, which is
+ * always false in that case — this function exists only to satisfy
+ * the hook's non-optional `fetcher` field at type level.
+ */
+function noopPollFetcher(): Promise<{ readonly orders: readonly VendorQueueOrderSummary[] }> {
+  return Promise.resolve({ orders: [] });
 }

@@ -12,6 +12,7 @@ import { loadPublicEnv } from '../../../lib/env.js';
 import {
   acceptVendorOrderAction,
   fetchVendorOrderAction,
+  listActiveVendorQueueAction,
   markVendorOrderHandoffAction,
   markVendorOrderPreppedAction,
   markVendorOrderReadyAction,
@@ -89,7 +90,12 @@ export default async function OrdersPage(): Promise<ReactNode> {
           </p>
         </div>
       </header>
-      <QueueBoard initialOrders={initialOrders} realtime={realtime} actions={actions} />
+      <QueueBoard
+        initialOrders={initialOrders}
+        realtime={realtime}
+        actions={actions}
+        pollFetcher={listActiveVendorQueueAction}
+      />
     </div>
   );
 }

@@ -28,10 +28,12 @@ import { buildServerApiClient } from '../api/server-client.js';
 import {
   acceptVendorOrder,
   getVendorOrder,
+  listVendorQueue,
   markVendorOrderHandoff,
   markVendorOrderPrepped,
   markVendorOrderReady,
   rejectVendorOrder,
+  type ListVendorQueueResult,
   type TransitionResponse,
   type VendorOrderDetail,
 } from '../api/vendor-orders.js';
@@ -48,6 +50,17 @@ async function authedClient(): Promise<ApiClient> {
 
 export async function fetchVendorOrderAction(orderId: string): Promise<VendorOrderDetail> {
   return getVendorOrder(await authedClient(), orderId);
+}
+
+/**
+ * Polling fallback for Phase 14.4. The client `QueueBoard` calls this
+ * on a fixed interval when the realtime socket has dropped to
+ * `disconnected`/`error` past the grace window. The active queue is
+ * the same default-status projection that the server-component page
+ * loader seeds from on first paint.
+ */
+export async function listActiveVendorQueueAction(): Promise<ListVendorQueueResult> {
+  return listVendorQueue(await authedClient());
 }
 
 export async function acceptVendorOrderAction(orderId: string): Promise<TransitionResponse> {
