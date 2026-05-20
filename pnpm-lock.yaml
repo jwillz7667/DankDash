@@ -281,6 +281,9 @@ importers:
       '@dankdash/eta':
         specifier: workspace:*
         version: link:../../packages/eta
+      '@dankdash/metrc':
+        specifier: workspace:*
+        version: link:../../packages/metrc
       '@dankdash/orders':
         specifier: workspace:*
         version: link:../../packages/orders

@@ -19,13 +19,21 @@ import {
   DriverLocationHistoryRepository,
   DriversRepository,
   LedgerEntriesRepository,
+  MetrcTransactionsRepository,
+  OrderItemsRepository,
   OrdersRepository,
   PartitionsRepository,
   PayoutsRepository,
   WebhookEventsProcessedRepository,
+  createEncryptionServiceFromBase64,
   createPoolFromEnv,
 } from '@dankdash/db';
 import { EtaService, MapboxClient } from '@dankdash/eta';
+import {
+  HttpClient as MetrcHttpClient,
+  MetrcClient,
+  createUndiciDispatcher as createMetrcDispatcher,
+} from '@dankdash/metrc';
 import { publishRealtimeEvent } from '@dankdash/realtime-events';
 import { R2Storage } from '@dankdash/storage';
 import { Redis } from 'ioredis';
@@ -37,6 +45,7 @@ import {
   startLocationIngest,
   type LocationIngestItem,
 } from './jobs/location-ingest/index.js';
+import { scheduleMetrcReportingJob } from './jobs/metrc-reporting/index.js';
 import {
   ParquetPartitionArchiver,
   schedulePartitionManagementJob,
@@ -58,6 +67,9 @@ async function main(): Promise<void> {
   const dispatchOffers = new DispatchOffersRepository(pool.db);
   const driverLocationHistory = new DriverLocationHistoryRepository(pool.db);
   const partitions = new PartitionsRepository(pool.db);
+  const metricTransactions = new MetrcTransactionsRepository(pool.db);
+  const orderItems = new OrderItemsRepository(pool.db);
+  const encryption = createEncryptionServiceFromBase64(env.COLUMN_ENCRYPTION_KEY_BASE64);
 
   const http = new HttpClient({
     dispatcher: createUndiciDispatcher({ maxConnections: 8, keepAliveTimeoutMs: 30_000 }),
@@ -77,6 +89,19 @@ async function main(): Promise<void> {
     apiBaseUrl: env.AEROPAY_API_BASE_URL,
     http,
     auth: aeropayAuth,
+  });
+
+  // Dedicated undici pool for Metrc. The vendor recommends ≤4 concurrent
+  // connections per integrator (see spec §7.3) and they keep idle sockets
+  // alive aggressively, so we share the pool across the reporting and
+  // reconciliation cron paths but isolate it from the Aeropay one.
+  const metrcHttp = new MetrcHttpClient({
+    dispatcher: createMetrcDispatcher({ maxConnections: 4, keepAliveTimeoutMs: 30_000 }),
+  });
+  const metrcClient = new MetrcClient({
+    apiBaseUrl: env.METRC_API_BASE_URL,
+    vendorKey: env.METRC_API_KEY,
+    http: metrcHttp,
   });
 
   const payoutTask = schedulePayoutJob({ dispensaries, ledger, payouts, aeropay, logger });
@@ -104,6 +129,22 @@ async function main(): Promise<void> {
     logger,
     clock: () => new Date(),
   });
+
+  // Metrc reporting is gated by `ENABLE_METRC` so non-production
+  // environments (PR previews, local) can stay off the cron entirely —
+  // even with a misconfigured vendor key the scheduler would otherwise
+  // wake every minute and burn through the per-row backoff ladder.
+  const metrcReportingTask = env.ENABLE_METRC
+    ? scheduleMetrcReportingJob({
+        metricTransactions,
+        orders,
+        orderItems,
+        dispensaries,
+        metrc: metrcClient,
+        encryption,
+        logger,
+      })
+    : null;
 
   // Two extra Redis connections for the ETA path:
   //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
@@ -182,6 +223,7 @@ async function main(): Promise<void> {
     dispatchTask.stop();
     offerExpiryTask.stop();
     partitionTask.stop();
+    metrcReportingTask?.stop();
     await locationIngest.stop();
     etaCacheRedis.disconnect();
     etaPublishRedis.disconnect();

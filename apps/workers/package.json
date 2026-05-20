@@ -19,6 +19,7 @@
     "@dankdash/db": "workspace:*",
     "@dankdash/dispatch": "workspace:*",
     "@dankdash/eta": "workspace:*",
+    "@dankdash/metrc": "workspace:*",
     "@dankdash/orders": "workspace:*",
     "@dankdash/realtime-events": "workspace:*",
     "@dankdash/storage": "workspace:*",
