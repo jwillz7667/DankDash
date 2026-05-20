@@ -57,4 +57,30 @@ describe('QueueCard', () => {
     const titled = container.querySelector('[title="2026-05-19T11:55:00.000Z"]');
     expect(titled).not.toBeNull();
   });
+
+  describe('age escalation tone', () => {
+    it('paints the success tone for orders under 5 minutes old', () => {
+      const { container } = render(
+        <QueueCard order={order({ statusChangedAt: '2026-05-19T11:57:00.000Z' })} now={NOW} />,
+      );
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.getAttribute('data-age-tone')).toBe('success');
+    });
+
+    it('paints the warning tone for orders 5–10 minutes old', () => {
+      const { container } = render(
+        <QueueCard order={order({ statusChangedAt: '2026-05-19T11:53:00.000Z' })} now={NOW} />,
+      );
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.getAttribute('data-age-tone')).toBe('warning');
+    });
+
+    it('paints the danger tone for orders 10 minutes or older', () => {
+      const { container } = render(
+        <QueueCard order={order({ statusChangedAt: '2026-05-19T11:45:00.000Z' })} now={NOW} />,
+      );
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.getAttribute('data-age-tone')).toBe('danger');
+    });
+  });
 });

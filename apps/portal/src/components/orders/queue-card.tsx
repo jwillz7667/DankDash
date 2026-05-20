@@ -1,7 +1,14 @@
 import { Clock, Package, User } from 'lucide-react';
 import { type ReactNode } from 'react';
 import { type VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
-import { formatMoney, formatRelativeTime, formatShortCode } from '../../lib/orders/format.js';
+import { cn } from '../../lib/cn.js';
+import {
+  ageTone,
+  formatMoney,
+  formatRelativeTime,
+  formatShortCode,
+  type AgeTone,
+} from '../../lib/orders/format.js';
 
 export interface QueueCardProps {
   readonly order: VendorQueueOrderSummary;
@@ -29,6 +36,7 @@ export interface QueueCardProps {
  */
 export function QueueCard({ order, now }: QueueCardProps): ReactNode {
   const ageLabel = formatRelativeTime(order.statusChangedAt, now);
+  const tone = ageTone(order.statusChangedAt, now);
   const customerLabel = order.customerName ?? 'Guest customer';
   const itemLabel = order.itemCount === 1 ? '1 item' : `${order.itemCount.toString()} items`;
 
@@ -37,6 +45,7 @@ export function QueueCard({ order, now }: QueueCardProps): ReactNode {
       className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition-colors duration-150 hover:border-slate-300 hover:shadow-md"
       data-testid="queue-card"
       data-order-id={order.id}
+      data-age-tone={tone}
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
@@ -55,7 +64,10 @@ export function QueueCard({ order, now }: QueueCardProps): ReactNode {
           <dt className="sr-only">Item count</dt>
           <dd>{itemLabel}</dd>
         </div>
-        <div className="flex items-center gap-1" title={order.placedAt}>
+        <div
+          className={cn('flex items-center gap-1 font-medium', AGE_TONE_TEXT[tone])}
+          title={order.placedAt}
+        >
           <Clock aria-hidden="true" className="h-3.5 w-3.5" />
           <dt className="sr-only">Time in current status</dt>
           <dd>{ageLabel}</dd>
@@ -69,3 +81,16 @@ export function QueueCard({ order, now }: QueueCardProps): ReactNode {
     </article>
   );
 }
+
+/**
+ * Tailwind classes for each escalation tone. Kept near the component
+ * so a designer tweaking the palette doesn't have to chase the helper.
+ * The "calm" tone leans on slate-500 (the default body text color)
+ * rather than green, since a card under five minutes old isn't trying
+ * to draw attention — it just isn't behind.
+ */
+const AGE_TONE_TEXT: Record<AgeTone, string> = {
+  success: 'text-slate-500',
+  warning: 'text-amber-700',
+  danger: 'text-rose-700',
+};

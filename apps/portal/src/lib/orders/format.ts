@@ -68,3 +68,31 @@ export function formatRelativeTime(iso: string, now: Date = new Date()): string 
 export function formatShortCode(shortCode: string): string {
   return `#${shortCode}`;
 }
+
+/**
+ * Visual escalation tone for an order's "time in current status."
+ * The dispensary's queue health is hard to read from raw timestamps —
+ * a single color flip across the card draws the operator's eye to
+ * whatever's slipping.
+ *
+ *   - `success` (calm)         — under 5 minutes, the SLA is healthy
+ *   - `warning` (attention)    — 5–10 minutes, starting to age
+ *   - `danger`  (act now)      — 10 minutes or more, intervene
+ *
+ * Thresholds match the order-queue spec ("Time badges: green <5min,
+ * yellow 5-10min, red >10min" — docs/CLAUDE-CODE-PHASES.md §14.1).
+ * Centralizing them here means a future tuning lands in one place
+ * instead of every card render path.
+ */
+export type AgeTone = 'success' | 'warning' | 'danger';
+const AGE_WARNING_SECONDS = 5 * MINUTE;
+const AGE_DANGER_SECONDS = 10 * MINUTE;
+
+export function ageTone(iso: string, now: Date = new Date()): AgeTone {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return 'success';
+  const diffSeconds = Math.max(0, Math.round((now.getTime() - then) / 1000));
+  if (diffSeconds >= AGE_DANGER_SECONDS) return 'danger';
+  if (diffSeconds >= AGE_WARNING_SECONDS) return 'warning';
+  return 'success';
+}
