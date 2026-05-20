@@ -1,0 +1,47 @@
+{
+  "name": "@dankdash/notifications",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Notification rendering + delivery layer — pure-function templates per event-key, typed NotificationProvider interface, and concrete APNs / Twilio SMS / Resend email implementations. Consumed by apps/api (enqueue path) and apps/workers (delivery cron). No NestJS / no DI graph — providers are constructed at the composition root and passed by reference.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./templates": {
+      "types": "./dist/templates/index.d.ts",
+      "import": "./dist/templates/index.js"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "import": "./dist/providers/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dankdash/types": "workspace:*",
+    "@parse/node-apn": "^8.1.0",
+    "resend": "^4.0.0",
+    "twilio": "^5.4.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
