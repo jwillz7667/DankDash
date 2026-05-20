@@ -1,32 +1,22 @@
-//
-//  DankDashApp.swift
-//  DankDash
-//
-//  Created by Justin Williams on 5/17/26.
-//
-
 import SwiftUI
-import SwiftData
 
 @main
 struct DankDashApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
-        .modelContainer(sharedModelContainer)
+  var body: some Scene {
+    WindowGroup {
+      BootstrapView()
     }
+  }
+}
+
+private struct BootstrapView: View {
+  var body: some View {
+    VStack(spacing: 12) {
+      Text("DankDash")
+        .font(.largeTitle.bold())
+      Text("Consumer iOS scaffold")
+        .foregroundStyle(.secondary)
+    }
+    .padding()
+  }
 }

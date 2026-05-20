@@ -92,7 +92,7 @@ build/
 *.dSYM.zip
 *.dSYM
 .swiftpm/
-Package.resolved
+# Package.resolved IS committed (pins SPM deps for reproducible Xcode + swift builds)
 
 # Carthage / CocoaPods (not currently used — guard anyway)
 Carthage/Build/
