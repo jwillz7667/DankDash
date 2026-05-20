@@ -19,20 +19,43 @@
  * when the realtime status drops to `disconnected`/`error` for longer
  * than a grace window.
  */
-import { Activity, Loader2, Plug, Wifi, WifiOff } from 'lucide-react';
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragCancelEvent,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
+import { Activity, AlertCircle, Loader2, Plug, Wifi, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  type OrderStatus,
   type TransitionResponse,
   type VendorQueueOrderSummary,
 } from '../../lib/api/vendor-orders.js';
 import { type VendorOrderActions } from '../../lib/orders/order-actions.js';
 import { QUEUE_COLUMNS, bucketByColumn } from '../../lib/orders/queue-columns.js';
+import {
+  dispatchDragAction,
+  resolveDragDrop,
+  validTargetColumnsFor,
+} from '../../lib/orders/queue-dnd.js';
 import { applyOrderCreated, applyOrderStatusChanged } from '../../lib/orders/realtime-reducer.js';
 import { useRealtimeOrders, type UseRealtimeOrdersOptions } from '../../lib/realtime/hooks.js';
 import { Badge, type BadgeProps } from '../ui/badge.js';
 import { OrderDetailDrawer } from './order-detail-drawer.js';
+import { QueueCard } from './queue-card.js';
 import { QueueColumn } from './queue-column.js';
 import type { RealtimeStatus } from '../../lib/realtime/client.js';
+
+const ALL_DRAGGABLE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'placed',
+  'prepping',
+]);
 
 export interface QueueBoardRealtimeConfig {
   readonly url: string;
@@ -74,6 +97,13 @@ export interface QueueBoardProps {
    * integration can be driven end-to-end without socket.io.
    */
   readonly clientFactory?: UseRealtimeOrdersOptions['clientFactory'];
+  /**
+   * Drag activation distance in pixels (default 6). Below this the
+   * pointer event is treated as a click and falls through to the
+   * card's `onSelect`. Tests override to 0 so synthetic pointer
+   * events don't need to simulate a real drag distance.
+   */
+  readonly dragActivationDistance?: number;
 }
 
 export function QueueBoard({
@@ -83,10 +113,13 @@ export function QueueBoard({
   nowFactory,
   tickIntervalMs = 60_000,
   clientFactory,
+  dragActivationDistance = 6,
 }: QueueBoardProps): ReactNode {
   const now = useNow(nowFactory, tickIntervalMs);
   const [orders, setOrders] = useState<readonly VendorQueueOrderSummary[]>(() => initialOrders);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [draggingOrderId, setDraggingOrderId] = useState<string | null>(null);
+  const [dragError, setDragError] = useState<string | null>(null);
 
   const handleCreated = useCallback((payload: Parameters<typeof applyOrderCreated>[1]) => {
     setOrders((prev) => applyOrderCreated(prev, payload));
@@ -135,11 +168,68 @@ export function QueueBoard({
     setSelectedOrderId(null);
   }, []);
 
-  const cardOnSelect = actions !== undefined ? handleSelect : undefined;
+  const handleDragStart = useCallback((event: DragStartEvent): void => {
+    setDragError(null);
+    setDraggingOrderId(String(event.active.id));
+  }, []);
+  const handleDragCancel = useCallback((_event: DragCancelEvent): void => {
+    setDraggingOrderId(null);
+  }, []);
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent): void => {
+      setDraggingOrderId(null);
+      if (actions === undefined) return;
 
-  return (
+      const resolved = resolveDragDrop(orders, event.active.id, event.over?.id);
+      if (resolved === null) return;
+
+      // Fire-and-forget: the reducer fold runs inside the awaited
+      // promise so a transient failure surfaces an inline error, but
+      // we don't block the drag interaction itself.
+      void (async (): Promise<void> => {
+        try {
+          const response = await dispatchDragAction(resolved, actions);
+          handleTransition(response);
+        } catch (error) {
+          setDragError(extractMessage(error));
+        }
+      })();
+    },
+    [orders, actions, handleTransition],
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: dragActivationDistance } }),
+    useSensor(KeyboardSensor),
+  );
+
+  const draggingOrder = useMemo(
+    () =>
+      draggingOrderId !== null ? (orders.find((o) => o.id === draggingOrderId) ?? null) : null,
+    [draggingOrderId, orders],
+  );
+  const validTargets = useMemo(
+    () => (draggingOrder !== null ? validTargetColumnsFor(draggingOrder.status) : null),
+    [draggingOrder],
+  );
+
+  const cardOnSelect = actions !== undefined ? handleSelect : undefined;
+  const dragEnabled = actions !== undefined;
+  const draggableStatuses = dragEnabled ? ALL_DRAGGABLE_STATUSES : undefined;
+
+  const board = (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-between gap-4">
+        {dragError !== null ? (
+          <DragErrorBanner
+            message={dragError}
+            onDismiss={(): void => {
+              setDragError(null);
+            }}
+          />
+        ) : (
+          <span aria-hidden="true" />
+        )}
         <RealtimeBadge status={status} enabled={realtime !== undefined} />
       </div>
       <div
@@ -154,6 +244,9 @@ export function QueueBoard({
             orders={buckets[column.key]}
             now={now}
             {...(cardOnSelect !== undefined ? { onSelect: cardOnSelect } : {})}
+            {...(draggableStatuses !== undefined ? { draggableStatuses } : {})}
+            droppableEnabled={dragEnabled}
+            isValidDropTarget={validTargets?.has(column.key) === true}
           />
         ))}
       </div>
@@ -166,6 +259,58 @@ export function QueueBoard({
           now={now}
         />
       )}
+    </div>
+  );
+
+  if (!dragEnabled) {
+    return board;
+  }
+
+  return (
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      {board}
+      <DragOverlay dropAnimation={null}>
+        {draggingOrder !== null ? (
+          <div className="pointer-events-none" data-testid="drag-overlay">
+            <QueueCard order={draggingOrder} now={now} />
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+function extractMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return 'The transition could not be completed.';
+}
+
+interface DragErrorBannerProps {
+  readonly message: string;
+  readonly onDismiss: () => void;
+}
+
+function DragErrorBanner({ message, onDismiss }: DragErrorBannerProps): ReactNode {
+  return (
+    <div
+      role="alert"
+      data-testid="drag-error-banner"
+      className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+    >
+      <AlertCircle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+      <span className="flex-1">{message}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="font-semibold text-rose-800 hover:text-rose-900"
+      >
+        Dismiss
+      </button>
     </div>
   );
 }

@@ -1,5 +1,8 @@
-import { Clock, Package, User } from 'lucide-react';
-import { type ReactNode } from 'react';
+'use client';
+
+import { useDraggable } from '@dnd-kit/core';
+import { Clock, GripVertical, Package, User } from 'lucide-react';
+import { type CSSProperties, type ReactNode } from 'react';
 import { type VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
 import { cn } from '../../lib/cn.js';
 import {
@@ -21,52 +24,91 @@ export interface QueueCardProps {
   readonly now: Date;
   /**
    * Fires when the operator taps the card. The parent opens the order
-   * detail drawer (Phase 14.3). Omit on read-only contexts (no-op).
+   * detail drawer. Omit on read-only contexts (no-op).
    */
   readonly onSelect?: (orderId: string) => void;
+  /**
+   * When `true`, the card registers with the enclosing `DndContext` so
+   * the operator can drag it to a sibling column. The hook is called
+   * regardless — passing `disabled` to `useDraggable` keeps drag inert
+   * when the order's status has no legal forward transition.
+   *
+   * Click-to-select still works while draggable is on: the
+   * `PointerSensor` in the board uses an activation distance so a
+   * quick click without movement falls through to `onSelect`.
+   */
+  readonly isDraggable?: boolean;
 }
 
 /**
  * Single order card. Renders the customer, short code, item count,
- * order age, and total. Action affordances (accept, transition,
- * drag-drop) land in Phase 14.2 / 14.3 — this commit ships the static
- * card so the board layout is reviewable end-to-end.
+ * order age, and total. Three shapes:
  *
- * Layout invariants:
- *   - Total is right-aligned with `font-tabular` so columns of $X.XX
- *     align even when amounts have different digit counts.
- *   - The wall-clock placedAt rides on `title` for screen-reader /
- *     hover precision; the visible label is the human-friendly
- *     relative time.
+ *   - Plain article — Storybook / no-op contexts.
+ *   - Button       — interactive (opens the drawer on click).
+ *   - Draggable    — same as button but registered with `DndContext`
+ *                    so the operator can drag the card to another
+ *                    column. Drag and click coexist via the board's
+ *                    pointer-activation distance.
  */
-export function QueueCard({ order, now, onSelect }: QueueCardProps): ReactNode {
+export function QueueCard({
+  order,
+  now,
+  onSelect,
+  isDraggable = false,
+}: QueueCardProps): ReactNode {
   const ageLabel = formatRelativeTime(order.statusChangedAt, now);
   const tone = ageTone(order.statusChangedAt, now);
   const customerLabel = order.customerName ?? 'Guest customer';
   const itemLabel = order.itemCount === 1 ? '1 item' : `${order.itemCount.toString()} items`;
   const interactive = onSelect !== undefined;
 
-  // We render the card as a `<button>` when interactive so it gets
-  // keyboard (Enter/Space) + screen-reader semantics for free, and as
-  // a plain `<article>` otherwise (Storybook, no-op contexts). Both
-  // shapes preserve `data-testid` and `data-order-id` for the realtime
-  // patching reducer's lookup paths.
+  const draggable = useDraggable({
+    id: order.id,
+    disabled: !isDraggable,
+  });
+
+  const dragStyle: CSSProperties =
+    draggable.transform !== null
+      ? {
+          transform: `translate3d(${draggable.transform.x.toString()}px, ${draggable.transform.y.toString()}px, 0)`,
+          // While dragging, the original card stays in place but is dimmed
+          // so the operator's eye follows the overlay preview instead.
+          opacity: draggable.isDragging ? 0.4 : 1,
+          zIndex: draggable.isDragging ? 50 : undefined,
+        }
+      : {};
+
   if (interactive) {
     return (
       <button
+        ref={draggable.setNodeRef}
         type="button"
         onClick={(): void => {
           onSelect(order.id);
         }}
         className={cn(
-          'w-full rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm',
+          'group relative w-full rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm',
           'transition-colors duration-150 hover:border-slate-300 hover:shadow-md',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50',
+          isDraggable && 'cursor-grab touch-none active:cursor-grabbing',
+          draggable.isDragging && 'shadow-lg',
         )}
+        style={dragStyle}
         data-testid="queue-card"
         data-order-id={order.id}
         data-age-tone={tone}
+        data-draggable={isDraggable ? 'true' : 'false'}
+        data-dragging={draggable.isDragging ? 'true' : undefined}
+        {...draggable.listeners}
+        {...draggable.attributes}
       >
+        {isDraggable && (
+          <GripVertical
+            aria-hidden="true"
+            className="absolute right-2 top-2 h-3.5 w-3.5 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100"
+          />
+        )}
         <CardContent
           order={order}
           customerLabel={customerLabel}

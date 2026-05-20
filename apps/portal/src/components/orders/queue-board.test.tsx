@@ -511,4 +511,52 @@ describe('QueueBoard', () => {
       expect(cards[0]?.getAttribute('data-order-id')).toBe('a');
     });
   });
+
+  describe('drag-drop integration', () => {
+    it('marks placed and prepping cards as draggable when actions are wired', () => {
+      const { container } = render(
+        <QueueBoard
+          initialOrders={[
+            order({ id: 'a', status: 'placed', customerName: 'Aaron' }),
+            order({ id: 'b', status: 'prepping', customerName: 'Beth' }),
+            order({ id: 'c', status: 'ready_for_pickup', customerName: 'Cara' }),
+            order({ id: 'd', status: 'awaiting_driver', customerName: 'Dee' }),
+            order({ id: 'e', status: 'accepted', customerName: 'Ed' }),
+          ]}
+          actions={buildActions()}
+        />,
+      );
+
+      const card = (id: string): Element | null =>
+        container.querySelector(`[data-order-id="${id}"]`);
+
+      expect(card('a')?.getAttribute('data-draggable')).toBe('true');
+      expect(card('b')?.getAttribute('data-draggable')).toBe('true');
+      // accepted is in the Prepping column but cannot drag directly to
+      // Ready — operator must mark it prepping first via the drawer.
+      expect(card('e')?.getAttribute('data-draggable')).toBe('false');
+      expect(card('c')?.getAttribute('data-draggable')).toBe('false');
+      expect(card('d')?.getAttribute('data-draggable')).toBe('false');
+    });
+
+    it('leaves cards non-draggable when actions are not supplied', () => {
+      const { container } = render(
+        <QueueBoard
+          initialOrders={[order({ id: 'a', status: 'placed', customerName: 'Aaron' })]}
+        />,
+      );
+      // No actions → no drag, no select. data-draggable attribute only
+      // exists on the interactive (button) branch; article cards omit
+      // it entirely.
+      const card = container.querySelector('[data-order-id="a"]');
+      expect(card?.tagName).toBe('ARTICLE');
+      expect(card?.getAttribute('data-draggable')).toBeNull();
+    });
+
+    it('marks every column droppable when actions are wired', () => {
+      const { container } = render(<QueueBoard initialOrders={[]} actions={buildActions()} />);
+      const droppables = container.querySelectorAll('[data-column-droppable]');
+      expect(droppables).toHaveLength(4);
+    });
+  });
 });

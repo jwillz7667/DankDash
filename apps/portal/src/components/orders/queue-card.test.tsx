@@ -77,6 +77,32 @@ describe('QueueCard', () => {
     });
   });
 
+  describe('drag support (isDraggable)', () => {
+    it('marks the card as draggable when isDraggable is true', () => {
+      const { container } = render(
+        <QueueCard order={order()} now={NOW} onSelect={vi.fn()} isDraggable />,
+      );
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.getAttribute('data-draggable')).toBe('true');
+    });
+
+    it('leaves data-draggable false when isDraggable is not set', () => {
+      const { container } = render(<QueueCard order={order()} now={NOW} onSelect={vi.fn()} />);
+      const card = container.querySelector('[data-testid="queue-card"]');
+      expect(card?.getAttribute('data-draggable')).toBe('false');
+    });
+
+    it('still fires onSelect on a plain click when isDraggable is true', () => {
+      const onSelect = vi.fn();
+      const { container } = render(
+        <QueueCard order={order()} now={NOW} onSelect={onSelect} isDraggable />,
+      );
+      const card = container.querySelector('[data-testid="queue-card"]');
+      fireEvent.click(card!);
+      expect(onSelect).toHaveBeenCalledWith('01935f3d-0000-7000-8000-000000000001');
+    });
+  });
+
   describe('age escalation tone', () => {
     it('paints the success tone for orders under 5 minutes old', () => {
       const { container } = render(
