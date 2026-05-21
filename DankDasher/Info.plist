@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>DankDasher uses your location to receive dispatch offers nearby, route you to pickups and dropoffs, and share live ETAs with the customers you're delivering to.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>DankDasher uses your location to receive dispatch offers nearby, route you to pickups and dropoffs, and share live ETAs with the customers you're delivering to.</string>
+	<key>NSLocationDefaultAccuracyReduced</key>
+	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>DankDasher uses the camera to scan delivery documents (drivers license, vehicle registration, insurance) during onboarding and to verify customer IDs at handoff.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>DankDasher reads photos from your library when you upload onboarding documents.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>remote-notification</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.dankdash.driver</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>dankdasher</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.business</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+</dict>
+</plist>

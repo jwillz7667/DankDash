@@ -117,61 +117,114 @@ public extension DependencyValues {
 // MARK: - BatteryMonitorCoordinator (iOS-only)
 
 #if os(iOS)
+/// Caches the latest battery snapshot read on `MainActor` so callers
+/// from any actor can pull the value synchronously without crossing
+/// the UIKit isolation domain on every read. The cache is refreshed
+/// on `batteryLevelDidChange`, `batteryStateDidChange`, and
+/// `NSProcessInfoPowerStateDidChange` notifications, all of which we
+/// subscribe to on the main queue so the refresh itself runs in a
+/// `MainActor`-safe context.
+///
+/// This indirection exists because `UIDevice.current` and its battery
+/// properties are annotated `@MainActor` in the iOS overlay; calling
+/// them directly from the `@Sendable` closures backing the
+/// `BatteryMonitorClient` snapshot/events API would otherwise force
+/// the entire interface to be async. The obj-c implementations are
+/// documented as thread-safe — caching just lets us honor the Swift
+/// overlay's isolation without paying for an actor hop at call time.
 private final class BatteryMonitorCoordinator: @unchecked Sendable {
-  private let device = UIDevice.current
-  private let center = NotificationCenter.default
-  private let queue = DispatchQueue(label: "com.dankdash.battery-monitor.coordinator")
+  private let cached: LockIsolated<BatterySnapshot>
+  nonisolated(unsafe) private let center = NotificationCenter.default
 
   init() {
-    // `isBatteryMonitoringEnabled` defaults to false — without flipping
-    // it on, `batteryLevel` returns `-1` and notifications never fire.
-    DispatchQueue.main.async {
-      self.device.isBatteryMonitoringEnabled = true
+    self.cached = LockIsolated(
+      BatterySnapshot(level: nil, state: .unknown, isLowPowerModeEnabled: false)
+    )
+    let cache = self.cached
+    Task { @MainActor in
+      let device = UIDevice.current
+      device.isBatteryMonitoringEnabled = true
+      let raw = device.batteryLevel
+      cache.setValue(BatterySnapshot(
+        level: raw < 0 ? nil : Double(raw),
+        state: BatteryMonitorCoordinator.translate(device.batteryState),
+        isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+      ))
     }
   }
 
   func currentSnapshot() -> BatterySnapshot {
-    let raw = device.batteryLevel
-    let level: Double? = raw < 0 ? nil : Double(raw)
-    return BatterySnapshot(
-      level: level,
-      state: Self.translate(device.batteryState),
-      isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
-    )
+    cached.value
   }
 
   func eventStream() -> AsyncStream<BatterySnapshot> {
     AsyncStream { continuation in
-      let level = self.center.addObserver(
-        forName: UIDevice.batteryLevelDidChangeNotification,
-        object: nil,
-        queue: nil
-      ) { [weak self] _ in
-        guard let self else { return }
-        continuation.yield(self.currentSnapshot())
+      let observers = LockIsolated<[NSObjectProtocol]>([])
+
+      observers.withValue { tokens in
+        tokens.append(
+          self.center.addObserver(
+            forName: UIDevice.batteryLevelDidChangeNotification,
+            object: nil,
+            queue: .main
+          ) { [weak self] _ in
+            self?.handleNotification(continuation: continuation)
+          }
+        )
+        tokens.append(
+          self.center.addObserver(
+            forName: UIDevice.batteryStateDidChangeNotification,
+            object: nil,
+            queue: .main
+          ) { [weak self] _ in
+            self?.handleNotification(continuation: continuation)
+          }
+        )
+        tokens.append(
+          self.center.addObserver(
+            forName: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+          ) { [weak self] _ in
+            self?.handleNotification(continuation: continuation)
+          }
+        )
       }
-      let state = self.center.addObserver(
-        forName: UIDevice.batteryStateDidChangeNotification,
-        object: nil,
-        queue: nil
-      ) { [weak self] _ in
-        guard let self else { return }
-        continuation.yield(self.currentSnapshot())
-      }
-      let lowPower = self.center.addObserver(
-        forName: NSNotification.Name.NSProcessInfoPowerStateDidChange,
-        object: nil,
-        queue: nil
-      ) { [weak self] _ in
-        guard let self else { return }
-        continuation.yield(self.currentSnapshot())
-      }
+
       continuation.onTermination = { [weak self] _ in
-        self?.center.removeObserver(level)
-        self?.center.removeObserver(state)
-        self?.center.removeObserver(lowPower)
+        guard let self else { return }
+        observers.withValue { tokens in
+          tokens.forEach { self.center.removeObserver($0) }
+          tokens.removeAll()
+        }
       }
     }
+  }
+
+  /// Observer block runs on `.main` (per `queue:` in `addObserver`) so
+  /// we're already on the main thread when this fires; `assumeIsolated`
+  /// is therefore safe and gives us a synchronous read of UIDevice
+  /// without an actor hop. Updates the cache before yielding so
+  /// consumers observe the same value as `currentSnapshot()`.
+  private func handleNotification(
+    continuation: AsyncStream<BatterySnapshot>.Continuation
+  ) {
+    let snapshot = MainActor.assumeIsolated { Self.computeSnapshotOnMain() }
+    cached.setValue(snapshot)
+    continuation.yield(snapshot)
+  }
+
+  /// Static so the call site doesn't bring instance isolation into the
+  /// picture — caller is responsible for being on `MainActor`.
+  @MainActor
+  private static func computeSnapshotOnMain() -> BatterySnapshot {
+    let device = UIDevice.current
+    let raw = device.batteryLevel
+    return BatterySnapshot(
+      level: raw < 0 ? nil : Double(raw),
+      state: translate(device.batteryState),
+      isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+    )
   }
 
   static func translate(_ state: UIDevice.BatteryState) -> BatteryState {
