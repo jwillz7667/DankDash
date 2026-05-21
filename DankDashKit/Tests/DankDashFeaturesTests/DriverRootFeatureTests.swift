@@ -410,6 +410,112 @@ final class DriverRootFeatureTests: XCTestCase {
     }
   }
 
+  func test_deepLinkReceived_offerURLWhileOnShift_routesToActiveRoute() async {
+    let orderId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let url = URL(string: "dankdasher://offer/\(orderId.uuidString)")!
+    let store = TestStore(initialState: DriverRootFeature.State(screen: .shift)) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deepLinkReceived(url))
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(store.state.activeRoute?.orderId, orderId)
+    XCTAssertNil(
+      store.state.pendingDeepLinkURL,
+      "consumed on successful route — must not replay on next bootstrap"
+    )
+  }
+
+  func test_deepLinkReceived_offerURLWhileBootstrapping_stashesUntilShiftLands() async {
+    let orderId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let url = URL(string: "dankdasher://offer/\(orderId.uuidString)")!
+    let store = TestStore(
+      initialState: DriverRootFeature.State(screen: .bootstrapping)
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.deepLinkReceived(url)) {
+      $0.pendingDeepLinkURL = url
+    }
+    XCTAssertEqual(store.state.screen, .bootstrapping)
+    XCTAssertNil(store.state.activeRoute)
+  }
+
+  func test_deepLinkReceived_malformedURL_leavesURLStashedWithoutRouting() async {
+    let url = URL(string: "dankdasher://offer/not-a-uuid")!
+    let store = TestStore(initialState: DriverRootFeature.State(screen: .shift)) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.deepLinkReceived(url)) {
+      $0.pendingDeepLinkURL = url
+    }
+    XCTAssertEqual(store.state.screen, .shift)
+    XCTAssertNil(store.state.activeRoute)
+  }
+
+  func test_driverLoaded_replaysStashedOfferURL() async {
+    let orderId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let url = URL(string: "dankdasher://offer/\(orderId.uuidString)")!
+    let driver = Self.passedDriver()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .loadingDriver,
+        pendingDeepLinkURL: url
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverAppAPIClient = DriverAppAPIClient(
+        getMe: { driver },
+        getCurrentRoute: { throw DriverAPIError.unimplemented("getCurrentRoute") },
+        getEarnings: { _ in throw DriverAPIError.unimplemented("getEarnings") },
+        getShifts: { throw DriverAPIError.unimplemented("getShifts") }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.driverLoaded(.success(driver)))
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(store.state.activeRoute?.orderId, orderId)
+    XCTAssertNil(store.state.pendingDeepLinkURL, "stashed URL consumed on replay")
+  }
+
+  // MARK: - Shift offer-accepted delegate
+
+  func test_shiftAcceptedOfferDelegate_routesToActiveRoute() async {
+    let orderId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let driver = Self.passedDriver()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .shift,
+        driver: driver,
+        shift: DriverShiftFeature.State(driver: driver)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.shift(.delegate(.acceptedOffer(orderId: orderId))))
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(store.state.activeRoute?.orderId, orderId)
+  }
+
   // MARK: - Active route / ID scan / Delivery complete graph
 
   func test_startActiveRoute_setsActiveRouteStateAndScreen() async {

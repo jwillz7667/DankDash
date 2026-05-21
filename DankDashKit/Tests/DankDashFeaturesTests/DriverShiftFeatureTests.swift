@@ -559,6 +559,218 @@ final class DriverShiftFeatureTests: XCTestCase {
     await store.receive(\.delegate.openEarningsDetail)
   }
 
+  // MARK: - Dispatch offer subscription
+
+  func test_offerReceived_whileOnline_presentsOfferSheet() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerReceived(offer)) {
+      $0.presentedOffer = DispatchOfferFeature.State(offer: offer)
+    }
+  }
+
+  func test_offerReceived_whileOffline_isNoOp() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(initialState: DriverShiftFeature.State()) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerReceived(offer))
+    XCTAssertNil(store.state.presentedOffer)
+  }
+
+  func test_offerReceived_duplicateId_doesNotReseatSheet() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: offer, secondsRemaining: 12)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerReceived(offer))
+    XCTAssertEqual(
+      store.state.presentedOffer?.secondsRemaining,
+      12,
+      "duplicate-id yield must not stomp the in-flight countdown"
+    )
+  }
+
+  func test_offerReceived_freshOfferWhileSheetActive_refusesToStack() async {
+    let presented = Self.offer(
+      id: UUID(uuidString: "00000000-0000-0000-0000-0000000000f1")!,
+      expiresAt: Date(timeIntervalSince1970: 1_700_000_030)
+    )
+    let arriving = Self.offer(
+      id: UUID(uuidString: "00000000-0000-0000-0000-0000000000f2")!,
+      expiresAt: Date(timeIntervalSince1970: 1_700_000_060)
+    )
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: presented)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerReceived(arriving))
+    XCTAssertEqual(
+      store.state.presentedOffer?.offer.id,
+      presented.id,
+      "the existing sheet wins; the fresh offer waits its turn"
+    )
+  }
+
+  func test_presentedOfferAcceptedDelegate_emitsAcceptedOrderAndClearsSheet() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: offer)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.presentedOffer(.delegate(.accepted(offer))))
+    await store.skipReceivedActions()
+    XCTAssertNil(store.state.presentedOffer, "accept delegate clears the presented offer")
+  }
+
+  func test_presentedOfferTerminalDelegates_clearSheet() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let terminals: [DispatchOfferFeature.Action.Delegate] = [
+      .declined(offerId: offer.id),
+      .expired(offerId: offer.id),
+      .unavailable(offerId: offer.id),
+    ]
+    for terminal in terminals {
+      let store = TestStore(
+        initialState: DriverShiftFeature.State(
+          driver: Self.passedDriver(currentStatus: .online),
+          activeShift: Self.openShift(),
+          presentedOffer: DispatchOfferFeature.State(offer: offer)
+        )
+      ) {
+        DriverShiftFeature()
+      } withDependencies: {
+        Self.disableDependencies(&$0)
+      }
+      store.exhaustivity = .off
+
+      await store.send(.presentedOffer(.delegate(terminal)))
+      XCTAssertNil(store.state.presentedOffer, "terminal delegate \(terminal) must clear sheet")
+    }
+  }
+
+  func test_offerSheetDismissed_clearsPresentedOffer() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: offer)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerSheetDismissed) {
+      $0.presentedOffer = nil
+    }
+  }
+
+  func test_toggleOffline_clearsPresentedOffer_andCancelsStream() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let shift = Self.openShift()
+    let endedShift = DriverShift(
+      id: shift.id,
+      driverId: shift.driverId,
+      startedAt: shift.startedAt,
+      endedAt: Date(timeIntervalSince1970: 1_700_003_600),
+      startingLocation: shift.startingLocation,
+      endingLocation: nil,
+      totalMiles: nil,
+      totalDeliveries: 0,
+      totalEarningsCents: 0
+    )
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: shift,
+        locationAuth: .authorizedAlways,
+        presentedOffer: DispatchOfferFeature.State(offer: offer)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in throw DriverAPIError.unimplemented("startShift") },
+        endShift: { _ in endedShift },
+        updateStatus: { _ in throw DriverAPIError.unimplemented("updateStatus") }
+      )
+      $0.driverSessionStoreClient = DriverSessionStoreClient(
+        read: { nil },
+        write: { _ in },
+        updateHeartbeat: { _, _, _ in },
+        clear: {}
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.toggleOnlineTapped) {
+      $0.isPerformingShiftTransition = true
+      $0.presentedOffer = nil
+    }
+    await store.skipReceivedActions()
+    XCTAssertNil(store.state.activeShift)
+    XCTAssertNil(store.state.presentedOffer)
+  }
+
+  func test_offerStreamFinished_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerStreamFinished)
+    XCTAssertNil(store.state.presentedOffer)
+  }
+
   // MARK: - State helpers
 
   func test_isOnline_requiresShiftAndOnShiftStatus() {
@@ -634,6 +846,25 @@ final class DriverShiftFeatureTests: XCTestCase {
     )
   }
 
+  nonisolated private static func offer(
+    id: UUID = UUID(uuidString: "00000000-0000-0000-0000-0000000000f1")!,
+    expiresAt: Date,
+    status: DispatchOffer.Status = .offered
+  ) -> DispatchOffer {
+    DispatchOffer(
+      id: id,
+      orderId: UUID(uuidString: "00000000-0000-0000-0000-0000000000e1")!,
+      driverId: UUID(uuidString: "00000000-0000-0000-0000-0000000000d1")!,
+      offeredAt: expiresAt.addingTimeInterval(-30),
+      expiresAt: expiresAt,
+      payoutEstimateCents: 1_250,
+      distanceMiles: Decimal(string: "2.4") ?? 0,
+      status: status,
+      respondedAt: nil,
+      declineReason: nil
+    )
+  }
+
   nonisolated private static func activeSnapshot() -> DriverSessionStore.Snapshot {
     DriverSessionStore.Snapshot(
       shiftId: UUID(uuidString: "00000000-0000-0000-0000-0000000000c1")!,
@@ -654,6 +885,9 @@ final class DriverShiftFeatureTests: XCTestCase {
     values.driverAppAPIClient = .unimplemented
     values.driverHeatmapAPIClient = .unimplemented
     values.driverSessionStoreClient = .unimplemented
+    values.dispatchOfferAPIClient = .unimplemented
+    values.offerSubscriptionClient = .unimplemented
+    values.hapticsClient = .noop
     values.continuousClock = ImmediateClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
   }

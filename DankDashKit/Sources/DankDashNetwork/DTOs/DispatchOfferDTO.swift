@@ -80,6 +80,30 @@ public extension DispatchOfferResponseDTO {
   }
 }
 
+/// Wire shape of `GET /v1/driver/offers/pending`. The server returns an
+/// envelope `{ offers: [...] }` so a future cursor / next-page metadata
+/// addition is non-breaking. iOS treats the list as authoritative — any
+/// rows the driver has already seen are reconciled by id in the
+/// reducer, so re-yielding the same offer mid-countdown is a no-op
+/// (the offer card reducer ignores re-sets of the same id).
+public struct PendingOffersResponseDTO: Decodable, Sendable, Equatable {
+  public let offers: [DispatchOfferResponseDTO]
+
+  public init(offers: [DispatchOfferResponseDTO]) {
+    self.offers = offers
+  }
+}
+
+public extension PendingOffersResponseDTO {
+  /// Lossy projection across the array. A malformed row is dropped from
+  /// the projection rather than failing the whole list — the next poll
+  /// will retry, and one bad row is better than going dark on every
+  /// other waiting offer.
+  func toDomain() -> [DispatchOffer] {
+    offers.compactMap { $0.toDomain() }
+  }
+}
+
 /// Body for `POST /v1/driver/offers/:id/decline`. Optional human
 /// `reason` written to `dispatch_offers.decline_reason` — capped at
 /// 280 chars server-side. iOS keeps the field optional so the

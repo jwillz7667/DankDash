@@ -261,6 +261,15 @@ public struct DriverRootFeature: Sendable {
         if driver.isBackgroundCheckPassed {
           state.shift = DriverShiftFeature.State(driver: driver)
           state.screen = .shift
+          // Replay a deep link that arrived before bootstrap finished
+          // (the URL handler stashes it on `pendingDeepLinkURL`). The
+          // typical cold-launch case is APNs payload →
+          // `dankdasher://offer/<id>` → app launches → bootstrap →
+          // shift → consume offer.
+          if let pending = state.pendingDeepLinkURL {
+            return .send(.deepLinkReceived(pending))
+          }
+          return .none
         } else {
           state.onboarding = DriverOnboardingFeature.State(driver: driver)
           state.screen = .onboarding
@@ -303,6 +312,12 @@ public struct DriverRootFeature: Sendable {
         state.earnings = DriverEarningsFeature.State()
         state.screen = .earnings
         return .none
+
+      case .shift(.delegate(.acceptedOffer(let orderId))):
+        // Driver accepted a dispatch offer — bounce into the active
+        // route lifecycle by funneling through the same entry point as
+        // the deep-link router.
+        return .send(.startActiveRoute(orderId: orderId))
 
       case .shift:
         return .none
@@ -429,11 +444,27 @@ public struct DriverRootFeature: Sendable {
         )
 
       case .deepLinkReceived(let url):
-        // Phase 19 plumbing only — Phase 20 introduces the route
-        // table for `dankdasher://offer/<id>` and friends. Until then
-        // we stash the URL so the seam exists.
+        // Stash the URL first so a deep link arriving during
+        // `bootstrapping` / `auth` survives the screen transition.
+        // We dispatch the typed action below only when we can actually
+        // honor the route — e.g. an `offer/<id>` URL is meaningless
+        // before the driver record is loaded.
         state.pendingDeepLinkURL = url
-        return .none
+        guard let route = DriverDeepLinkRouter.route(url) else {
+          // Unknown URL — keep the stashed URL so a future router can
+          // attempt to parse it again, but emit no action.
+          return .none
+        }
+        switch route {
+        case .offer(let orderId):
+          // Only route if the driver is fully booted into the shift
+          // surface. A cold-start offer URL with an unauthenticated
+          // session is held until bootstrap completes — the post-
+          // bootstrap path inspects `pendingDeepLinkURL` and re-fires.
+          guard state.screen == .shift else { return .none }
+          state.pendingDeepLinkURL = nil
+          return .send(.startActiveRoute(orderId: orderId))
+        }
 
       case .deepLinkConsumed:
         state.pendingDeepLinkURL = nil

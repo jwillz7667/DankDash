@@ -60,11 +60,14 @@ struct AppEnvironment {
     dependencies.tokenStore = .live(keychain: keychain)
     dependencies.cdnBaseURL = cdnBaseURL
 
-    // Driver-specific read/write surface (Phase 8 endpoints).
+    // Driver-specific read/write surface (Phase 8 + Phase 20 endpoints).
     dependencies.driverAppAPIClient = .live(apiClient: apiClient)
     dependencies.driverShiftAPIClient = .live(apiClient: apiClient)
     dependencies.driverHeatmapAPIClient = .live(apiClient: apiClient)
     dependencies.driverOnboardingAPIClient = .live(apiClient: apiClient)
+    dependencies.dispatchOfferAPIClient = .live(apiClient: apiClient)
+    dependencies.offerSubscriptionClient = .live(apiClient: apiClient)
+    dependencies.hapticsClient = .live
 
     // Local persistence — driver session lives in a per-target
     // UserDefaults suite; document drafts + application draft live in

@@ -76,6 +76,35 @@ struct ShiftHomeView: View {
       statusMenuSheet
         .presentationDetents([.medium])
     }
+    .sheet(
+      isPresented: Binding(
+        get: { store.presentedOffer != nil },
+        set: { isShown in
+          if !isShown { store.send(.offerSheetDismissed) }
+        }
+      )
+    ) {
+      offerSheetContent
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(store.presentedOffer?.isSubmitting == true)
+    }
+  }
+
+  @ViewBuilder
+  private var offerSheetContent: some View {
+    if let offerStore = store.scope(state: \.presentedOffer, action: \.presentedOffer) {
+      OfferCardView(
+        offer: offerStore.offer,
+        pickupSummary: "Pickup details",
+        dropoffSummary: "Loading destination",
+        secondsRemaining: offerStore.secondsRemaining,
+        isSubmitting: offerStore.isSubmitting,
+        onAccept: { offerStore.send(.acceptTapped) },
+        onDecline: { offerStore.send(.declineTapped) }
+      )
+      .task { offerStore.send(.onAppear) }
+    }
   }
 
   // MARK: - Toggle mode derivation

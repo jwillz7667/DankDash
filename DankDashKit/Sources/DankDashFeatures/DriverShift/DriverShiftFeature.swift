@@ -33,6 +33,11 @@ public struct DriverShiftFeature: Sendable {
     public var isLoadingDriver: Bool
     public var isLoadingEarnings: Bool
     public var errorBanner: String?
+    /// Slide-up dispatch-offer card. Non-nil while an offer sheet is
+    /// active; the scoped reducer drives the 30-second countdown and
+    /// the accept/decline POSTs. Set by the offer subscription and
+    /// cleared by every terminal delegate.
+    public var presentedOffer: DispatchOfferFeature.State?
 
     public init(
       driver: Driver? = nil,
@@ -48,7 +53,8 @@ public struct DriverShiftFeature: Sendable {
       isShowingStatusMenu: Bool = false,
       isLoadingDriver: Bool = false,
       isLoadingEarnings: Bool = false,
-      errorBanner: String? = nil
+      errorBanner: String? = nil,
+      presentedOffer: DispatchOfferFeature.State? = nil
     ) {
       self.driver = driver
       self.activeShift = activeShift
@@ -64,6 +70,7 @@ public struct DriverShiftFeature: Sendable {
       self.isLoadingDriver = isLoadingDriver
       self.isLoadingEarnings = isLoadingEarnings
       self.errorBanner = errorBanner
+      self.presentedOffer = presentedOffer
     }
 
     /// Convenience — the reducer treats "any shift not yet ended" as
@@ -113,11 +120,21 @@ public struct DriverShiftFeature: Sendable {
     case errorBannerDismissed
     case earningsCardTapped
 
+    // Dispatch offer subscription
+    case offerReceived(DispatchOffer)
+    case offerStreamFinished
+    case presentedOffer(DispatchOfferFeature.Action)
+    case offerSheetDismissed
+
     case delegate(Delegate)
 
     @CasePathable
     public enum Delegate: Equatable, Sendable {
       case openEarningsDetail
+      /// Driver accepted a dispatch offer — the parent reducer
+      /// (``DriverRootFeature``) routes to ``ActiveRouteFeature`` for
+      /// this order id.
+      case acceptedOffer(orderId: UUID)
     }
   }
 
@@ -126,6 +143,7 @@ public struct DriverShiftFeature: Sendable {
     case heatmapTimer
     case heartbeatTimer
     case batteryEvents
+    case offerStream
   }
 
   @Dependency(\.backgroundLocationClient) var locationClient
@@ -134,6 +152,7 @@ public struct DriverShiftFeature: Sendable {
   @Dependency(\.driverAppAPIClient) var driverAppAPI
   @Dependency(\.driverHeatmapAPIClient) var heatmapAPI
   @Dependency(\.driverSessionStoreClient) var sessionStore
+  @Dependency(\.offerSubscriptionClient) var offerSubscription
   @Dependency(\.continuousClock) var clock
   @Dependency(\.date.now) var now
 
@@ -240,11 +259,13 @@ public struct DriverShiftFeature: Sendable {
           // Toggling offline — confirm transition then call endShift.
           state.isPerformingShiftTransition = true
           state.errorBanner = nil
+          state.presentedOffer = nil
           let coord = state.currentCoordinate ?? .init(latitude: 0, longitude: 0)
           return .merge(
             .cancel(id: CancelID.locationStream),
             .cancel(id: CancelID.heatmapTimer),
             .cancel(id: CancelID.heartbeatTimer),
+            .cancel(id: CancelID.offerStream),
             .run { [shiftAPI, locationClient, sessionStore] send in
               await locationClient.endUpdates()
               do {
@@ -336,6 +357,7 @@ public struct DriverShiftFeature: Sendable {
         state.activeShift = nil
         state.heatmap = []
         state.locationMode = .standard(accuracy: .balanced)
+        state.presentedOffer = nil
         // Carry the closed-out shift onto the earnings card so the
         // "today" total reflects the just-completed run without a
         // round-trip — the next earnings refresh will reconcile.
@@ -476,9 +498,57 @@ public struct DriverShiftFeature: Sendable {
       case .earningsCardTapped:
         return .send(.delegate(.openEarningsDetail))
 
+      case .offerReceived(let offer):
+        // Ignore an offer landing for a different driver (shouldn't
+        // happen — the endpoint filters by the authenticated driver
+        // server-side — but a stale token in the stream queue can race
+        // a sign-out), or one we're already presenting.
+        guard state.isOnline else { return .none }
+        if let presented = state.presentedOffer, presented.offer.id == offer.id {
+          return .none
+        }
+        // Refuse to stack offer sheets — if a fresher offer arrives
+        // while the driver is still deliberating, the existing one wins
+        // until it terminates. The new offer expires server-side on its
+        // own clock, so we don't lose it permanently.
+        guard state.presentedOffer == nil else { return .none }
+        state.presentedOffer = DispatchOfferFeature.State(offer: offer)
+        return .none
+
+      case .offerStreamFinished:
+        // The subscription naturally ended (driver toggled offline, the
+        // dependency closed the stream). Cleanup is handled by the
+        // `.toggleOnlineTapped` / `.shiftEnded` paths; nothing to do
+        // here except acknowledge the terminal yield.
+        return .none
+
+      case .presentedOffer(.delegate(.accepted(let offer))):
+        state.presentedOffer = nil
+        return .send(.delegate(.acceptedOffer(orderId: offer.orderId)))
+
+      case .presentedOffer(.delegate(.declined)),
+           .presentedOffer(.delegate(.expired)),
+           .presentedOffer(.delegate(.unavailable)):
+        state.presentedOffer = nil
+        return .none
+
+      case .presentedOffer:
+        return .none
+
+      case .offerSheetDismissed:
+        // SwiftUI drag-dismiss path — treat as a soft decline so the
+        // server-side row still ages out naturally. We don't fire the
+        // decline POST because the driver may have wanted to keep the
+        // sheet up; the next poll re-yields if the row is still active.
+        state.presentedOffer = nil
+        return .none
+
       case .delegate:
         return .none
       }
+    }
+    .ifLet(\.presentedOffer, action: \.presentedOffer) {
+      DispatchOfferFeature()
     }
   }
 
@@ -570,8 +640,19 @@ public struct DriverShiftFeature: Sendable {
     .merge(
       observeLocationStream(),
       startHeatmapTimer(seededCoordinate: currentCoordinate),
-      startHeartbeatTimer()
+      startHeartbeatTimer(),
+      observeOfferStream()
     )
+  }
+
+  private func observeOfferStream() -> Effect<Action> {
+    .run { [offerSubscription] send in
+      for await offer in offerSubscription.stream() {
+        await send(.offerReceived(offer))
+      }
+      await send(.offerStreamFinished)
+    }
+    .cancellable(id: CancelID.offerStream, cancelInFlight: true)
   }
 
   private func observeLocationStream() -> Effect<Action> {
