@@ -1,13 +1,17 @@
 /**
  * Drivers feature module.
  *
- * Owns:
+ * Owns the full driver surface:
  *   - admin onboarding write surface (POST/PATCH /v1/admin/drivers)
  *   - driver-self shift + status surface (POST /v1/driver/shift/{start,end},
  *     POST /v1/driver/status)
- *   - DriverContextGuard, exported so future driver-self modules
- *     (offers, route) can `@UseGuards(DriverContextGuard)` without
- *     re-declaring the guard's repo provider
+ *   - driver-self offers surface (accept/decline dispatch offers)
+ *   - driver-self app surface (DriverAppController)
+ *   - driver-orders surface (Phase 20): GET /v1/driver/orders/:id and the
+ *     pickup-confirm / delivery-confirm / id-scan endpoints that follow
+ *   - DriverContextGuard, exported so future driver-self modules can
+ *     `@UseGuards(DriverContextGuard)` without re-declaring the guard's
+ *     repo provider
  *
  * The DocumentHasher provider is global (DocumentHashModule registered
  * in AppModule), so AdminDriversService only injects the token — no
@@ -21,6 +25,11 @@
  *
  * AuthModule import gives the admin controller access to RolesGuard;
  * JwtAuthGuard is already bound globally in the root composition.
+ *
+ * OrdersModule is imported so DriverOrdersService and the upcoming
+ * pickup-confirm / delivery-confirm endpoints can inject
+ * OrderTransitionService — the canonical status-transition path with
+ * realtime fan-out.
  */
 import {
   DispatchOffersRepository,
@@ -28,6 +37,8 @@ import {
   DriverLocationHistoryRepository,
   DriverShiftsRepository,
   DriversRepository,
+  OrderEventsRepository,
+  OrderItemsRepository,
   OrdersRepository,
   UsersRepository,
   type Database,
@@ -49,12 +60,17 @@ import {
 import { DriverAppController } from './app/driver-app.controller.js';
 import { DriverAppService } from './app/driver-app.service.js';
 import { DriverContextGuard } from './context/driver-context.guard.js';
+import { DriverOrdersController } from './controllers/driver-orders.controller.js';
 import { DriverOffersController } from './offers/driver-offers.controller.js';
 import {
   DriverOffersService,
   type DriverOffersScopedRepos,
   type DriverOffersScopedReposFactory,
 } from './offers/driver-offers.service.js';
+import {
+  DriverOrdersService,
+  type DriverOrdersScopedRepos,
+} from './services/driver-orders.service.js';
 import { DriverShiftController } from './shift/driver-shift.controller.js';
 import {
   DriverShiftService,
@@ -93,10 +109,6 @@ const usersRepoProvider: FactoryProvider<UsersRepository> = {
   useFactory: (db: Database): UsersRepository => new UsersRepository(db),
 };
 
-// Closure factory used by AdminDriversService.create so the drivers insert
-// and the user role-promotion run inside one tx. Stateless — the same
-// closure is reused for every onboarding call; only the `db` (tx handle)
-// passed in changes.
 const adminDriverReposFor: AdminDriverScopedReposFactory = (
   db: Database,
 ): AdminDriverScopedRepos => ({
@@ -116,9 +128,6 @@ const adminDriversServiceProvider: FactoryProvider<AdminDriversService> = {
     new AdminDriversService(drivers, users, db, adminDriverReposFor, hasher),
 };
 
-// Sibling factory for the driver-self shift surface. Same shape as the
-// admin one but only needs (drivers, shifts) inside the tx — no users
-// table write, since promoting role=driver already happened at onboarding.
 const driverShiftReposFor: DriverShiftScopedReposFactory = (
   db: Database,
 ): DriverShiftScopedRepos => ({
@@ -132,10 +141,6 @@ const driverShiftServiceProvider: FactoryProvider<DriverShiftService> = {
   useFactory: (db: Database): DriverShiftService => new DriverShiftService(db, driverShiftReposFor),
 };
 
-// Per-tx repo bundle for the offer accept/decline service. The accept flow
-// composes offer + driver + (via OrderTransitionService.transitionWithinTx)
-// order writes into one outer tx, so all repos here must be re-bound to
-// the tx handle the closure receives.
 const driverOffersReposFor: DriverOffersScopedReposFactory = (
   db: Database,
 ): DriverOffersScopedRepos => ({
@@ -154,10 +159,6 @@ const driverOffersServiceProvider: FactoryProvider<DriverOffersService> = {
     new DriverOffersService(db, orderTransitions, driverOffersReposFor, events),
 };
 
-// Read-only repos for the driver app surface. The repos are stateless
-// over the shared Database (same as the other FactoryProviders above),
-// so a single instance per process is correct — they own no per-request
-// state and `db` is the shared pool, not a tx handle.
 const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
   provide: OrdersRepository,
   inject: [DRIZZLE_DB],
@@ -181,6 +182,22 @@ const driverAppServiceProvider: FactoryProvider<DriverAppService> = {
   ): DriverAppService => new DriverAppService(drivers, orders, dispensaries, shifts),
 };
 
+const driverOrdersServiceProvider: FactoryProvider<DriverOrdersService> = {
+  provide: DriverOrdersService,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriverOrdersService =>
+    new DriverOrdersService(
+      db,
+      (scopedDb): DriverOrdersScopedRepos => ({
+        orders: new OrdersRepository(scopedDb),
+        orderItems: new OrderItemsRepository(scopedDb),
+        orderEvents: new OrderEventsRepository(scopedDb),
+        users: new UsersRepository(scopedDb),
+        dispensaries: new DispensariesRepository(scopedDb),
+      }),
+    ),
+};
+
 const providers: Provider[] = [
   driversRepoProvider,
   driverShiftsRepoProvider,
@@ -193,6 +210,7 @@ const providers: Provider[] = [
   driverShiftServiceProvider,
   driverOffersServiceProvider,
   driverAppServiceProvider,
+  driverOrdersServiceProvider,
   DriverContextGuard,
 ];
 
@@ -203,6 +221,7 @@ const providers: Provider[] = [
     DriverShiftController,
     DriverOffersController,
     DriverAppController,
+    DriverOrdersController,
   ],
   providers,
   exports: [
@@ -210,6 +229,7 @@ const providers: Provider[] = [
     DriverShiftService,
     DriverOffersService,
     DriverAppService,
+    DriverOrdersService,
     DriversRepository,
     DriverShiftsRepository,
     DriverLocationHistoryRepository,

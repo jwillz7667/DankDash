@@ -1,5 +1,5 @@
 import { NotFoundError, RepositoryError } from '@dankdash/types';
-import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, not, or, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
 import { users } from '../schema/identity.js';
 import {
@@ -198,6 +198,91 @@ export class OrdersRepository extends BaseRepository {
       .where(eq(orders.userId, userId))
       .orderBy(desc(orders.placedAt))
       .limit(limit);
+  }
+
+  /**
+   * Cursor pagination ordered by `(placedAt DESC, id DESC)`. The cursor
+   * fixes the position to the row immediately AFTER the last one
+   * returned in the previous page — `placedAt < cursor.placedAt OR
+   * (placedAt = cursor.placedAt AND id < cursor.id)`. Pairs with the
+   * `orders_user_placed_idx` btree so the predicate is a single index
+   * scan no matter where in the user's history the page sits.
+   *
+   * `statusFilter` partitions the user's orders into "still in flight"
+   * vs "done with". Both surfaces (the Active and Past tabs) call the
+   * same endpoint with a different filter; `'all'` is reserved for
+   * admin-tooling read paths.
+   *
+   * The repo asks for `limit + 1` rows so the caller can tell whether
+   * a next page exists without a separate count query — if the extra
+   * row comes back, drop it and emit a cursor for the LAST kept row.
+   */
+  async listForUserCursored(input: {
+    readonly userId: string;
+    readonly limit: number;
+    readonly statusFilter: 'active' | 'completed' | 'all';
+    readonly cursor: { readonly placedAt: Date; readonly id: string } | null;
+  }): Promise<readonly Order[]> {
+    const TERMINAL_STATUSES: readonly OrderStatus[] = [
+      'delivered',
+      'canceled',
+      'rejected',
+      'returned_to_store',
+      'disputed',
+      'id_scan_failed',
+      'payment_failed',
+    ];
+    const statusPredicate =
+      input.statusFilter === 'active'
+        ? not(inArray(orders.status, TERMINAL_STATUSES))
+        : input.statusFilter === 'completed'
+          ? inArray(orders.status, TERMINAL_STATUSES)
+          : undefined;
+    const cursorPredicate =
+      input.cursor === null
+        ? undefined
+        : or(
+            lt(orders.placedAt, input.cursor.placedAt),
+            and(eq(orders.placedAt, input.cursor.placedAt), lt(orders.id, input.cursor.id)),
+          );
+    const wheres = [eq(orders.userId, input.userId), statusPredicate, cursorPredicate].filter(
+      (clause): clause is Exclude<typeof clause, undefined> => clause !== undefined,
+    );
+    return this.db
+      .select()
+      .from(orders)
+      .where(wheres.length === 1 ? wheres[0] : and(...wheres))
+      .orderBy(desc(orders.placedAt), desc(orders.id))
+      .limit(input.limit);
+  }
+
+  /**
+   * User-scoped detail read. Pairs id + userId in the WHERE so a
+   * cross-user id matches zero rows (same response shape as missing —
+   * a probe cannot distinguish ownership-fail from existence-fail).
+   */
+  async findByIdForUser(orderId: string, userId: string): Promise<Order | null> {
+    const [row] = await this.db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.userId, userId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Driver-scoped detail read — same probe-resistance shape as
+   * findByIdForUser. A driver who pastes another driver's order id
+   * gets a 404, not a 403, so they can't enumerate the assignment
+   * graph by status code.
+   */
+  async findByIdForDriver(orderId: string, driverUserId: string): Promise<Order | null> {
+    const [row] = await this.db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.driverId, driverUserId)))
+      .limit(1);
+    return row ?? null;
   }
 
   async listForDispensary(
