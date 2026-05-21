@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Weekday: Int, Hashable, Sendable, CaseIterable {
+public enum Weekday: Int, Hashable, Sendable, CaseIterable, Codable {
   case monday = 0
   case tuesday
   case wednesday
@@ -15,7 +15,7 @@ public enum Weekday: Int, Hashable, Sendable, CaseIterable {
 /// encode a close that falls on the next calendar day — a store that
 /// closes at 02:00 the following morning encodes `closeMinutes = 26*60`
 /// (matches the server's `HH:MM` regex allowing hours up to 30).
-public struct DayHours: Hashable, Sendable {
+public struct DayHours: Hashable, Sendable, Codable {
   public let openMinutes: Int
   public let closeMinutes: Int
 
@@ -58,7 +58,7 @@ public struct DayHours: Hashable, Sendable {
 /// that weekday. The server is authoritative on whether the store is open
 /// right now (`Dispensary.isOpenNow`); this Domain type only re-derives
 /// open-state from cached responses where the server flag has gone stale.
-public struct DispensaryHours: Hashable, Sendable {
+public struct DispensaryHours: Hashable, Sendable, Codable {
   public let mon: DayHours?
   public let tue: DayHours?
   public let wed: DayHours?

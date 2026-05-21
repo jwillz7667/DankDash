@@ -4,7 +4,7 @@ import Foundation
 /// `Product` by design — no `description`, no `labResults`, no
 /// `createdAt`/`updatedAt`. The browse UI renders list items only; the
 /// detail screen re-fetches the full record.
-public struct SearchProductResult: Identifiable, Hashable, Sendable {
+public struct SearchProductResult: Identifiable, Hashable, Sendable, Codable {
   public let id: UUID
   public let categoryId: UUID
   public let brand: String
@@ -53,7 +53,7 @@ public struct SearchProductResult: Identifiable, Hashable, Sendable {
   }
 }
 
-public struct SearchCategoryFacet: Hashable, Sendable {
+public struct SearchCategoryFacet: Hashable, Sendable, Codable {
   public let categoryId: UUID
   public let count: Int
 
@@ -63,7 +63,7 @@ public struct SearchCategoryFacet: Hashable, Sendable {
   }
 }
 
-public struct SearchStrainTypeFacet: Hashable, Sendable {
+public struct SearchStrainTypeFacet: Hashable, Sendable, Codable {
   public let strainType: StrainType
   public let count: Int
 
@@ -73,7 +73,7 @@ public struct SearchStrainTypeFacet: Hashable, Sendable {
   }
 }
 
-public struct SearchPage: Hashable, Sendable {
+public struct SearchPage: Hashable, Sendable, Codable {
   public let limit: Int
   public let offset: Int
   public let total: Int
@@ -91,7 +91,7 @@ public struct SearchPage: Hashable, Sendable {
 
 /// Aggregate response shape from the search endpoint — `results` plus the
 /// two facet axes and the page envelope.
-public struct SearchResults: Hashable, Sendable {
+public struct SearchResults: Hashable, Sendable, Codable {
   public let results: [SearchProductResult]
   public let categoryFacets: [SearchCategoryFacet]
   public let strainTypeFacets: [SearchStrainTypeFacet]

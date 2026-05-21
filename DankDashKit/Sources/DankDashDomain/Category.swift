@@ -4,7 +4,7 @@ import Foundation
 /// tree-built client-side via `parentId` — there's no nested response
 /// shape, by design, so a future deepening of the tree is a server-only
 /// change.
-public struct Category: Identifiable, Hashable, Sendable {
+public struct Category: Identifiable, Hashable, Sendable, Codable {
   public let id: UUID
   public let slug: String
   public let displayName: String

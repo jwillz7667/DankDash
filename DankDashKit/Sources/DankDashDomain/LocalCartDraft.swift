@@ -5,8 +5,8 @@ import Foundation
 /// menu-only per Apple §10.4: this draft is never POSTed to a payment
 /// surface from iOS — Phase 18 promotes it to a server cart and hands
 /// checkout off to `app.dankdash.com` via SFSafariViewController.
-public struct LocalCartDraft: Hashable, Sendable {
-  public struct Line: Identifiable, Hashable, Sendable {
+public struct LocalCartDraft: Hashable, Sendable, Codable {
+  public struct Line: Identifiable, Hashable, Sendable, Codable {
     public let listingId: UUID
     public let productId: UUID
     public let productName: String

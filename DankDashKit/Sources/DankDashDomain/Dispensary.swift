@@ -4,7 +4,7 @@ import Foundation
 /// Restricted columns (encrypted Metrc keys, POS credentials, payment
 /// processor refs, license issued/expires timestamps, tombstones) are
 /// intentionally absent — the server's public projection strips them.
-public struct Dispensary: Identifiable, Hashable, Sendable {
+public struct Dispensary: Identifiable, Hashable, Sendable, Codable {
   /// Mirrors the server enum. The public read endpoints only ever surface
   /// `.active`; the other cases exist so future surfaces (vendor portal,
   /// admin) can decode without a separate type.

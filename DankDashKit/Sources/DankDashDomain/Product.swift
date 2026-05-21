@@ -5,7 +5,7 @@ import Foundation
 /// strings; the DTO layer parses them via `Decimal(string:)` to preserve
 /// precision. Never use `Double` for THC/CBD/weight — rounding errors
 /// accumulate across cart math and fail compliance audits.
-public struct Product: Identifiable, Hashable, Sendable {
+public struct Product: Identifiable, Hashable, Sendable, Codable {
   public let id: UUID
   public let categoryId: UUID
   public let brand: String
@@ -72,7 +72,7 @@ public struct Product: Identifiable, Hashable, Sendable {
 /// of `Product` — no lab results, no created/updated timestamps. The iOS
 /// detail screen renders from this summary while the full `Product`
 /// loads in the background.
-public struct MenuProductSummary: Identifiable, Hashable, Sendable {
+public struct MenuProductSummary: Identifiable, Hashable, Sendable, Codable {
   public let id: UUID
   public let categoryId: UUID
   public let brand: String

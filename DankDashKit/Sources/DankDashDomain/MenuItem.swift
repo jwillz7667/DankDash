@@ -5,7 +5,7 @@ import Foundation
 /// stores has two listings, with possibly different prices and stock);
 /// the product summary is denormalized inline so the iOS menu screen
 /// renders without a reduce pass.
-public struct MenuItem: Identifiable, Hashable, Sendable {
+public struct MenuItem: Identifiable, Hashable, Sendable, Codable {
   public let listingId: UUID
   public let sku: String
   public let priceCents: Int

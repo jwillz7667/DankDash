@@ -3,7 +3,7 @@ import Foundation
 /// A single lab assay attached to a product. Lab results are sorted
 /// newest-first server-side so the detail screen can pluck index `0`
 /// without re-sorting.
-public struct LabResult: Identifiable, Hashable, Sendable {
+public struct LabResult: Identifiable, Hashable, Sendable, Codable {
   public let id: UUID
   public let batchId: String
   public let labName: String
