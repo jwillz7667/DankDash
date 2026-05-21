@@ -1,6 +1,7 @@
 import SwiftUI
 import ComposableArchitecture
 import DankDashDesignSystem
+import DankDashDomain
 import DankDashFeatures
 import DankDashNetwork
 
@@ -78,8 +79,14 @@ struct BrowseRootView: View {
       .tabItem {
         Label("Cart", systemImage: "bag")
       }
-      .badge(store.cart.totalQuantity > 0 ? store.cart.totalQuantity : 0)
+      .badge(cartBadge)
       .tag(BrowseFeature.Tab.cart)
+
+      NavigationStack {
+        OrdersTabPlaceholderView()
+      }
+      .tabItem { Label("Orders", systemImage: "shippingbox") }
+      .tag(BrowseFeature.Tab.orders)
 
       NavigationStack {
         AccountTabView(user: user, onSignOut: onSignOut)
@@ -100,6 +107,30 @@ struct BrowseRootView: View {
       }
     }
     .animation(.easeInOut(duration: 0.2), value: store.addedToCartToast)
+  }
+
+  /// Badge for the Cart tab — counts unpromoted draft lines plus any
+  /// server-cart items so the customer sees a single "items waiting"
+  /// number across the promotion boundary.
+  private var cartBadge: Int {
+    let draftCount = store.cart.draft.totalQuantity
+    let serverCount = store.cart.serverCart?.items.reduce(0) { $0 + $1.quantity } ?? 0
+    return draftCount + serverCount
+  }
+}
+
+/// Placeholder for the Orders tab — the production view (history list +
+/// tracking detail) lands in C21.
+private struct OrdersTabPlaceholderView: View {
+  var body: some View {
+    EmptyStateView(
+      systemImage: "shippingbox",
+      title: "Orders",
+      message: "Your active and past orders will appear here once you check out."
+    )
+    .background(DankColor.cream.ignoresSafeArea())
+    .navigationTitle("Orders")
+    .navigationBarTitleDisplayMode(.inline)
   }
 }
 

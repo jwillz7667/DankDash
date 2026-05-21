@@ -4,15 +4,22 @@ import DankDashDesignSystem
 import DankDashDomain
 import DankDashFeatures
 
-/// In-memory cart draft surface. Apple §10.4: the consumer iOS app is
-/// menu-only — the "Continue to checkout" CTA is intentionally disabled
-/// here. Phase 18 wires the Safari handoff to `app.dankdash.com/checkout`.
+/// Cart-tab shell. Renders the draft accumulator as a read-only list
+/// against the Phase-18 ``CartFeature`` state. The full server-cart UX
+/// (quantity stepper against the server row, compliance preview, Safari
+/// hand-off CTA) lands in C20 — this shell exists only to keep the
+/// app target compiling against the new state shape introduced when
+/// ``BrowseFeature`` swaps its `cart` member from ``LocalCartDraftFeature``
+/// to ``CartFeature``.
+///
+/// Apple §10.4: the "Continue to checkout" CTA stays disabled here —
+/// the real hand-off button is wired in C20.
 struct CartTabView: View {
-  @Bindable var store: StoreOf<LocalCartDraftFeature>
+  let store: StoreOf<CartFeature>
 
   var body: some View {
     Group {
-      if store.isEmpty {
+      if store.draft.isEmpty {
         EmptyStateView(
           systemImage: "bag",
           title: "Your cart is empty",
@@ -22,19 +29,8 @@ struct CartTabView: View {
         VStack(spacing: 0) {
           ScrollView {
             VStack(spacing: DankSpacing.sm) {
-              ForEach(store.lines) { line in
-                CartLineRow(
-                  line: line,
-                  onIncrement: {
-                    store.send(.setQuantity(listingId: line.listingId, quantity: line.quantity + 1))
-                  },
-                  onDecrement: {
-                    store.send(.setQuantity(listingId: line.listingId, quantity: line.quantity - 1))
-                  },
-                  onRemove: {
-                    store.send(.removeLine(listingId: line.listingId))
-                  }
-                )
+              ForEach(store.draft.lines) { line in
+                CartLineRow(line: line)
               }
             }
             .padding(.horizontal, DankSpacing.md)
@@ -47,16 +43,6 @@ struct CartTabView: View {
     .background(DankColor.cream.ignoresSafeArea())
     .navigationTitle("Cart")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        if !store.isEmpty {
-          Button("Clear") {
-            store.send(.clearAll)
-          }
-          .foregroundStyle(DankColor.Semantic.danger)
-        }
-      }
-    }
   }
 
   private var checkoutBar: some View {
@@ -66,7 +52,7 @@ struct CartTabView: View {
           .font(DankFont.body)
           .foregroundStyle(DankColor.Text.secondary)
         Spacer()
-        Text(formatPrice(store.totalCents))
+        Text(formatPrice(store.draft.totalCents))
           .font(DankFont.headline)
           .foregroundStyle(DankColor.Text.primary)
       }
@@ -103,9 +89,6 @@ struct CartTabView: View {
 
 private struct CartLineRow: View {
   let line: LocalCartDraft.Line
-  let onIncrement: () -> Void
-  let onDecrement: () -> Void
-  let onRemove: () -> Void
 
   var body: some View {
     HStack(alignment: .top, spacing: DankSpacing.sm) {
@@ -138,25 +121,10 @@ private struct CartLineRow: View {
         Text(formatPrice(line.subtotalCents))
           .font(DankFont.body.weight(.semibold))
           .foregroundStyle(DankColor.Text.primary)
-        HStack(spacing: DankSpacing.xs) {
-          Button(action: onDecrement) {
-            Image(systemName: line.quantity <= 1 ? "trash" : "minus")
-              .frame(width: 28, height: 28)
-              .foregroundStyle(line.quantity <= 1 ? DankColor.Semantic.danger : DankColor.primary)
-          }
-          .accessibilityLabel(line.quantity <= 1 ? "Remove item" : "Decrease quantity")
-          Text("\(line.quantity)")
-            .font(DankFont.body.weight(.semibold))
-            .frame(minWidth: 20)
-            .accessibilityLabel("Quantity \(line.quantity)")
-          Button(action: onIncrement) {
-            Image(systemName: "plus")
-              .frame(width: 28, height: 28)
-              .foregroundStyle(line.quantity >= line.maxAvailable ? DankColor.Text.muted : DankColor.primary)
-          }
-          .disabled(line.quantity >= line.maxAvailable)
-          .accessibilityLabel("Increase quantity")
-        }
+        Text("Qty \(line.quantity)")
+          .font(DankFont.bodySmall)
+          .foregroundStyle(DankColor.Text.muted)
+          .accessibilityLabel("Quantity \(line.quantity)")
       }
     }
     .padding(DankSpacing.sm)
@@ -168,11 +136,6 @@ private struct CartLineRow: View {
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(line.brand) \(line.productName), quantity \(line.quantity), \(formatPrice(line.subtotalCents))")
-    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-      Button(role: .destructive, action: onRemove) {
-        Label("Remove", systemImage: "trash")
-      }
-    }
   }
 
   private func formatPrice(_ cents: Int) -> String {

@@ -190,10 +190,11 @@ final class BrowseFeatureTests: XCTestCase {
       maxAvailable: 5
     ))))
     XCTAssertEqual(store.state.addedToCartToast, "Sour Diesel added to cart")
-    XCTAssertEqual(store.state.cart.lines.count, 1)
-    XCTAssertEqual(store.state.cart.lines.first?.listingId, listingId)
-    XCTAssertEqual(store.state.cart.lines.first?.priceCents, 3500)
-    XCTAssertEqual(store.state.cart.lines.first?.quantity, 1)
+    XCTAssertEqual(store.state.cart.draft.lines.count, 1)
+    XCTAssertEqual(store.state.cart.draft.lines.first?.listingId, listingId)
+    XCTAssertEqual(store.state.cart.draft.lines.first?.priceCents, 3500)
+    XCTAssertEqual(store.state.cart.draft.lines.first?.quantity, 1)
+    XCTAssertEqual(store.state.cart.dispensaryId, dispensaryId, "First addedToCart pins the cart's dispensary so promotion can run.")
   }
 
   func test_toastDismissed_clearsToast() async {
@@ -238,6 +239,327 @@ final class BrowseFeatureTests: XCTestCase {
   }
 
   // MARK: - related product navigation
+
+  // MARK: - dispensary switch clears draft
+
+  func test_addedToCartFromDifferentDispensary_clearsExistingDraft() async {
+    let firstDispensary = UUID()
+    let secondDispensary = UUID()
+    let firstListing = UUID()
+    let secondListing = UUID()
+    var initial = BrowseFeature.State()
+    initial.cart.draft.add(
+      LocalCartDraft.Line(
+        listingId: firstListing,
+        productId: UUID(),
+        productName: "Original Strain",
+        brand: "Brand A",
+        priceCents: 3000,
+        quantity: 1,
+        maxAvailable: 5
+      )
+    )
+    initial.cart.dispensaryId = firstDispensary
+    initial.productDetail = ProductDetailFeature.State(
+      productId: UUID(),
+      listingId: secondListing,
+      dispensaryId: secondDispensary,
+      priceCents: 4000,
+      maxAvailable: 3,
+      productName: "New Strain",
+      brand: "Brand B"
+    )
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.productDetail(.delegate(.addedToCart(
+      listingId: secondListing,
+      productId: UUID(),
+      productName: "New Strain",
+      brand: "Brand B",
+      priceCents: 4000,
+      maxAvailable: 3
+    ))))
+    XCTAssertEqual(store.state.cart.draft.lines.count, 1, "Switching dispensaries clears the old draft.")
+    XCTAssertEqual(store.state.cart.draft.lines.first?.listingId, secondListing)
+    XCTAssertEqual(store.state.cart.dispensaryId, secondDispensary)
+  }
+
+  // MARK: - tabs: Orders
+
+  func test_tabSelected_orders_switchesToOrdersTab() async {
+    let store = TestStore(initialState: BrowseFeature.State()) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+
+    await store.send(.tabSelected(.orders)) {
+      $0.selectedTab = .orders
+    }
+  }
+
+  // MARK: - cart → checkout hand-off
+
+  func test_cartCheckoutRequestedDelegate_mountsCheckoutHandoff() async {
+    let cartId = UUID()
+    let addressId = UUID()
+    let store = TestStore(initialState: BrowseFeature.State()) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cart(.delegate(.checkoutRequested(cartId: cartId, deliveryAddressId: addressId))))
+    XCTAssertEqual(store.state.checkoutHandoff?.cartId, cartId)
+    XCTAssertEqual(store.state.checkoutHandoff?.deliveryAddressId, addressId)
+  }
+
+  func test_checkoutHandoffDelegateCompleted_jumpsToOrdersAndPushesDetail() async {
+    let cartId = UUID()
+    let addressId = UUID()
+    let orderId = UUID()
+    var initial = BrowseFeature.State(
+      checkoutHandoff: CheckoutHandoffFeature.State(cartId: cartId, deliveryAddressId: addressId)
+    )
+    initial.cart.draft.add(
+      LocalCartDraft.Line(
+        listingId: UUID(),
+        productId: UUID(),
+        productName: "x",
+        brand: "y",
+        priceCents: 1000,
+        quantity: 1,
+        maxAvailable: 5
+      )
+    )
+    initial.cart.dispensaryId = UUID()
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.checkoutHandoff(.delegate(.completed(orderId: orderId))))
+    XCTAssertEqual(store.state.selectedTab, .orders)
+    XCTAssertEqual(store.state.orderDetail?.orderId, orderId)
+    XCTAssertNil(store.state.checkoutHandoff, "Hand-off sheet dismisses once the order is created.")
+    XCTAssertTrue(store.state.cart.draft.isEmpty, "Post-checkout the local cart is consumed.")
+    XCTAssertNil(store.state.cart.dispensaryId)
+  }
+
+  func test_checkoutHandoffDelegateDismissed_unmountsSheet() async {
+    let initial = BrowseFeature.State(
+      checkoutHandoff: CheckoutHandoffFeature.State(cartId: UUID(), deliveryAddressId: UUID())
+    )
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.checkoutHandoff(.delegate(.dismissed)))
+    XCTAssertNil(store.state.checkoutHandoff)
+  }
+
+  func test_checkoutHandoffDismissedAction_unmountsSheet() async {
+    let initial = BrowseFeature.State(
+      checkoutHandoff: CheckoutHandoffFeature.State(cartId: UUID(), deliveryAddressId: UUID())
+    )
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+
+    await store.send(.checkoutHandoffDismissed) {
+      $0.checkoutHandoff = nil
+    }
+  }
+
+  // MARK: - orders tab → detail
+
+  func test_orderHistoryDelegateOpenOrder_pushesOrderDetail() async {
+    let orderId = UUID()
+    let store = TestStore(initialState: BrowseFeature.State(selectedTab: .orders)) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.orderHistory(.delegate(.openOrder(orderId: orderId))))
+    XCTAssertEqual(store.state.orderDetail?.orderId, orderId)
+  }
+
+  func test_orderDetailDismissed_clearsOrderDetail() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: BrowseFeature.State(
+        selectedTab: .orders,
+        orderDetail: OrderDetailFeature.State(orderId: orderId)
+      )
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+
+    await store.send(.orderDetailDismissed) {
+      $0.orderDetail = nil
+    }
+  }
+
+  // MARK: - reorder
+
+  func test_orderDetailDelegateReorderRequested_seedsCartAndSwitchesTab() async {
+    let orderId = UUID()
+    let dispensaryId = UUID()
+    let listingA = UUID()
+    let listingB = UUID()
+    let productA = UUID()
+
+    let orderItems: [OrderItem] = [
+      OrderItem(
+        id: UUID(),
+        listingId: listingA,
+        productSnapshot: .object([
+          "id": .string(productA.uuidString),
+          "name": .string("Sour Diesel 1g"),
+          "brand": .string("North Star")
+        ]),
+        quantity: 2,
+        unitPriceCents: 3500,
+        lineSubtotalCents: 7000,
+        thcMgTotal: Decimal(string: "200")!,
+        cbdMgTotal: Decimal(string: "0")!,
+        weightGramsTotal: Decimal(string: "2")!,
+        cannabisTaxCents: 700,
+        salesTaxCents: 490,
+        createdAt: Date(timeIntervalSinceReferenceDate: 0)
+      ),
+      OrderItem(
+        id: UUID(),
+        listingId: listingB,
+        productSnapshot: .object([:]),
+        quantity: 1,
+        unitPriceCents: 4500,
+        lineSubtotalCents: 4500,
+        thcMgTotal: Decimal(string: "100")!,
+        cbdMgTotal: Decimal(string: "0")!,
+        weightGramsTotal: Decimal(string: "1")!,
+        cannabisTaxCents: 450,
+        salesTaxCents: 315,
+        createdAt: Date(timeIntervalSinceReferenceDate: 0)
+      )
+    ]
+
+    var initial = BrowseFeature.State(
+      selectedTab: .orders,
+      orderDetail: OrderDetailFeature.State(orderId: orderId)
+    )
+    initial.orderDetail?.tracking.order = Order(
+      id: orderId,
+      shortCode: "DD-7777",
+      userId: UUID(),
+      dispensaryId: dispensaryId,
+      deliveryAddressId: UUID(),
+      status: .delivered,
+      subtotalCents: 11500,
+      cannabisTaxCents: 1150,
+      salesTaxCents: 805,
+      deliveryFeeCents: 599,
+      driverTipCents: 0,
+      discountCents: 0,
+      totalCents: 14054,
+      items: orderItems,
+      placedAt: Date(timeIntervalSinceReferenceDate: 0),
+      statusChangedAt: Date(timeIntervalSinceReferenceDate: 0),
+      createdAt: Date(timeIntervalSinceReferenceDate: 0),
+      updatedAt: Date(timeIntervalSinceReferenceDate: 0)
+    )
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.orderDetail(.delegate(.reorderRequested(orderId: orderId))))
+    XCTAssertEqual(store.state.selectedTab, .cart)
+    XCTAssertNil(store.state.orderDetail, "Reorder tears down the detail sheet.")
+    XCTAssertEqual(store.state.cart.draft.lines.count, 2)
+    XCTAssertEqual(store.state.cart.dispensaryId, dispensaryId)
+
+    let lineA = store.state.cart.draft.lines.first { $0.listingId == listingA }
+    XCTAssertEqual(lineA?.productName, "Sour Diesel 1g")
+    XCTAssertEqual(lineA?.brand, "North Star")
+    XCTAssertEqual(lineA?.priceCents, 3500)
+    XCTAssertEqual(lineA?.quantity, 2)
+
+    let lineB = store.state.cart.draft.lines.first { $0.listingId == listingB }
+    XCTAssertEqual(lineB?.productName, "Reorder item", "Missing snapshot fields fall back to placeholder copy.")
+  }
+
+  func test_orderDetailDelegateReorderRequestedWithoutOrder_isNoop() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: BrowseFeature.State(
+        selectedTab: .orders,
+        orderDetail: OrderDetailFeature.State(orderId: orderId)
+      )
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.orderDetail(.delegate(.reorderRequested(orderId: orderId))))
+    XCTAssertEqual(store.state.selectedTab, .orders, "No order loaded → no seeding, no tab change.")
+    XCTAssertTrue(store.state.cart.draft.isEmpty)
+  }
+
+  // MARK: - openOrderTracking external entry
+
+  func test_openOrderTracking_setsOrdersTabAndPushesDetail() async {
+    let orderId = UUID()
+    let store = TestStore(initialState: BrowseFeature.State()) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+
+    await store.send(.openOrderTracking(orderId: orderId)) {
+      $0.selectedTab = .orders
+      $0.orderDetail = OrderDetailFeature.State(orderId: orderId)
+    }
+  }
+
+  func test_openOrderTracking_alsoDismissesHandoffSheet() async {
+    let orderId = UUID()
+    let initial = BrowseFeature.State(
+      checkoutHandoff: CheckoutHandoffFeature.State(cartId: UUID(), deliveryAddressId: UUID())
+    )
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+
+    await store.send(.openOrderTracking(orderId: orderId)) {
+      $0.checkoutHandoff = nil
+      $0.selectedTab = .orders
+      $0.orderDetail = OrderDetailFeature.State(orderId: orderId)
+    }
+  }
 
   func test_productDetailOpenRelatedProduct_swapsDetailWithDisabledCart() async {
     let originalProductId = UUID()
