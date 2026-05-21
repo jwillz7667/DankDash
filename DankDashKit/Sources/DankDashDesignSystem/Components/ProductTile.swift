@@ -136,7 +136,7 @@ public struct ProductTile: View {
   /// rounded percent for flower (g-weighted), and `mg per unit` for
   /// non-flower (vape, edible, etc.). Pure UI — the compliance engine
   /// owns the legal math.
-  static func formatTHC(_ thcMg: Decimal, weight: Decimal) -> String {
+  public static func formatTHC(_ thcMg: Decimal, weight: Decimal) -> String {
     if weight > 0 {
       let weightMg = weight * 1000
       let percent = (thcMg / weightMg) * 100

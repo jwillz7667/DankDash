@@ -17,14 +17,17 @@ import DankDashFeatures
 struct AppEnvironment {
   let apiBaseURL: URL
   let checkoutBaseURL: URL
+  let cdnBaseURL: URL?
   let keychain: KeychainStore
 
   static let live: AppEnvironment = {
     let base = Self.resolvedAPIBaseURL()
     let checkout = Self.resolvedCheckoutBaseURL()
+    let cdn = Self.resolvedCDNBaseURL()
     return AppEnvironment(
       apiBaseURL: base,
       checkoutBaseURL: checkout,
+      cdnBaseURL: cdn,
       keychain: KeychainStore(service: "com.dankdash.consumer.auth")
     )
   }()
@@ -38,6 +41,11 @@ struct AppEnvironment {
     )
     dependencies.authAPIClient = .live(apiClient: apiClient)
     dependencies.tokenStore = .live(keychain: keychain)
+    dependencies.catalogAPIClient = .live(apiClient: apiClient)
+    dependencies.catalogCacheClient = .live()
+    dependencies.locationClient = .live
+    dependencies.documentDownloadClient = .live
+    dependencies.cdnBaseURL = cdnBaseURL
   }
 
   /// API base URL is overridable via the `DANKDASH_API_BASE_URL`
@@ -62,6 +70,18 @@ struct AppEnvironment {
       return url
     }
     return URL(string: "https://app.dankdash.com/checkout")!
+  }
+
+  /// CDN base URL used for image / document composition. Overridable
+  /// via the `DANKDASH_CDN_BASE_URL` Info.plist key. A nil result means
+  /// the CDN isn't configured — views degrade to placeholder graphics
+  /// and the COA flow surfaces a typed error.
+  private static func resolvedCDNBaseURL() -> URL? {
+    if let override = Bundle.main.object(forInfoDictionaryKey: "DANKDASH_CDN_BASE_URL") as? String,
+       let url = URL(string: override) {
+      return url
+    }
+    return URL(string: "https://cdn.dankdash.com")
   }
 }
 

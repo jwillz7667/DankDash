@@ -32,6 +32,7 @@ public struct RootFeature: Sendable {
     public var forgotPassword: ForgotPasswordFeature.State?
     public var authScreen: AuthScreen
     public var signedInUser: UserSummaryDTO?
+    public var browse: BrowseFeature.State
 
     public enum Screen: Equatable, Sendable {
       case bootstrapping
@@ -53,7 +54,8 @@ public struct RootFeature: Sendable {
       signUp: SignUpFeature.State = .init(),
       forgotPassword: ForgotPasswordFeature.State? = nil,
       authScreen: AuthScreen = .login,
-      signedInUser: UserSummaryDTO? = nil
+      signedInUser: UserSummaryDTO? = nil,
+      browse: BrowseFeature.State = .init()
     ) {
       self.screen = screen
       self.ageGate = ageGate
@@ -62,6 +64,7 @@ public struct RootFeature: Sendable {
       self.forgotPassword = forgotPassword
       self.authScreen = authScreen
       self.signedInUser = signedInUser
+      self.browse = browse
     }
   }
 
@@ -75,6 +78,7 @@ public struct RootFeature: Sendable {
     case login(LoginFeature.Action)
     case signUp(SignUpFeature.Action)
     case forgotPassword(ForgotPasswordFeature.Action)
+    case browse(BrowseFeature.Action)
     case signOutTapped
   }
 
@@ -93,6 +97,10 @@ public struct RootFeature: Sendable {
 
     Scope(state: \.signUp, action: \.signUp) {
       SignUpFeature()
+    }
+
+    Scope(state: \.browse, action: \.browse) {
+      BrowseFeature()
     }
 
     Reduce { state, action in
@@ -154,6 +162,9 @@ public struct RootFeature: Sendable {
       case .forgotPassword:
         return .none
 
+      case .browse:
+        return .none
+
       case .signOutTapped:
         state.signedInUser = nil
         state.login = .init()
@@ -161,6 +172,7 @@ public struct RootFeature: Sendable {
         state.forgotPassword = nil
         state.authScreen = .login
         state.screen = .auth
+        state.browse = .init()
         return .run { _ in
           await tokens.clear()
         }

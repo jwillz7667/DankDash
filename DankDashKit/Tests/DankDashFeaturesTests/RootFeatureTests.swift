@@ -176,6 +176,7 @@ final class RootFeatureTests: XCTestCase {
       $0.forgotPassword = nil
       $0.authScreen = .login
       $0.screen = .auth
+      $0.browse = .init()
     }
     await store.finish()
 
