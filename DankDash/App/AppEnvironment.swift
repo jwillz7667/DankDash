@@ -20,28 +20,41 @@ struct AppEnvironment {
   let checkoutBaseURL: URL
   let cdnBaseURL: URL?
   let keychain: KeychainStore
+  /// Shared APIClient. Created once during ``live`` initialization so the
+  /// reducer dependency graph and the ``AppDelegate`` APNs-registration
+  /// path use the same instance — same baseURL, same auth interceptor,
+  /// same in-flight refresh-token coordination.
+  let apiClient: APIClient
+  /// Auth interceptor backing ``apiClient`` and the realtime client's
+  /// access-token getter. Exposed so the realtime client can pick up the
+  /// post-refresh token via a closure without instantiating a second
+  /// interceptor.
+  fileprivate let interceptor: LiveAuthInterceptor
 
   static let live: AppEnvironment = {
     let base = Self.resolvedAPIBaseURL()
     let realtime = Self.resolvedRealtimeBaseURL()
     let checkout = Self.resolvedCheckoutBaseURL()
     let cdn = Self.resolvedCDNBaseURL()
+    let keychain = KeychainStore(service: "com.dankdash.consumer.auth")
+    let interceptor = LiveAuthInterceptor(keychain: keychain)
+    let apiClient = APIClient(
+      baseURL: base,
+      session: URLSession(configuration: .ephemeral),
+      interceptor: interceptor
+    )
     return AppEnvironment(
       apiBaseURL: base,
       realtimeBaseURL: realtime,
       checkoutBaseURL: checkout,
       cdnBaseURL: cdn,
-      keychain: KeychainStore(service: "com.dankdash.consumer.auth")
+      keychain: keychain,
+      apiClient: apiClient,
+      interceptor: interceptor
     )
   }()
 
   func prepareDependencies(_ dependencies: inout DependencyValues) {
-    let interceptor = LiveAuthInterceptor(keychain: keychain)
-    let apiClient = APIClient(
-      baseURL: apiBaseURL,
-      session: URLSession(configuration: .ephemeral),
-      interceptor: interceptor
-    )
     dependencies.authAPIClient = .live(apiClient: apiClient)
     dependencies.tokenStore = .live(keychain: keychain)
     dependencies.catalogAPIClient = .live(apiClient: apiClient)
@@ -60,7 +73,7 @@ struct AppEnvironment {
     dependencies.handoffAPIClient = .live(apiClient: apiClient)
     dependencies.realtimeClient = .live(
       baseURL: realtimeBaseURL,
-      accessToken: { try await interceptor.accessToken() }
+      accessToken: { [interceptor] in try await interceptor.accessToken() }
     )
     dependencies.orderCacheClient = .live()
     dependencies.cartIdStoreClient = .live()

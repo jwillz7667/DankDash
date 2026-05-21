@@ -33,6 +33,28 @@ struct RootView: View {
     .task {
       store.send(.onAppear)
     }
+    .onChange(of: store.pendingDeepLink, initial: true) { _, _ in
+      handleDeepLinkIfReady()
+    }
+    .onChange(of: store.screen) { _, _ in
+      handleDeepLinkIfReady()
+    }
+  }
+
+  /// Resolves the pending deep link if the user is signed-in. Cold-launch
+  /// URLs land in ``RootFeature/State/pendingDeepLink`` before bootstrap
+  /// completes, so we re-evaluate on every screen transition; foreground
+  /// URLs are picked up by the `pendingDeepLink` watcher. Once the route
+  /// is dispatched, ``RootFeature/Action/deepLinkConsumed`` clears it so
+  /// the handler doesn't re-fire on subsequent screen transitions.
+  private func handleDeepLinkIfReady() {
+    guard store.screen == .signedIn,
+          let route = store.pendingDeepLink else { return }
+    switch route {
+    case .orderComplete(let orderId):
+      store.send(.browse(.openOrderTracking(orderId: orderId)))
+      store.send(.deepLinkConsumed)
+    }
   }
 }
 
