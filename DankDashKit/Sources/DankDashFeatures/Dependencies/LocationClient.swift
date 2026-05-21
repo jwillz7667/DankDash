@@ -3,16 +3,32 @@ import Foundation
 import ComposableArchitecture
 import DankDashDomain
 
-/// Authorization status the feature layer cares about. We collapse
-/// `authorizedAlways` and `authorizedWhenInUse` into a single
-/// `.authorized` case because the consumer app only ever needs
-/// `whenInUse` — `always` is reserved for the driver app's background
-/// telemetry.
+/// Authorization status the feature layer cares about.
+///
+/// The consumer app only needs `whenInUse`, so its ``LocationCoordinator``
+/// collapses both authorized variants into `.authorized` (kept for
+/// back-compat with existing consumer reducers). The driver app
+/// distinguishes them via `.authorizedWhenInUse` vs `.authorizedAlways`
+/// because background telemetry requires `Always` and a
+/// `whenInUse`-only grant should surface a rationale to the driver.
 public enum LocationAuthorizationStatus: Sendable, Equatable {
   case notDetermined
   case denied
   case restricted
+  /// Consumer-side collapsed-authorized case (either whenInUse or always).
+  /// New driver code should pattern-match the precise variants below.
   case authorized
+  case authorizedWhenInUse
+  case authorizedAlways
+
+  /// True for any authorized grant — covers all three authorized variants.
+  /// Used by reducers that just need "did the user say yes."
+  public var isAuthorized: Bool {
+    switch self {
+    case .authorized, .authorizedWhenInUse, .authorizedAlways: true
+    case .notDetermined, .denied, .restricted: false
+    }
+  }
 }
 
 /// Errors surfaced by ``LocationClient``. Keep these narrow so reducers
