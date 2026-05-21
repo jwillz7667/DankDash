@@ -3,20 +3,32 @@
  *
  * Guard composition (JwtAuthGuard global, RolesGuard) is verified at the
  * module level. This suite proves the controller forwards the JWT
- * principal's `userId` and the parsed path param verbatim to the
- * service, and returns the service's resolved value unmodified — no
- * accidental projection or shape rewrite in the controller layer.
+ * principal's `userId`, the parsed path param, and the request body
+ * verbatim to the service, and returns the service's resolved value
+ * unmodified — no accidental projection or shape rewrite in the
+ * controller layer.
  *
- *   - GET /:id              → forwards (driverUserId, id) and returns the detail
- *   - GET /:id              → admin role NEVER substituted for the principal's
- *                              own userId (defense in depth — the role guard
- *                              already excludes admin, but the controller pins
- *                              the userId either way)
+ *   - GET /:id                  → forwards (driverUserId, id) and returns the detail
+ *   - GET /:id                  → admin role NEVER substituted for the principal's
+ *                                  own userId (belt and suspenders — the role guard
+ *                                  already excludes admin, but the controller pins
+ *                                  the userId either way)
+ *   - POST /:id/pickup-confirm  → forwards (driverUserId, id, body) and returns detail
+ *   - POST /:id/delivery-confirm → forwards (driverUserId, id, body) and returns detail
+ *
+ * The compliance gate (delivery requires `delivery_id_scan_passed`) and
+ * the FROM-state gate are enforced by `OrdersRepository.transitionStatus`
+ * and exercised by the service- and repo-level tests; the controller
+ * test here only proves the wiring.
  */
 import { describe, expect, it } from 'vitest';
 import { DriverOrdersController } from './driver-orders.controller.js';
 import type { AuthenticatedUser } from '../../auth/guards/auth-types.js';
-import type { DriverOrderDetailResponse } from '../dto/index.js';
+import type {
+  DriverDeliveryConfirmRequest,
+  DriverOrderDetailResponse,
+  DriverPickupConfirmRequest,
+} from '../dto/index.js';
 import type { DriverOrdersService } from '../services/driver-orders.service.js';
 
 const DRIVER_USER_ID = '01935f3d-0000-7000-8000-000000000101';
@@ -79,11 +91,58 @@ const DETAIL: DriverOrderDetailResponse = {
   idScan: { passed: false, verificationId: null, scannedAt: null },
 };
 
+const PICKUP_BODY: DriverPickupConfirmRequest = {
+  location: {
+    latitude: 44.978,
+    longitude: -93.265,
+    accuracyMeters: 7.5,
+    capturedAt: '2026-05-15T20:31:00.000Z',
+  },
+};
+
+const DELIVERY_BODY: DriverDeliveryConfirmRequest = {
+  location: {
+    latitude: 44.953,
+    longitude: -93.094,
+    accuracyMeters: 11.0,
+    capturedAt: '2026-05-15T21:02:00.000Z',
+  },
+  notes: 'Handed to recipient at door',
+};
+
 class FakeDriverOrdersService {
   public getCalls: { driverUserId: string; orderId: string }[] = [];
+  public pickupCalls: {
+    driverUserId: string;
+    orderId: string;
+    body: DriverPickupConfirmRequest;
+  }[] = [];
+  public deliveryCalls: {
+    driverUserId: string;
+    orderId: string;
+    body: DriverDeliveryConfirmRequest;
+  }[] = [];
 
   getForDriver = (driverUserId: string, orderId: string): Promise<DriverOrderDetailResponse> => {
     this.getCalls.push({ driverUserId, orderId });
+    return Promise.resolve(DETAIL);
+  };
+
+  confirmPickup = (
+    driverUserId: string,
+    orderId: string,
+    body: DriverPickupConfirmRequest,
+  ): Promise<DriverOrderDetailResponse> => {
+    this.pickupCalls.push({ driverUserId, orderId, body });
+    return Promise.resolve(DETAIL);
+  };
+
+  confirmDelivery = (
+    driverUserId: string,
+    orderId: string,
+    body: DriverDeliveryConfirmRequest,
+  ): Promise<DriverOrderDetailResponse> => {
+    this.deliveryCalls.push({ driverUserId, orderId, body });
     return Promise.resolve(DETAIL);
   };
 }
@@ -121,5 +180,57 @@ describe('DriverOrdersController', () => {
     await controller.get(admin, ORDER_ID);
 
     expect(service.getCalls[0]?.driverUserId).toBe(admin.userId);
+  });
+
+  it('POST /:id/pickup-confirm forwards the principal userId, path param, and body', async () => {
+    const { controller, service } = makeController();
+
+    const result = await controller.pickupConfirm(PRINCIPAL, ORDER_ID, PICKUP_BODY);
+
+    expect(result).toBe(DETAIL);
+    expect(service.pickupCalls).toEqual([
+      { driverUserId: DRIVER_USER_ID, orderId: ORDER_ID, body: PICKUP_BODY },
+    ]);
+  });
+
+  it('POST /:id/pickup-confirm accepts a null-location body (location-denied device)', async () => {
+    // BackgroundLocationClient may be denied permission after the route
+    // concludes — the handoff must still be recordable. The controller
+    // forwards the body verbatim so the service / event payload sees
+    // location: null and the audit trail captures the denial.
+    const { controller, service } = makeController();
+    const body: DriverPickupConfirmRequest = { location: null };
+
+    await controller.pickupConfirm(PRINCIPAL, ORDER_ID, body);
+
+    expect(service.pickupCalls[0]?.body).toEqual({ location: null });
+  });
+
+  it('POST /:id/delivery-confirm forwards the principal userId, path param, and body', async () => {
+    const { controller, service } = makeController();
+
+    const result = await controller.deliveryConfirm(PRINCIPAL, ORDER_ID, DELIVERY_BODY);
+
+    expect(result).toBe(DETAIL);
+    expect(service.deliveryCalls).toEqual([
+      { driverUserId: DRIVER_USER_ID, orderId: ORDER_ID, body: DELIVERY_BODY },
+    ]);
+  });
+
+  it('POST /:id/delivery-confirm pins the userId to the principal even for an admin token', async () => {
+    // Same belt-and-suspenders shape as the GET test. RolesGuard rejects
+    // non-driver roles, but if an admin token did reach the handler the
+    // controller still uses the principal's userId — the gate is on who
+    // the JWT says you are, never on a body-supplied identifier.
+    const { controller, service } = makeController();
+    const admin: AuthenticatedUser = {
+      userId: '01935f3d-0000-7000-8000-0000000000aa',
+      sessionId: 'sess-admin',
+      role: 'admin',
+    };
+
+    await controller.deliveryConfirm(admin, ORDER_ID, DELIVERY_BODY);
+
+    expect(service.deliveryCalls[0]?.driverUserId).toBe(admin.userId);
   });
 });

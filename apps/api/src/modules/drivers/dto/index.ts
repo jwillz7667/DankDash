@@ -17,3 +17,13 @@ export {
   type DriverIdScanState,
   type DriverOrderDetailResponse,
 } from './driver-order-detail.dto.js';
+export {
+  DriverDeliveryConfirmRequestDto,
+  DriverDeliveryConfirmRequestSchema,
+  DriverLocationFixSchema,
+  DriverPickupConfirmRequestDto,
+  DriverPickupConfirmRequestSchema,
+  type DriverDeliveryConfirmRequest,
+  type DriverLocationFix,
+  type DriverPickupConfirmRequest,
+} from './driver-confirm.dto.js';

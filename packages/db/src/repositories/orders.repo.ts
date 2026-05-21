@@ -1,4 +1,4 @@
-import { NotFoundError, RepositoryError } from '@dankdash/types';
+import { ConflictError, NotFoundError, RepositoryError } from '@dankdash/types';
 import { and, asc, desc, eq, gte, inArray, lt, not, or, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
 import { users } from '../schema/identity.js';
@@ -74,6 +74,16 @@ export interface OrderStatusTransitionInput {
    * Used for cancellations and rejections; ignored otherwise.
    */
   readonly reason?: string | undefined;
+  /**
+   * Optional FROM-state guard. When provided, the row's current status
+   * must be one of these values or the transition is rejected with
+   * `ConflictError('ORDER_STATE_INVALID')`. Callers that already locked
+   * the row in their own SELECT can omit this; callers driving the
+   * state machine from the outside (driver app, vendor portal) pass
+   * the expected predecessor set so two parallel taps cannot double-
+   * transition.
+   */
+  readonly expectedFromStatus?: readonly OrderStatus[] | undefined;
 }
 
 /**
@@ -535,6 +545,21 @@ export class OrdersRepository extends BaseRepository {
    *
    * The repo deliberately knows nothing about the state machine — that
    * stays in `@dankdash/orders`. The resolver is the seam.
+   *
+   * The driver-app `transitionStatus` wrapper (below) layers two
+   * non-bypassable gates on top of the resolver:
+   *
+   *   - **FROM-state guard** (`expectedFromStatus`): the row's current
+   *     status must be one of the expected predecessors or the
+   *     transition throws `ConflictError('ORDER_STATE_INVALID')`. A
+   *     driver double-tapping Confirm Pickup gets a 409, not a silent
+   *     double-transition.
+   *
+   *   - **ID-scan gate**: when `toStatus === 'delivered'` the row must
+   *     carry `delivery_id_scan_passed = true`. Otherwise throws
+   *     `ConflictError('COMPLIANCE_ID_SCAN_REQUIRED')`. Spec §6.2 —
+   *     even a future caller bypassing the service layer cannot reach
+   *     delivered without a Veriff-approved scan recorded on the row.
    */
   async applyTransition(orderId: string, resolve: TransitionResolver): Promise<Order> {
     return this.db.transaction(async (tx) => {
@@ -545,6 +570,7 @@ export class OrdersRepository extends BaseRepository {
           userId: orders.userId,
           dispensaryId: orders.dispensaryId,
           driverId: orders.driverId,
+          deliveryIdScanPassed: orders.deliveryIdScanPassed,
         })
         .from(orders)
         .where(eq(orders.id, orderId))
@@ -560,6 +586,14 @@ export class OrdersRepository extends BaseRepository {
         dispensaryId: lockedRow.dispensaryId,
         driverId: lockedRow.driverId,
       });
+
+      if (decision.toStatus === 'delivered' && lockedRow.deliveryIdScanPassed !== true) {
+        throw new ConflictError(
+          'COMPLIANCE_ID_SCAN_REQUIRED',
+          `order ${orderId} cannot transition to delivered without a successful ID scan`,
+          { orderId },
+        );
+      }
 
       const fromStatus = lockedRow.status;
       const now = new Date();
@@ -609,23 +643,47 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
-   * Legacy unchecked transition — flips status without re-validating
-   * against the locked-in row. Retained for the few callers that have
-   * already validated by other means; new code should call
-   * `applyTransition` so the state-machine check runs under the lock.
+   * Driver-app transition path. Enforces `expectedFromStatus` under the
+   * row lock (via the `applyTransition` resolver), so a driver tap that
+   * races with another status flip serialises and the loser gets a
+   * `ConflictError('ORDER_STATE_INVALID')` instead of a silent
+   * double-transition. The ID-scan gate is enforced inside
+   * `applyTransition` for any caller — bypassable only by inserting a
+   * `delivery_id_scan_passed = true` row out-of-band.
    *
-   * @deprecated Use `applyTransition` with a resolver.
+   * The state-machine resolver-based path (`applyTransition` directly)
+   * remains the canonical surface for non-driver callers (vendor,
+   * customer, system); this wrapper exists for the Phase 20 driver-app
+   * endpoints that need to assert "I expect to be transitioning from
+   * one of these states" without rebuilding the resolver pattern.
    */
   async transitionStatus(input: OrderStatusTransitionInput): Promise<Order> {
-    return this.applyTransition(input.orderId, () => ({
-      toStatus: input.toStatus,
-      eventType: input.eventType,
-      actorUserId: input.actorUserId,
-      actorRole: input.actorRole,
-      payload: input.payload,
-      patch: input.patch,
-      reason: input.reason,
-    }));
+    return this.applyTransition(input.orderId, (locked) => {
+      if (
+        input.expectedFromStatus !== undefined &&
+        !input.expectedFromStatus.includes(locked.status)
+      ) {
+        throw new ConflictError(
+          'ORDER_STATE_INVALID',
+          `order ${input.orderId} is in status ${locked.status}, expected one of [${input.expectedFromStatus.join(', ')}]`,
+          {
+            orderId: input.orderId,
+            currentStatus: locked.status,
+            expectedFromStatus: [...input.expectedFromStatus],
+            toStatus: input.toStatus,
+          },
+        );
+      }
+      return {
+        toStatus: input.toStatus,
+        eventType: input.eventType,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        payload: input.payload,
+        patch: input.patch,
+        reason: input.reason,
+      };
+    });
   }
 
   /**

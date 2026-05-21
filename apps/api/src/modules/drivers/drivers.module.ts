@@ -7,8 +7,13 @@
  *     POST /v1/driver/status)
  *   - driver-self offers surface (accept/decline dispatch offers)
  *   - driver-self app surface (DriverAppController)
- *   - driver-orders surface (Phase 20): GET /v1/driver/orders/:id and the
- *     pickup-confirm / delivery-confirm / id-scan endpoints that follow
+ *   - driver-orders surface (Phase 20):
+ *       GET  /v1/driver/orders/:id
+ *       POST /v1/driver/orders/:id/pickup-confirm
+ *       POST /v1/driver/orders/:id/delivery-confirm   (ID-scan gated)
+ *       POST /v1/driver/orders/:id/id-scan-session    (Veriff)
+ *       POST /v1/driver/orders/:id/id-scan-result     (Veriff)
+ *       POST /v1/driver/cashout
  *   - DriverContextGuard, exported so future driver-self modules can
  *     `@UseGuards(DriverContextGuard)` without re-declaring the guard's
  *     repo provider
@@ -26,10 +31,12 @@
  * AuthModule import gives the admin controller access to RolesGuard;
  * JwtAuthGuard is already bound globally in the root composition.
  *
- * OrdersModule is imported so DriverOrdersService and the upcoming
- * pickup-confirm / delivery-confirm endpoints can inject
+ * OrdersModule is imported so the offer-accept and driver-orders
+ * pickup-confirm / delivery-confirm flows can inject
  * OrderTransitionService — the canonical status-transition path with
- * realtime fan-out.
+ * Redis publish + realtime fan-out. Calling
+ * `OrdersRepository.transitionStatus` directly would skip the publish
+ * and break the iOS / portal live status update.
  */
 import {
   DispatchOffersRepository,
@@ -184,8 +191,8 @@ const driverAppServiceProvider: FactoryProvider<DriverAppService> = {
 
 const driverOrdersServiceProvider: FactoryProvider<DriverOrdersService> = {
   provide: DriverOrdersService,
-  inject: [DRIZZLE_DB],
-  useFactory: (db: Database): DriverOrdersService =>
+  inject: [DRIZZLE_DB, OrderTransitionService],
+  useFactory: (db: Database, orderTransitions: OrderTransitionService): DriverOrdersService =>
     new DriverOrdersService(
       db,
       (scopedDb): DriverOrdersScopedRepos => ({
@@ -195,6 +202,7 @@ const driverOrdersServiceProvider: FactoryProvider<DriverOrdersService> = {
         users: new UsersRepository(scopedDb),
         dispensaries: new DispensariesRepository(scopedDb),
       }),
+      orderTransitions,
     ),
 };
 

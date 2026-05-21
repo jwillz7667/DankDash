@@ -1,10 +1,12 @@
 /**
- * DriverOrdersService — the driver app's read surface for the order
- * currently in their hands.
+ * DriverOrdersService — the driver app's read + write surface for an
+ * order currently in their hands.
  *
- *   GET /v1/driver/orders/:id   → DriverOrderDetailResponse
+ *   GET  /v1/driver/orders/:id                   → DriverOrderDetailResponse
+ *   POST /v1/driver/orders/:id/pickup-confirm    → DriverOrderDetailResponse
+ *   POST /v1/driver/orders/:id/delivery-confirm  → DriverOrderDetailResponse
  *
- * Two structural choices to flag:
+ * Three structural choices to flag:
  *
  *   1. Driver-scoped lookups. Every query pairs (orderId, driverUserId)
  *      in the WHERE so a cross-driver id resolves to null and surfaces as
@@ -18,6 +20,13 @@
  *      delete the address after checkout; the driver still needs the
  *      original drop. The dispensary and customer rows are joined live
  *      because their identifiers do not change.
+ *
+ *   3. Status transitions never bypass OrderTransitionService. The pickup-
+ *      and delivery-confirm flows hand the driver-supplied location +
+ *      timestamp through as the event payload; the XState machine in
+ *      `@dankdash/orders` enforces legal predecessors, and the ID-scan
+ *      compliance gate lives in OrdersRepository so even a future caller
+ *      can't reach `delivered` without a Veriff pass.
  *
  * The customer's last name is initialed ("Sam J.") at the boundary; the
  * raw last name never leaves the service. Phone is masked to last-4 —
@@ -45,12 +54,15 @@ import {
   type OrderResponse,
 } from '../../checkout/dto/index.js';
 import { type OrderEventResponse } from '../../orders/dto/index.js';
+import { OrderTransitionService } from '../../orders/order-transition.service.js';
 import type {
   DriverCustomerSummary,
+  DriverDeliveryConfirmRequest,
   DriverDispensarySummary,
   DriverDropoffAddress,
   DriverIdScanState,
   DriverOrderDetailResponse,
+  DriverPickupConfirmRequest,
 } from '../dto/index.js';
 
 export interface DriverOrdersScopedRepos {
@@ -68,6 +80,7 @@ export class DriverOrdersService {
   constructor(
     private readonly db: Database,
     private readonly reposFor: DriverOrdersScopedReposFactory,
+    private readonly orderTransitions: OrderTransitionService,
   ) {}
 
   /**
@@ -88,9 +101,93 @@ export class DriverOrdersService {
     if (order === null) {
       throw new NotFoundError('Order', orderId);
     }
+    return this.hydrate(scoped, order);
+  }
+
+  /**
+   * POST /v1/driver/orders/:id/pickup-confirm. Transitions the order
+   * to `en_route_pickup` and writes an `order_pickup_confirmed` event
+   * carrying the driver's location at the moment of the tap.
+   *
+   * Allowed FROM-states are `driver_assigned` (the dispatcher just
+   * handed off the offer and the driver accepted) or `en_route_pickup`
+   * itself (idempotent re-tap after a 5xx — the response shape is the
+   * same as the first call). Any other state returns 409 from the
+   * repository.
+   *
+   * The returned detail is the freshly-hydrated projection — the iOS
+   * client renders it without a follow-up GET.
+   */
+  async confirmPickup(
+    driverUserId: string,
+    orderId: string,
+    body: DriverPickupConfirmRequest,
+  ): Promise<DriverOrderDetailResponse> {
+    const scoped = this.reposFor(this.db);
+    const order = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (order === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    await this.orderTransitions.transition({
+      orderId,
+      event: 'DRIVER_EN_ROUTE_PICKUP',
+      actor: { userId: driverUserId, role: 'driver' },
+      payload: { location: body.location },
+    });
+    const refreshed = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (refreshed === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    return this.hydrate(scoped, refreshed);
+  }
+
+  /**
+   * POST /v1/driver/orders/:id/delivery-confirm. Transitions the order
+   * to `delivered` and writes an `order_delivered` event carrying
+   * location, timestamp, and any free-text driver note.
+   *
+   * Two gates fire inside OrdersRepository.transitionStatus:
+   *
+   *   - FROM-state in {`en_route_dropoff`, `arrived_at_dropoff`,
+   *     `id_scan_passed`}. Anything else is 409 ORDER_STATE_INVALID.
+   *
+   *   - `delivery_id_scan_passed === true` on the row. Without it the
+   *     repo throws 409 COMPLIANCE_ID_SCAN_REQUIRED — the non-bypassable
+   *     handoff per Phase 20 §20.3.
+   *
+   * `deliveredAt` is set in the same UPDATE via the patch field so the
+   * timestamp is co-committed with the status change.
+   */
+  async confirmDelivery(
+    driverUserId: string,
+    orderId: string,
+    body: DriverDeliveryConfirmRequest,
+  ): Promise<DriverOrderDetailResponse> {
+    const scoped = this.reposFor(this.db);
+    const order = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (order === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    await this.orderTransitions.transition({
+      orderId,
+      event: 'DRIVER_DELIVERED',
+      actor: { userId: driverUserId, role: 'driver' },
+      payload: { location: body.location, notes: body.notes },
+    });
+    const refreshed = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (refreshed === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    return this.hydrate(scoped, refreshed);
+  }
+
+  private async hydrate(
+    scoped: DriverOrdersScopedRepos,
+    order: Order,
+  ): Promise<DriverOrderDetailResponse> {
     const [items, events, customer, dispensary] = await Promise.all([
-      scoped.orderItems.listForOrder(orderId),
-      scoped.orderEvents.listTimelineForOrder(orderId),
+      scoped.orderItems.listForOrder(order.id),
+      scoped.orderEvents.listTimelineForOrder(order.id),
       scoped.users.findById(order.userId),
       scoped.dispensaries.findById(order.dispensaryId),
     ]);
