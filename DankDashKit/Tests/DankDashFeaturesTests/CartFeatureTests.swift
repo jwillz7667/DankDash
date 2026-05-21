@@ -416,6 +416,124 @@ final class CartFeatureTests: XCTestCase {
     await store.send(.selectAddress(UUID()))
     // Unknown id rejected by guard — no state change.
   }
+
+  // MARK: - Address picker
+
+  func test_openAddressPickerTapped_mountsPickerWithCurrentSelection() async {
+    let a = makeAddress(isDefault: true)
+    let b = makeAddress(isDefault: false)
+    let store = TestStore(
+      initialState: CartFeature.State(
+        availableAddresses: [a, b],
+        selectedAddressId: b.id
+      )
+    ) {
+      CartFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.openAddressPickerTapped) {
+      $0.addressPicker = AddressPickerFeature.State(
+        addresses: [a, b],
+        selectedAddressId: b.id
+      )
+    }
+  }
+
+  func test_addressPickerDelegateSelected_picksUpAndFiresValidate() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let clock = TestClock()
+    let a = makeAddress(isDefault: true)
+    let cart = makeCart(items: [makeCartItem()], expiresAt: referenceDate.addingTimeInterval(1_800))
+    let passing = makeEvaluation(passed: true)
+
+    let store = TestStore(
+      initialState: CartFeature.State(
+        serverCart: cart,
+        availableAddresses: [a],
+        selectedAddressId: a.id,
+        addressPicker: AddressPickerFeature.State(addresses: [a], selectedAddressId: a.id)
+      )
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.date = .constant(referenceDate)
+      $0.cartAPIClient.validate = { _, _ in passing }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.addressPicker(.delegate(.addressSelected(a)))) {
+      $0.addressPicker = nil
+    }
+    await store.receive(\.addressPicked)
+    await clock.advance(by: .milliseconds(350))
+    await store.receive(\.validateFired)
+    await store.receive(\.validationCompleted.success)
+  }
+
+  func test_addressPickerDelegateDismissed_unmountsPicker() async {
+    let store = TestStore(
+      initialState: CartFeature.State(
+        addressPicker: AddressPickerFeature.State()
+      )
+    ) {
+      CartFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.addressPicker(.delegate(.dismissed))) {
+      $0.addressPicker = nil
+    }
+  }
+
+  func test_addressPicked_unknownNewAddress_isInsertedAndSelected() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let clock = TestClock()
+    let existing = makeAddress(isDefault: true)
+    let fresh = makeAddress(isDefault: false)
+    let cart = makeCart(items: [makeCartItem()], expiresAt: referenceDate.addingTimeInterval(1_800))
+    let passing = makeEvaluation(passed: true)
+
+    let store = TestStore(
+      initialState: CartFeature.State(
+        serverCart: cart,
+        availableAddresses: [existing],
+        selectedAddressId: existing.id
+      )
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.date = .constant(referenceDate)
+      $0.cartAPIClient.validate = { _, _ in passing }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.addressPicked(fresh)) {
+      $0.availableAddresses = [fresh, existing]
+      $0.selectedAddressId = fresh.id
+    }
+    await store.receive(\.validateRequested)
+    await clock.advance(by: .milliseconds(350))
+    await store.receive(\.validateFired)
+    await store.receive(\.validationCompleted.success)
+  }
+
+  func test_addressPicked_withoutServerCart_skipsValidate() async {
+    let fresh = makeAddress(isDefault: false)
+    let store = TestStore(
+      initialState: CartFeature.State()
+    ) {
+      CartFeature()
+    }
+
+    await store.send(.addressPicked(fresh)) {
+      $0.availableAddresses = [fresh]
+      $0.selectedAddressId = fresh.id
+    }
+    // No serverCart → guard skips validate; no further actions to receive.
+  }
 }
 
 // MARK: - Free-function helpers

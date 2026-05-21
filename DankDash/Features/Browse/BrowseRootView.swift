@@ -5,14 +5,23 @@ import DankDashDomain
 import DankDashFeatures
 import DankDashNetwork
 
-/// Top-level post-auth surface — four bottom tabs (Feed / Search / Cart /
-/// Account) plus the optional drill-down stack (Storefront → Product
-/// Detail). The drill-down is presented as a SwiftUI navigation
+/// Top-level post-auth surface — five bottom tabs (Feed / Search / Cart /
+/// Orders / Account) plus the optional drill-down stack (Storefront →
+/// Product Detail). The drill-down is presented as a SwiftUI navigation
 /// destination off the Feed tab so back gestures work as expected.
+///
+/// Phase-18 additions:
+///   • Cart tab swaps the placeholder ``CartTabView`` for the full
+///     ``CartView`` (server-cart promotion + compliance + Safari CTA).
+///   • The Safari hand-off sheet (``CheckoutSafariView``) is mounted at
+///     this layer because ``BrowseFeature`` owns the `checkoutHandoff`
+///     child — the cart's CTA only dispatches the delegate that
+///     promotes it.
 struct BrowseRootView: View {
   @Bindable var store: StoreOf<BrowseFeature>
   let user: UserSummaryDTO?
   let onSignOut: () -> Void
+  @Dependency(\.cdnBaseURL) private var cdnBaseURL
 
   var body: some View {
     TabView(
@@ -74,7 +83,10 @@ struct BrowseRootView: View {
       .tag(BrowseFeature.Tab.search)
 
       NavigationStack {
-        CartTabView(store: store.scope(state: \.cart, action: \.cart))
+        CartView(
+          store: store.scope(state: \.cart, action: \.cart),
+          cdnBaseURL: cdnBaseURL
+        )
       }
       .tabItem {
         Label("Cart", systemImage: "bag")
@@ -107,6 +119,18 @@ struct BrowseRootView: View {
       }
     }
     .animation(.easeInOut(duration: 0.2), value: store.addedToCartToast)
+    .sheet(
+      isPresented: Binding(
+        get: { store.checkoutHandoff != nil },
+        set: { isPresented in
+          if !isPresented { store.send(.checkoutHandoffDismissed) }
+        }
+      )
+    ) {
+      if let handoffStore = store.scope(state: \.checkoutHandoff, action: \.checkoutHandoff) {
+        CheckoutSafariView(store: handoffStore)
+      }
+    }
   }
 
   /// Badge for the Cart tab — counts unpromoted draft lines plus any

@@ -230,6 +230,13 @@ public struct BrowseFeature: Sendable {
             maxAvailable: maxAvailable
           )
         )
+        // Mirror catalog-level fields into the cart's productInfo so the
+        // cart row can render brand / name after the draft is cleared on
+        // promotion.
+        state.cart.productInfo[listingId] = ListingProductInfo(
+          name: productName,
+          brand: brand
+        )
         if let detailDispensaryId {
           state.cart.dispensaryId = detailDispensaryId
         }
@@ -307,11 +314,13 @@ public struct BrowseFeature: Sendable {
           return .none
         }
         var draft = LocalCartDraft()
+        var productInfo: [UUID: ListingProductInfo] = [:]
         for item in order.items {
           let snapshot = item.productSnapshot.object
           let productId = snapshot?["id"]?.string.flatMap(UUID.init(uuidString:)) ?? UUID()
           let name = snapshot?["name"]?.string ?? "Reorder item"
           let brand = snapshot?["brand"]?.string ?? ""
+          let imageKey = snapshot?["imageKey"]?.string
           draft.add(
             LocalCartDraft.Line(
               listingId: item.listingId,
@@ -323,10 +332,16 @@ public struct BrowseFeature: Sendable {
               maxAvailable: max(item.quantity, 1)
             )
           )
+          productInfo[item.listingId] = ListingProductInfo(
+            name: name,
+            brand: brand,
+            imageKey: imageKey
+          )
         }
         state.cart = CartFeature.State(
           draft: draft,
-          dispensaryId: order.dispensaryId
+          dispensaryId: order.dispensaryId,
+          productInfo: productInfo
         )
         state.orderDetail = nil
         state.selectedTab = .cart

@@ -195,6 +195,11 @@ final class BrowseFeatureTests: XCTestCase {
     XCTAssertEqual(store.state.cart.draft.lines.first?.priceCents, 3500)
     XCTAssertEqual(store.state.cart.draft.lines.first?.quantity, 1)
     XCTAssertEqual(store.state.cart.dispensaryId, dispensaryId, "First addedToCart pins the cart's dispensary so promotion can run.")
+    XCTAssertEqual(
+      store.state.cart.productInfo[listingId],
+      ListingProductInfo(name: "Sour Diesel", brand: "Brand"),
+      "productInfo snapshot is captured so the cart row can render after the draft is cleared on promotion."
+    )
   }
 
   func test_toastDismissed_clearsToast() async {
@@ -506,6 +511,17 @@ final class BrowseFeatureTests: XCTestCase {
 
     let lineB = store.state.cart.draft.lines.first { $0.listingId == listingB }
     XCTAssertEqual(lineB?.productName, "Reorder item", "Missing snapshot fields fall back to placeholder copy.")
+
+    XCTAssertEqual(
+      store.state.cart.productInfo[listingA],
+      ListingProductInfo(name: "Sour Diesel 1g", brand: "North Star"),
+      "Reorder seeds the cart's productInfo from each order item's productSnapshot."
+    )
+    XCTAssertEqual(
+      store.state.cart.productInfo[listingB]?.name,
+      "Reorder item",
+      "Empty snapshot falls back to placeholder copy in productInfo too."
+    )
   }
 
   func test_orderDetailDelegateReorderRequestedWithoutOrder_isNoop() async {

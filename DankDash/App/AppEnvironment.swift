@@ -16,16 +16,19 @@ import DankDashFeatures
 /// should ever build a checkout surface.
 struct AppEnvironment {
   let apiBaseURL: URL
+  let realtimeBaseURL: URL
   let checkoutBaseURL: URL
   let cdnBaseURL: URL?
   let keychain: KeychainStore
 
   static let live: AppEnvironment = {
     let base = Self.resolvedAPIBaseURL()
+    let realtime = Self.resolvedRealtimeBaseURL()
     let checkout = Self.resolvedCheckoutBaseURL()
     let cdn = Self.resolvedCDNBaseURL()
     return AppEnvironment(
       apiBaseURL: base,
+      realtimeBaseURL: realtime,
       checkoutBaseURL: checkout,
       cdnBaseURL: cdn,
       keychain: KeychainStore(service: "com.dankdash.consumer.auth")
@@ -46,6 +49,25 @@ struct AppEnvironment {
     dependencies.locationClient = .live
     dependencies.documentDownloadClient = .live
     dependencies.cdnBaseURL = cdnBaseURL
+
+    // Phase-18 additions: cart + orders + addresses + handoff +
+    // realtime + storage + URL opener + map + push. Every reducer
+    // pulls these via `@Dependency`, so they need a live binding
+    // before the root store is constructed.
+    dependencies.cartAPIClient = .live(apiClient: apiClient)
+    dependencies.ordersAPIClient = .live(apiClient: apiClient)
+    dependencies.addressAPIClient = .live(apiClient: apiClient)
+    dependencies.handoffAPIClient = .live(apiClient: apiClient)
+    dependencies.realtimeClient = .live(
+      baseURL: realtimeBaseURL,
+      accessToken: { try await interceptor.accessToken() }
+    )
+    dependencies.orderCacheClient = .live()
+    dependencies.cartIdStoreClient = .live()
+    dependencies.urlOpenerClient = .live
+    dependencies.mapClient = .live
+    dependencies.pushNotificationClient = .live
+    dependencies.geocodingClient = .live
   }
 
   /// API base URL is overridable via the `DANKDASH_API_BASE_URL`
@@ -70,6 +92,23 @@ struct AppEnvironment {
       return url
     }
     return URL(string: "https://app.dankdash.com/checkout")!
+  }
+
+  /// Socket.io endpoint for ``RealtimeClient``. Debug builds default to
+  /// the local realtime server (`apps/realtime` on port 8081);
+  /// production uses `wss://realtime.dankdash.com`. The
+  /// `DANKDASH_REALTIME_BASE_URL` Info.plist key allows staging /
+  /// preview builds to point at a non-default host.
+  private static func resolvedRealtimeBaseURL() -> URL {
+    if let override = Bundle.main.object(forInfoDictionaryKey: "DANKDASH_REALTIME_BASE_URL") as? String,
+       let url = URL(string: override) {
+      return url
+    }
+    #if DEBUG
+    return URL(string: "http://localhost:8081")!
+    #else
+    return URL(string: "https://realtime.dankdash.com")!
+    #endif
   }
 
   /// CDN base URL used for image / document composition. Overridable

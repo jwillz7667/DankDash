@@ -63,6 +63,17 @@ public struct CartFeature: Sendable {
     /// the countdown banner. `nil` when there is no server cart yet.
     public var expirySecondsRemaining: Int?
 
+    /// Catalog projection captured at "Add to cart" time so the cart
+    /// screen can render brand / product name / image without re-hitting
+    /// the catalog cache. The parent ``BrowseFeature`` mirrors product
+    /// detail into this map; it survives across the draft-to-server
+    /// promotion (which clears ``draft``).
+    public var productInfo: [UUID: ListingProductInfo]
+
+    /// Mounted address picker. Driven by ``Action/openAddressPickerTapped``;
+    /// dismissed when the picker emits its delegate.
+    public var addressPicker: AddressPickerFeature.State?
+
     public init(
       draft: LocalCartDraft = LocalCartDraft(),
       dispensaryId: UUID? = nil,
@@ -74,7 +85,9 @@ public struct CartFeature: Sendable {
       isPromoting: Bool = false,
       isValidating: Bool = false,
       error: String? = nil,
-      expirySecondsRemaining: Int? = nil
+      expirySecondsRemaining: Int? = nil,
+      productInfo: [UUID: ListingProductInfo] = [:],
+      addressPicker: AddressPickerFeature.State? = nil
     ) {
       self.draft = draft
       self.dispensaryId = dispensaryId
@@ -87,6 +100,8 @@ public struct CartFeature: Sendable {
       self.isValidating = isValidating
       self.error = error
       self.expirySecondsRemaining = expirySecondsRemaining
+      self.productInfo = productInfo
+      self.addressPicker = addressPicker
     }
 
     /// Convenience selector — the picked address row, if any.
@@ -112,6 +127,9 @@ public struct CartFeature: Sendable {
 
     case addressesLoaded(Result<[UserAddress], EquatableError>)
     case selectAddress(UUID)
+    case addressPicked(UserAddress)
+    case openAddressPickerTapped
+    case addressPicker(AddressPickerFeature.Action)
 
     case promotionRequested
     case cartCreated(Result<Cart, EquatableError>)
@@ -192,6 +210,38 @@ public struct CartFeature: Sendable {
         state.selectedAddressId = id
         guard state.serverCart != nil else { return .none }
         return .send(.validateRequested)
+
+      case .addressPicked(let address):
+        // Upsert: if the picker created a brand-new row, splice it into
+        // the cart's local list so the address row + downstream validate
+        // reads have the address available without a re-fetch round
+        // trip.
+        if let existing = state.availableAddresses.firstIndex(where: { $0.id == address.id }) {
+          state.availableAddresses[existing] = address
+        } else {
+          state.availableAddresses.insert(address, at: 0)
+        }
+        state.selectedAddressId = address.id
+        guard state.serverCart != nil else { return .none }
+        return .send(.validateRequested)
+
+      case .openAddressPickerTapped:
+        state.addressPicker = AddressPickerFeature.State(
+          addresses: state.availableAddresses,
+          selectedAddressId: state.selectedAddressId
+        )
+        return .none
+
+      case .addressPicker(.delegate(.addressSelected(let address))):
+        state.addressPicker = nil
+        return .send(.addressPicked(address))
+
+      case .addressPicker(.delegate(.dismissed)):
+        state.addressPicker = nil
+        return .none
+
+      case .addressPicker:
+        return .none
 
       // MARK: Promotion
 
@@ -349,6 +399,9 @@ public struct CartFeature: Sendable {
         return .none
       }
     }
+    .ifLet(\.addressPicker, action: \.addressPicker) {
+      AddressPickerFeature()
+    }
   }
 
   // MARK: - Effect builders
@@ -429,6 +482,29 @@ private extension Cart {
       createdAt: createdAt,
       updatedAt: updatedAt
     )
+  }
+}
+
+// MARK: - ListingProductInfo
+
+/// Brand + product-name + image-key snapshot keyed by `listingId`.
+/// Populated by ``BrowseFeature`` when the user adds a product to the
+/// draft (or reorders an order's items), and read by the cart screen to
+/// render line rows after promotion has cleared the draft.
+///
+/// Lives here rather than in ``DankDashDomain`` because nothing on the
+/// wire carries it — it's a UI-side join cache. The catalog
+/// read-through that supplants this lands with Phase 19's order-history
+/// surface.
+public struct ListingProductInfo: Equatable, Hashable, Sendable {
+  public let name: String
+  public let brand: String
+  public let imageKey: String?
+
+  public init(name: String, brand: String, imageKey: String? = nil) {
+    self.name = name
+    self.brand = brand
+    self.imageKey = imageKey
   }
 }
 
