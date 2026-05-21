@@ -47,7 +47,10 @@ let package = Package(
       name: "DankDashStorageTests",
       dependencies: ["DankDashStorage", "DankDashDomain"]
     ),
-    .testTarget(name: "DankDashNetworkTests", dependencies: ["DankDashNetwork"]),
+    .testTarget(
+      name: "DankDashNetworkTests",
+      dependencies: ["DankDashNetwork", "DankDashDomain"]
+    ),
     .testTarget(
       name: "DankDashFeaturesTests",
       dependencies: [
