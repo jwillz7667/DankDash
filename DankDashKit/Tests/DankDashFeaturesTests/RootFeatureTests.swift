@@ -184,6 +184,110 @@ final class RootFeatureTests: XCTestCase {
     XCTAssertTrue(wasCleared, "TokenStore.clear must run on sign-out so future launches re-auth.")
   }
 
+  func test_deepLinkReceived_orderComplete_stashesPendingRoute() async {
+    let orderId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let store = TestStore(initialState: RootFeature.State(screen: .signedIn)) {
+      RootFeature()
+    }
+
+    let url = URL(string: "dankdash://order/complete?orderId=\(orderId.uuidString)")!
+    await store.send(.deepLinkReceived(url)) {
+      $0.pendingDeepLink = .orderComplete(orderId: orderId)
+    }
+  }
+
+  func test_deepLinkReceived_unknownURL_isSilentlyIgnored() async {
+    let store = TestStore(initialState: RootFeature.State(screen: .signedIn)) {
+      RootFeature()
+    }
+
+    let url = URL(string: "https://example.com/somewhere")!
+    await store.send(.deepLinkReceived(url))
+  }
+
+  func test_deepLinkReceived_malformedOrderId_isSilentlyIgnored() async {
+    let store = TestStore(initialState: RootFeature.State(screen: .signedIn)) {
+      RootFeature()
+    }
+
+    let url = URL(string: "dankdash://order/complete?orderId=not-a-uuid")!
+    await store.send(.deepLinkReceived(url))
+  }
+
+  func test_deepLinkConsumed_clearsPendingRoute() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: RootFeature.State(
+        screen: .signedIn,
+        pendingDeepLink: .orderComplete(orderId: orderId)
+      )
+    ) {
+      RootFeature()
+    }
+
+    await store.send(.deepLinkConsumed) {
+      $0.pendingDeepLink = nil
+    }
+  }
+
+  func test_deepLinkReceived_duringBootstrap_survivesBootstrapResolution() async {
+    let orderId = UUID()
+    let store = TestStore(initialState: RootFeature.State()) {
+      RootFeature()
+    } withDependencies: {
+      $0.tokenStore = TokenStore(
+        loadAccess: { "access" },
+        loadRefresh: { "refresh" },
+        persist: { _ in },
+        clear: {}
+      )
+    }
+
+    let url = URL(string: "dankdash://order/complete?orderId=\(orderId.uuidString)")!
+    await store.send(.deepLinkReceived(url)) {
+      $0.pendingDeepLink = .orderComplete(orderId: orderId)
+    }
+
+    await store.send(.onAppear)
+    await store.receive(\.bootstrapResolved) {
+      $0.screen = .signedIn
+    }
+
+    XCTAssertEqual(store.state.pendingDeepLink, .orderComplete(orderId: orderId))
+  }
+
+  func test_signOut_clearsPendingDeepLink() async {
+    let cleared = ClearedRecorder()
+    let store = TestStore(
+      initialState: RootFeature.State(
+        screen: .signedIn,
+        signedInUser: LoginFeatureTests.sampleUser,
+        pendingDeepLink: .orderComplete(orderId: UUID())
+      )
+    ) {
+      RootFeature()
+    } withDependencies: {
+      $0.tokenStore = TokenStore(
+        loadAccess: { nil },
+        loadRefresh: { nil },
+        persist: { _ in },
+        clear: { await cleared.markCleared() }
+      )
+    }
+
+    await store.send(.signOutTapped) {
+      $0.signedInUser = nil
+      $0.login = .init()
+      $0.signUp = .init()
+      $0.forgotPassword = nil
+      $0.authScreen = .login
+      $0.screen = .auth
+      $0.browse = .init()
+      $0.pendingDeepLink = nil
+    }
+    await store.finish()
+  }
+
   static let referenceDate: Date = {
     var components = DateComponents()
     components.year = 2026

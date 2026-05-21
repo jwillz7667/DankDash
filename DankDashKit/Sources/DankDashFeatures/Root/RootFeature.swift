@@ -34,6 +34,15 @@ public struct RootFeature: Sendable {
     public var signedInUser: UserSummaryDTO?
     public var browse: BrowseFeature.State
 
+    /// Parsed-but-not-yet-handled deep link. Set by ``Action/deepLinkReceived``
+    /// when a `dankdash://...` URL lands while the app is foreground or
+    /// resumed; cleared by ``Action/deepLinkConsumed`` once the view
+    /// layer has acted on it (typically by switching tab and pushing
+    /// the matching screen). Stays on State across screen rebuilds so a
+    /// deep link that arrives during bootstrap survives the
+    /// `bootstrapping → signedIn` transition.
+    public var pendingDeepLink: DeepLinkRoute?
+
     public enum Screen: Equatable, Sendable {
       case bootstrapping
       case ageGate
@@ -55,7 +64,8 @@ public struct RootFeature: Sendable {
       forgotPassword: ForgotPasswordFeature.State? = nil,
       authScreen: AuthScreen = .login,
       signedInUser: UserSummaryDTO? = nil,
-      browse: BrowseFeature.State = .init()
+      browse: BrowseFeature.State = .init(),
+      pendingDeepLink: DeepLinkRoute? = nil
     ) {
       self.screen = screen
       self.ageGate = ageGate
@@ -65,6 +75,7 @@ public struct RootFeature: Sendable {
       self.authScreen = authScreen
       self.signedInUser = signedInUser
       self.browse = browse
+      self.pendingDeepLink = pendingDeepLink
     }
   }
 
@@ -80,6 +91,19 @@ public struct RootFeature: Sendable {
     case forgotPassword(ForgotPasswordFeature.Action)
     case browse(BrowseFeature.Action)
     case signOutTapped
+
+    /// Surface for `SwiftUI.View.onOpenURL` — receives every URL the
+    /// app is launched with or resumed by. The reducer parses via
+    /// ``DeepLinkRouter/route(_:)``; unknown URLs are silently
+    /// ignored so the rest of the app stays insulated from arbitrary
+    /// input.
+    case deepLinkReceived(URL)
+
+    /// Surface for the view layer to ack a pending deep link once it
+    /// has finished the navigation work (switching tab + pushing the
+    /// matching detail screen). Clearing the route prevents a re-trigger
+    /// on the next view rebuild.
+    case deepLinkConsumed
   }
 
   @Dependency(\.tokenStore) var tokens
@@ -173,9 +197,22 @@ public struct RootFeature: Sendable {
         state.authScreen = .login
         state.screen = .auth
         state.browse = .init()
+        state.pendingDeepLink = nil
         return .run { _ in
           await tokens.clear()
         }
+
+      case .deepLinkReceived(let url):
+        // Pure parse. Unknown / malformed URLs are silently ignored —
+        // arbitrary URLs can land in `.onOpenURL` and we don't surface
+        // a banner for them.
+        guard let route = DeepLinkRouter.route(url) else { return .none }
+        state.pendingDeepLink = route
+        return .none
+
+      case .deepLinkConsumed:
+        state.pendingDeepLink = nil
+        return .none
       }
     }
     .ifLet(\.forgotPassword, action: \.forgotPassword) {
