@@ -14,6 +14,7 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.15.0"),
     .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0"),
+    .package(url: "https://github.com/socketio/socket.io-client-swift", from: "16.1.0"),
   ],
   targets: [
     .target(name: "DankDashDomain"),
@@ -36,6 +37,7 @@ let package = Package(
         "DankDashStorage",
         "DankDashNetwork",
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
+        .product(name: "SocketIO", package: "socket.io-client-swift"),
       ]
     ),
     .testTarget(name: "DankDashDomainTests", dependencies: ["DankDashDomain"]),
