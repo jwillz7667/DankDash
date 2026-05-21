@@ -371,22 +371,27 @@
 /* Begin XCSwiftPackageProductDependency section */
 		4A6B5C01000000000000B001 /* DankDashDomain */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
 			productName = DankDashDomain;
 		};
 		4A6B5C01000000000000B002 /* DankDashDesignSystem */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
 			productName = DankDashDesignSystem;
 		};
 		4A6B5C01000000000000B003 /* DankDashStorage */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
 			productName = DankDashStorage;
 		};
 		4A6B5C01000000000000B004 /* DankDashNetwork */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
 			productName = DankDashNetwork;
 		};
 		4A6B5C01000000000000B005 /* DankDashFeatures */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
 			productName = DankDashFeatures;
 		};
 /* End XCSwiftPackageProductDependency section */
