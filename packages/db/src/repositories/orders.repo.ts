@@ -295,6 +295,24 @@ export class OrdersRepository extends BaseRepository {
     return row ?? null;
   }
 
+  /**
+   * Veriff webhook lookup fallback. When a webhook arrives without a
+   * usable `vendorData` (truncated or stripped by a proxy), the
+   * receiver still has the verification id and can find the order via
+   * the partial `orders_delivery_id_scan_ref_idx`. The webhook handler
+   * cross-checks `deliveryIdScanRef` after the lookup so a leftover
+   * value from a previous session does not let a stale webhook
+   * mutate the wrong order.
+   */
+  async findByDeliveryIdScanRef(deliveryIdScanRef: string): Promise<Order | null> {
+    const [row] = await this.db
+      .select()
+      .from(orders)
+      .where(eq(orders.deliveryIdScanRef, deliveryIdScanRef))
+      .limit(1);
+    return row ?? null;
+  }
+
   async listForDispensary(
     dispensaryId: string,
     status?: OrderStatus,

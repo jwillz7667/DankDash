@@ -8,13 +8,16 @@
  * unmodified — no accidental projection or shape rewrite in the
  * controller layer.
  *
- *   - GET /:id                  → forwards (driverUserId, id) and returns the detail
- *   - GET /:id                  → admin role NEVER substituted for the principal's
- *                                  own userId (belt and suspenders — the role guard
- *                                  already excludes admin, but the controller pins
- *                                  the userId either way)
- *   - POST /:id/pickup-confirm  → forwards (driverUserId, id, body) and returns detail
- *   - POST /:id/delivery-confirm → forwards (driverUserId, id, body) and returns detail
+ *   - GET /:id                    → forwards (driverUserId, id) and returns the detail
+ *   - GET /:id                    → admin role NEVER substituted for the principal's
+ *                                    own userId (belt and suspenders — the role guard
+ *                                    already excludes admin, but the controller pins
+ *                                    the userId either way)
+ *   - POST /:id/pickup-confirm    → forwards (driverUserId, id, body) and returns detail
+ *   - POST /:id/delivery-confirm  → forwards (driverUserId, id, body) and returns detail
+ *   - POST /:id/id-scan-session   → forwards (driverUserId, id), returns session payload
+ *   - POST /:id/id-scan-result    → forwards (driverUserId, id, body) to id-scan service
+ *                                    then chains getForDriver for the fresh hydrate
  *
  * The compliance gate (delivery requires `delivery_id_scan_passed`) and
  * the FROM-state gate are enforced by `OrdersRepository.transitionStatus`
@@ -25,10 +28,15 @@ import { describe, expect, it } from 'vitest';
 import { DriverOrdersController } from './driver-orders.controller.js';
 import type { AuthenticatedUser } from '../../auth/guards/auth-types.js';
 import type {
+  DriverIdScanResultRequest,
+  DriverIdScanSessionResponse,
+} from '../../identity-verification/dto/index.js';
+import type {
   DriverDeliveryConfirmRequest,
   DriverOrderDetailResponse,
   DriverPickupConfirmRequest,
 } from '../dto/index.js';
+import type { DriverIdScanService } from '../services/driver-id-scan.service.js';
 import type { DriverOrdersService } from '../services/driver-orders.service.js';
 
 const DRIVER_USER_ID = '01935f3d-0000-7000-8000-000000000101';
@@ -110,6 +118,18 @@ const DELIVERY_BODY: DriverDeliveryConfirmRequest = {
   notes: 'Handed to recipient at door',
 };
 
+const VERIFICATION_ID = '01935f3d-0000-7000-8000-0000000001a0';
+
+const ID_SCAN_SESSION_RESPONSE: DriverIdScanSessionResponse = {
+  verificationId: VERIFICATION_ID,
+  sessionUrl: 'https://magic.veriff.me/v/01935f3d-0000-7000-8000-0000000001a0',
+  sessionToken: 'tok_test_01935f3d',
+};
+
+const ID_SCAN_RESULT_BODY: DriverIdScanResultRequest = {
+  verificationId: VERIFICATION_ID,
+};
+
 class FakeDriverOrdersService {
   public getCalls: { driverUserId: string; orderId: string }[] = [];
   public pickupCalls: {
@@ -147,13 +167,41 @@ class FakeDriverOrdersService {
   };
 }
 
+class FakeDriverIdScanService {
+  public startCalls: { driverUserId: string; orderId: string }[] = [];
+  public submitCalls: {
+    driverUserId: string;
+    orderId: string;
+    body: DriverIdScanResultRequest;
+  }[] = [];
+
+  startSession = (driverUserId: string, orderId: string): Promise<DriverIdScanSessionResponse> => {
+    this.startCalls.push({ driverUserId, orderId });
+    return Promise.resolve(ID_SCAN_SESSION_RESPONSE);
+  };
+
+  submitResult = (
+    driverUserId: string,
+    orderId: string,
+    body: DriverIdScanResultRequest,
+  ): Promise<void> => {
+    this.submitCalls.push({ driverUserId, orderId, body });
+    return Promise.resolve();
+  };
+}
+
 function makeController(): {
   controller: DriverOrdersController;
   service: FakeDriverOrdersService;
+  idScan: FakeDriverIdScanService;
 } {
   const service = new FakeDriverOrdersService();
-  const controller = new DriverOrdersController(service as unknown as DriverOrdersService);
-  return { controller, service };
+  const idScan = new FakeDriverIdScanService();
+  const controller = new DriverOrdersController(
+    service as unknown as DriverOrdersService,
+    idScan as unknown as DriverIdScanService,
+  );
+  return { controller, service, idScan };
 }
 
 describe('DriverOrdersController', () => {
@@ -232,5 +280,30 @@ describe('DriverOrdersController', () => {
     await controller.deliveryConfirm(admin, ORDER_ID, DELIVERY_BODY);
 
     expect(service.deliveryCalls[0]?.driverUserId).toBe(admin.userId);
+  });
+
+  it('POST /:id/id-scan-session forwards the principal userId and path param', async () => {
+    const { controller, idScan } = makeController();
+
+    const result = await controller.startIdScanSession(PRINCIPAL, ORDER_ID);
+
+    expect(result).toBe(ID_SCAN_SESSION_RESPONSE);
+    expect(idScan.startCalls).toEqual([{ driverUserId: DRIVER_USER_ID, orderId: ORDER_ID }]);
+  });
+
+  it('POST /:id/id-scan-result invokes id-scan service then chains a fresh getForDriver', async () => {
+    // The controller's contract is that submit-result returns the
+    // hydrated detail (same shape as GET /:id) without an extra round
+    // trip from iOS. Verify both that the write happened AND that the
+    // hydrate ran with the principal's userId pinned.
+    const { controller, service, idScan } = makeController();
+
+    const result = await controller.submitIdScanResult(PRINCIPAL, ORDER_ID, ID_SCAN_RESULT_BODY);
+
+    expect(result).toBe(DETAIL);
+    expect(idScan.submitCalls).toEqual([
+      { driverUserId: DRIVER_USER_ID, orderId: ORDER_ID, body: ID_SCAN_RESULT_BODY },
+    ]);
+    expect(service.getCalls).toEqual([{ driverUserId: DRIVER_USER_ID, orderId: ORDER_ID }]);
   });
 });

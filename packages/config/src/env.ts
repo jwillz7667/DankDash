@@ -63,6 +63,7 @@ export const EnvSchema = z
 
     VERIFF_API_KEY: z.string().min(1),
     VERIFF_WEBHOOK_SECRET: z.string().min(1),
+    VERIFF_API_BASE_URL: z.string().url().default('https://stationapi.veriff.com'),
 
     METRC_API_KEY: z.string().min(1),
     METRC_USER_KEY: z.string().min(1),

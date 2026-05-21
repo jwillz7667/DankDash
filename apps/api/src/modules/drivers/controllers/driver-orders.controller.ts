@@ -30,10 +30,15 @@ import { CurrentUser } from '../../auth/decorators/current-user.decorator.js';
 import { Roles } from '../../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../../auth/guards/roles.guard.js';
 import {
+  DriverIdScanResultRequestDto,
+  type DriverIdScanSessionResponse,
+} from '../../identity-verification/dto/index.js';
+import {
   DriverDeliveryConfirmRequestDto,
   DriverPickupConfirmRequestDto,
   type DriverOrderDetailResponse,
 } from '../dto/index.js';
+import { DriverIdScanService } from '../services/driver-id-scan.service.js';
 import { DriverOrdersService } from '../services/driver-orders.service.js';
 import type { AuthenticatedUser } from '../../auth/guards/auth-types.js';
 
@@ -41,7 +46,10 @@ import type { AuthenticatedUser } from '../../auth/guards/auth-types.js';
 @UseGuards(RolesGuard)
 @Roles('driver')
 export class DriverOrdersController {
-  constructor(private readonly driverOrders: DriverOrdersService) {}
+  constructor(
+    private readonly driverOrders: DriverOrdersService,
+    private readonly driverIdScan: DriverIdScanService,
+  ) {}
 
   @Get(':id')
   @RateLimit({ name: 'driver-order-detail', tracker: 'user', limit: 240, windowMs: 60_000 })
@@ -70,5 +78,39 @@ export class DriverOrdersController {
     @Body() body: DriverDeliveryConfirmRequestDto,
   ): Promise<DriverOrderDetailResponse> {
     return this.driverOrders.confirmDelivery(user.userId, id, body);
+  }
+
+  /**
+   * Creates a Veriff session and stashes the verification id on the
+   * order row. Rate-limited tighter than the polling GET because a
+   * driver only legitimately starts a scan once per order — bursty
+   * retries (5xx → re-tap) are still in budget, but a stuck client
+   * cannot DoS Veriff at our expense.
+   */
+  @Post(':id/id-scan-session')
+  @RateLimit({ name: 'driver-id-scan-session', tracker: 'user', limit: 30, windowMs: 60_000 })
+  startIdScanSession(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<DriverIdScanSessionResponse> {
+    return this.driverIdScan.startSession(user.userId, id);
+  }
+
+  /**
+   * Driver's SDK reported a terminal callback. Backend always queries
+   * Veriff for the authoritative decision (the SDK alone is not
+   * trustworthy) and writes the outcome idempotently. The fresh
+   * hydrate is chained through DriverOrdersService.getForDriver so
+   * iOS renders without a follow-up GET.
+   */
+  @Post(':id/id-scan-result')
+  @RateLimit({ name: 'driver-id-scan-result', tracker: 'user', limit: 60, windowMs: 60_000 })
+  async submitIdScanResult(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: DriverIdScanResultRequestDto,
+  ): Promise<DriverOrderDetailResponse> {
+    await this.driverIdScan.submitResult(user.userId, id, body);
+    return this.driverOrders.getForDriver(user.userId, id);
   }
 }

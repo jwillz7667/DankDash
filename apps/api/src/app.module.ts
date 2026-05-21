@@ -13,6 +13,7 @@
  *   - HealthModule       (k8s/Railway liveness + readiness probes, public)
  *   - AuthModule         (register, login, refresh, logout, MFA — mounted /v1)
  *   - IdentityModule     (/me + Persona KYC start + webhook — mounted /v1)
+ *   - IdentityVerificationModule (Veriff client for driver-handoff ID scan — /v1/webhooks/veriff)
  *   - DispensariesModule (public dispensary list/read + admin CRUD — /v1)
  *   - CatalogModule      (products, categories, lab results — /v1 + /v1/admin)
  *   - ListingsModule     (vendor-scoped listings with RLS — /v1/vendor)
@@ -69,6 +70,7 @@ import { DispensariesModule } from './modules/dispensaries/dispensaries.module.j
 import { DriversModule } from './modules/drivers/drivers.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
+import { IdentityVerificationModule } from './modules/identity-verification/identity-verification.module.js';
 import { ListingsModule } from './modules/listings/listings.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
@@ -105,6 +107,7 @@ import { StaffModule } from './modules/staff/staff.module.js';
     HealthModule,
     AuthModule,
     IdentityModule,
+    IdentityVerificationModule,
     DispensariesModule,
     CatalogModule,
     ListingsModule,

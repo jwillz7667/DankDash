@@ -13,6 +13,7 @@
  *       POST /v1/driver/orders/:id/delivery-confirm   (ID-scan gated)
  *       POST /v1/driver/orders/:id/id-scan-session    (Veriff)
  *       POST /v1/driver/orders/:id/id-scan-result     (Veriff)
+ *       POST /v1/webhooks/veriff                      (Veriff push)
  *       POST /v1/driver/cashout
  *   - DriverContextGuard, exported so future driver-self modules can
  *     `@UseGuards(DriverContextGuard)` without re-declaring the guard's
@@ -31,14 +32,19 @@
  * AuthModule import gives the admin controller access to RolesGuard;
  * JwtAuthGuard is already bound globally in the root composition.
  *
- * OrdersModule is imported so the offer-accept and driver-orders
- * pickup-confirm / delivery-confirm flows can inject
- * OrderTransitionService — the canonical status-transition path with
- * Redis publish + realtime fan-out. Calling
- * `OrdersRepository.transitionStatus` directly would skip the publish
- * and break the iOS / portal live status update.
+ * OrdersModule is imported so the offer-accept, driver-orders pickup-
+ * /delivery-confirm, and ID-scan flows can inject OrderTransitionService
+ * — the canonical status-transition path with Redis publish + realtime
+ * fan-out. Calling `OrdersRepository.transitionStatus` directly would
+ * skip the publish and break the iOS / portal live status update.
+ *
+ * IdentityVerificationModule provides VeriffClient for the ID-scan
+ * session + decision flows. The Veriff webhook controller lives here
+ * (not in identity-verification) so the dependency graph stays one-
+ * way: drivers → identity-verification.
  */
 import {
+  AgeVerificationsRepository,
   DispatchOffersRepository,
   DispensariesRepository,
   DriverLocationHistoryRepository,
@@ -52,10 +58,13 @@ import {
   type DocumentHasher,
 } from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DOCUMENT_HASHER, DocumentHashModule } from '../../infrastructure/document-hash.module.js';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { IdentityVerificationModule } from '../identity-verification/identity-verification.module.js';
+import { VeriffClient } from '../identity-verification/veriff.client.js';
 import { OrderTransitionService } from '../orders/order-transition.service.js';
 import { OrdersModule } from '../orders/orders.module.js';
 import { AdminDriversController } from './admin/admin-drivers.controller.js';
@@ -68,12 +77,17 @@ import { DriverAppController } from './app/driver-app.controller.js';
 import { DriverAppService } from './app/driver-app.service.js';
 import { DriverContextGuard } from './context/driver-context.guard.js';
 import { DriverOrdersController } from './controllers/driver-orders.controller.js';
+import { VeriffWebhookController } from './controllers/veriff-webhook.controller.js';
 import { DriverOffersController } from './offers/driver-offers.controller.js';
 import {
   DriverOffersService,
   type DriverOffersScopedRepos,
   type DriverOffersScopedReposFactory,
 } from './offers/driver-offers.service.js';
+import {
+  DriverIdScanService,
+  type DriverIdScanScopedRepos,
+} from './services/driver-id-scan.service.js';
 import {
   DriverOrdersService,
   type DriverOrdersScopedRepos,
@@ -206,6 +220,36 @@ const driverOrdersServiceProvider: FactoryProvider<DriverOrdersService> = {
     ),
 };
 
+const driverIdScanServiceProvider: FactoryProvider<DriverIdScanService> = {
+  provide: DriverIdScanService,
+  inject: [DRIZZLE_DB, OrderTransitionService, VeriffClient, ConfigService],
+  useFactory: (
+    db: Database,
+    orderTransitions: OrderTransitionService,
+    veriff: VeriffClient,
+    config: ConfigService,
+  ): DriverIdScanService =>
+    new DriverIdScanService(
+      db,
+      (scopedDb): DriverIdScanScopedRepos => ({
+        orders: new OrdersRepository(scopedDb),
+        users: new UsersRepository(scopedDb),
+        ageVerifications: new AgeVerificationsRepository(scopedDb),
+      }),
+      veriff,
+      orderTransitions,
+      {
+        webhookBaseUrl: config.get<string>('CHECKOUT_BASE_URL') ?? 'https://app.dankdash.com',
+      },
+    ),
+};
+
+const ageVerificationsRepoProvider: FactoryProvider<AgeVerificationsRepository> = {
+  provide: AgeVerificationsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): AgeVerificationsRepository => new AgeVerificationsRepository(db),
+};
+
 const providers: Provider[] = [
   driversRepoProvider,
   driverShiftsRepoProvider,
@@ -214,22 +258,25 @@ const providers: Provider[] = [
   usersRepoProvider,
   ordersRepoProvider,
   dispensariesRepoProvider,
+  ageVerificationsRepoProvider,
   adminDriversServiceProvider,
   driverShiftServiceProvider,
   driverOffersServiceProvider,
   driverAppServiceProvider,
   driverOrdersServiceProvider,
+  driverIdScanServiceProvider,
   DriverContextGuard,
 ];
 
 @Module({
-  imports: [AuthModule, DocumentHashModule, OrdersModule],
+  imports: [AuthModule, DocumentHashModule, OrdersModule, IdentityVerificationModule],
   controllers: [
     AdminDriversController,
     DriverShiftController,
     DriverOffersController,
     DriverAppController,
     DriverOrdersController,
+    VeriffWebhookController,
   ],
   providers,
   exports: [
@@ -238,6 +285,7 @@ const providers: Provider[] = [
     DriverOffersService,
     DriverAppService,
     DriverOrdersService,
+    DriverIdScanService,
     DriversRepository,
     DriverShiftsRepository,
     DriverLocationHistoryRepository,
