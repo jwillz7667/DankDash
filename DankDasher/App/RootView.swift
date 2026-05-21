@@ -9,10 +9,10 @@ import DankDashFeatures
 /// outside the documented `Delegate` surface — same idiom as the
 /// consumer's `RootView`.
 ///
-/// The `.onboarding`, `.shift`, and `.earnings` branches render
-/// scaffolding views here; the full screens land in Commits 12+13.
-/// Until then this surface still proves the full reducer composition,
-/// the `Store` scoping, and the auth → driver routing.
+/// Phase 20 added the delivery lifecycle: `activeRoute → idScan →
+/// deliveryComplete`. Each branch mounts the matching feature's screen
+/// and the parent reducer handles all routing via delegate actions, so
+/// the view layer stays a pure projection of `state.screen`.
 struct RootView: View {
   @Bindable var store: StoreOf<DriverRootFeature>
 
@@ -51,10 +51,31 @@ struct RootView: View {
 
       case .earnings:
         if let earningsStore = store.scope(state: \.earnings, action: \.earnings) {
-          EarningsView(
+          EarningsWalletScreen(
             store: earningsStore,
             onDismiss: { store.send(.earningsDismissed) }
           )
+        } else {
+          DankLoader()
+        }
+
+      case .activeRoute:
+        if let activeRouteStore = store.scope(state: \.activeRoute, action: \.activeRoute) {
+          ActiveRouteScreen(store: activeRouteStore)
+        } else {
+          DankLoader()
+        }
+
+      case .idScan:
+        if let idScanStore = store.scope(state: \.idScan, action: \.idScan) {
+          IDScanScreen(store: idScanStore)
+        } else {
+          DankLoader()
+        }
+
+      case .deliveryComplete:
+        if let deliveryStore = store.scope(state: \.deliveryComplete, action: \.deliveryComplete) {
+          DeliveryCompleteScreen(store: deliveryStore)
         } else {
           DankLoader()
         }

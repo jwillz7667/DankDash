@@ -410,6 +410,220 @@ final class DriverRootFeatureTests: XCTestCase {
     }
   }
 
+  // MARK: - Active route / ID scan / Delivery complete graph
+
+  func test_startActiveRoute_setsActiveRouteStateAndScreen() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(screen: .shift)
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.startActiveRoute(orderId: orderId))
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(store.state.activeRoute?.orderId, orderId)
+    XCTAssertNil(store.state.idScan)
+    XCTAssertNil(store.state.deliveryComplete)
+  }
+
+  func test_activeRouteRequestedIdScan_routesToIdScan() async {
+    let orderId = UUID()
+    let handoff = DeliveryHandoff(
+      orderId: orderId,
+      passed: false,
+      verificationId: nil,
+      scannedAt: nil
+    )
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .activeRoute,
+        activeRoute: ActiveRouteFeature.State(orderId: orderId)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.activeRoute(.delegate(.requestedIdScan(orderId: orderId, idScan: handoff))))
+    XCTAssertEqual(store.state.screen, .idScan)
+    XCTAssertEqual(store.state.idScan?.orderId, orderId)
+    XCTAssertEqual(store.state.idScan?.idScan, handoff)
+  }
+
+  func test_activeRouteDismissed_popsToShift() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .activeRoute,
+        activeRoute: ActiveRouteFeature.State(orderId: orderId)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.activeRoute(.delegate(.dismissed(orderId: orderId))))
+    XCTAssertEqual(store.state.screen, .shift)
+    XCTAssertNil(store.state.activeRoute)
+  }
+
+  func test_idScanConfirmed_routesToDeliveryComplete() async {
+    let orderId = UUID()
+    let route = Self.activeRoute(orderId: orderId)
+    let handoff = DeliveryHandoff(
+      orderId: orderId,
+      passed: true,
+      verificationId: "veriff-123",
+      scannedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .idScan,
+        activeRoute: ActiveRouteFeature.State(orderId: orderId, route: route),
+        idScan: IDScanFeature.State(orderId: orderId, idScan: handoff, route: route)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.idScan(.delegate(.confirmed(orderId: orderId, idScan: handoff))))
+    XCTAssertEqual(store.state.screen, .deliveryComplete)
+    XCTAssertEqual(store.state.deliveryComplete?.orderId, orderId)
+    XCTAssertEqual(store.state.deliveryComplete?.route, route)
+  }
+
+  func test_idScanEscalation_popsAllTheWayToShift() async {
+    let orderId = UUID()
+    let handoff = DeliveryHandoff(
+      orderId: orderId,
+      passed: false,
+      verificationId: nil,
+      scannedAt: nil
+    )
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .idScan,
+        activeRoute: ActiveRouteFeature.State(orderId: orderId),
+        idScan: IDScanFeature.State(orderId: orderId, idScan: handoff)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.idScan(.delegate(.escalatedReturnToDispensary(orderId: orderId))))
+    XCTAssertEqual(store.state.screen, .shift)
+    XCTAssertNil(store.state.idScan)
+    XCTAssertNil(store.state.activeRoute)
+  }
+
+  func test_deliveryCompleteCompleted_returnsToShiftAndRefetchesEarnings() async {
+    let orderId = UUID()
+    let route = Self.activeRoute(orderId: orderId)
+    let driver = Self.passedDriver()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .deliveryComplete,
+        driver: driver,
+        shift: DriverShiftFeature.State(driver: driver),
+        activeRoute: ActiveRouteFeature.State(orderId: orderId, route: route),
+        idScan: IDScanFeature.State(
+          orderId: orderId,
+          idScan: DeliveryHandoff(orderId: orderId, passed: true, verificationId: "v", scannedAt: Date()),
+          route: route
+        ),
+        deliveryComplete: DeliveryCompleteFeature.State(orderId: orderId, route: route)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deliveryComplete(.delegate(.completed(orderId: orderId, route: route))))
+    XCTAssertEqual(store.state.screen, .shift)
+    XCTAssertNil(store.state.deliveryComplete)
+    XCTAssertNil(store.state.idScan)
+    XCTAssertNil(store.state.activeRoute)
+    // The `.send(.shift(.onAppear))` chained effect will be received and
+    // run by the test store; we don't need to assert its internal
+    // behavior here.
+    await store.finish()
+  }
+
+  func test_deliveryCompleteRequiresIdScan_bouncesBackToIdScan() async {
+    let orderId = UUID()
+    let route = Self.activeRoute(orderId: orderId)
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .deliveryComplete,
+        activeRoute: ActiveRouteFeature.State(orderId: orderId, route: route),
+        idScan: IDScanFeature.State(
+          orderId: orderId,
+          idScan: DeliveryHandoff(orderId: orderId, passed: true, verificationId: "v", scannedAt: Date()),
+          route: route
+        ),
+        deliveryComplete: DeliveryCompleteFeature.State(orderId: orderId, route: route)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deliveryComplete(.delegate(.requiresIdScan(orderId: orderId))))
+    XCTAssertEqual(store.state.screen, .idScan)
+    XCTAssertNil(store.state.deliveryComplete)
+    XCTAssertNotNil(store.state.idScan, "ID-scan state survives the bounce so the driver can re-verify")
+  }
+
+  func test_signOutTapped_clearsActiveRouteAndIdScanAndDeliveryComplete() async {
+    let orderId = UUID()
+    let route = Self.activeRoute(orderId: orderId)
+    let driver = Self.passedDriver()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .deliveryComplete,
+        signedInUser: Self.user(),
+        driver: driver,
+        shift: DriverShiftFeature.State(driver: driver),
+        activeRoute: ActiveRouteFeature.State(orderId: orderId, route: route),
+        idScan: IDScanFeature.State(
+          orderId: orderId,
+          idScan: DeliveryHandoff(orderId: orderId, passed: true, verificationId: "v", scannedAt: Date())
+        ),
+        deliveryComplete: DeliveryCompleteFeature.State(orderId: orderId, route: route)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.signOutTapped)
+    await store.finish()
+    XCTAssertNil(store.state.activeRoute)
+    XCTAssertNil(store.state.idScan)
+    XCTAssertNil(store.state.deliveryComplete)
+    XCTAssertEqual(store.state.screen, .auth)
+  }
+
   // MARK: - Error box
 
   func test_errorBox_unwrapsEachUnderlyingErrorKind() {
@@ -448,8 +662,69 @@ final class DriverRootFeatureTests: XCTestCase {
     values.driverShiftAPIClient = .unimplemented
     values.driverHeatmapAPIClient = .unimplemented
     values.driverSessionStoreClient = .unimplemented
+    values.driverOrdersAPIClient = .unimplemented
+    values.driverIDScanAPIClient = .unimplemented
+    values.driverCashoutAPIClient = .unimplemented
+    values.identityVerificationClient = .unimplemented
+    values.directionsClient = .unimplemented
+    values.hapticsClient = .noop
     values.continuousClock = ImmediateClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
+  }
+
+  nonisolated private static func activeRoute(orderId: UUID) -> ActiveRoute {
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let order = Order(
+      id: orderId,
+      shortCode: "ORD-0001",
+      userId: UUID(uuidString: "00000000-0000-0000-0000-0000000000a1")!,
+      dispensaryId: UUID(uuidString: "00000000-0000-0000-0000-00000000d101")!,
+      deliveryAddressId: UUID(uuidString: "00000000-0000-0000-0000-000000000ad1")!,
+      status: .arrivedAtDropoff,
+      subtotalCents: 5_000,
+      cannabisTaxCents: 500,
+      salesTaxCents: 250,
+      deliveryFeeCents: 599,
+      driverTipCents: 0,
+      discountCents: 0,
+      totalCents: 6_349,
+      items: [],
+      placedAt: now,
+      statusChangedAt: now,
+      createdAt: now,
+      updatedAt: now
+    )
+    return ActiveRoute(
+      order: order,
+      customer: DriverHandoffCustomer(firstName: "Sam", lastName: "J.", maskedPhone: "(555) 555-0123"),
+      dispensary: DriverHandoffDispensary(
+        id: order.dispensaryId,
+        name: "Bloom Dispensary",
+        addressLine1: "401 N 3rd St",
+        addressLine2: nil,
+        city: "Minneapolis",
+        region: "MN",
+        postalCode: "55401",
+        location: Coordinate(latitude: 44.9836, longitude: -93.2697),
+        phone: "+16125550100"
+      ),
+      dropoff: DriverHandoffAddress(
+        line1: "1234 Hennepin Ave",
+        line2: "Apt 4B",
+        city: "Minneapolis",
+        region: "MN",
+        postalCode: "55403",
+        location: Coordinate(latitude: 44.9778, longitude: -93.2766),
+        instructions: nil
+      ),
+      idScan: DeliveryHandoff(
+        orderId: orderId,
+        passed: false,
+        verificationId: nil,
+        scannedAt: nil
+      ),
+      events: []
+    )
   }
 
   nonisolated private static func passedDriver(

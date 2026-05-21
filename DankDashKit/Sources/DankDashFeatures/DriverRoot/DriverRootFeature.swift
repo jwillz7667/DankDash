@@ -52,6 +52,9 @@ public struct DriverRootFeature: Sendable {
     public var onboarding: DriverOnboardingFeature.State
     public var shift: DriverShiftFeature.State
     public var earnings: DriverEarningsFeature.State?
+    public var activeRoute: ActiveRouteFeature.State?
+    public var idScan: IDScanFeature.State?
+    public var deliveryComplete: DeliveryCompleteFeature.State?
     public var driverLoadError: String?
 
     /// Parsed-but-not-yet-handled deep link. The dispatch-offer push
@@ -70,6 +73,9 @@ public struct DriverRootFeature: Sendable {
       case onboarding
       case shift
       case earnings
+      case activeRoute
+      case idScan
+      case deliveryComplete
     }
 
     public enum AuthScreen: Equatable, Sendable {
@@ -90,6 +96,9 @@ public struct DriverRootFeature: Sendable {
       onboarding: DriverOnboardingFeature.State = .init(),
       shift: DriverShiftFeature.State = .init(),
       earnings: DriverEarningsFeature.State? = nil,
+      activeRoute: ActiveRouteFeature.State? = nil,
+      idScan: IDScanFeature.State? = nil,
+      deliveryComplete: DeliveryCompleteFeature.State? = nil,
       driverLoadError: String? = nil,
       pendingDeepLinkURL: URL? = nil
     ) {
@@ -104,6 +113,9 @@ public struct DriverRootFeature: Sendable {
       self.onboarding = onboarding
       self.shift = shift
       self.earnings = earnings
+      self.activeRoute = activeRoute
+      self.idScan = idScan
+      self.deliveryComplete = deliveryComplete
       self.driverLoadError = driverLoadError
       self.pendingDeepLinkURL = pendingDeepLinkURL
     }
@@ -128,6 +140,16 @@ public struct DriverRootFeature: Sendable {
     case shift(DriverShiftFeature.Action)
     case earnings(DriverEarningsFeature.Action)
     case earningsDismissed
+
+    case activeRoute(ActiveRouteFeature.Action)
+    case idScan(IDScanFeature.Action)
+    case deliveryComplete(DeliveryCompleteFeature.Action)
+
+    /// Programmatic entry into the delivery lifecycle — fired by the
+    /// dispatch-offer accept delegate (Phase 20 Commit 14) and by the
+    /// `dankdasher://offer/<id>` deep-link router (same commit). Sets
+    /// up ``State/activeRoute`` and flips the screen.
+    case startActiveRoute(orderId: UUID)
 
     case signOutTapped
 
@@ -291,12 +313,98 @@ public struct DriverRootFeature: Sendable {
         // child reducer's delegate without us pushing anywhere yet.
         return .none
 
+      case .earnings(.delegate(.cashoutSucceeded)):
+        // Wallet handles its own toast + list refresh; no root routing.
+        return .none
+
       case .earnings:
         return .none
 
       case .earningsDismissed:
         state.earnings = nil
         state.screen = .shift
+        return .none
+
+      case .startActiveRoute(let orderId):
+        state.activeRoute = ActiveRouteFeature.State(orderId: orderId)
+        state.idScan = nil
+        state.deliveryComplete = nil
+        state.earnings = nil
+        state.screen = .activeRoute
+        return .none
+
+      case .activeRoute(.delegate(.requestedIdScan(let orderId, let handoff))):
+        state.idScan = IDScanFeature.State(
+          orderId: orderId,
+          idScan: handoff,
+          route: state.activeRoute?.route
+        )
+        state.screen = .idScan
+        return .none
+
+      case .activeRoute(.delegate(.dismissed)):
+        state.activeRoute = nil
+        state.screen = .shift
+        return .none
+
+      case .activeRoute:
+        return .none
+
+      case .idScan(.delegate(.confirmed(let orderId, _))):
+        // The driver passed the scan. Route the active-route snapshot
+        // into Delivery Complete so it can show payout estimate + the
+        // customer's masked name without re-fetching.
+        guard let route = state.activeRoute?.route ?? state.idScan?.route else {
+          state.idScan = nil
+          state.activeRoute = nil
+          state.screen = .shift
+          return .none
+        }
+        state.deliveryComplete = DeliveryCompleteFeature.State(
+          orderId: orderId,
+          route: route
+        )
+        state.screen = .deliveryComplete
+        return .none
+
+      case .idScan(.delegate(.dismissed)),
+           .idScan(.delegate(.escalatedContactSupport)),
+           .idScan(.delegate(.escalatedReturnToDispensary)):
+        state.idScan = nil
+        state.activeRoute = nil
+        state.deliveryComplete = nil
+        state.screen = .shift
+        return .none
+
+      case .idScan:
+        return .none
+
+      case .deliveryComplete(.delegate(.completed)):
+        state.deliveryComplete = nil
+        state.idScan = nil
+        state.activeRoute = nil
+        state.screen = .shift
+        // Refetch earnings so today's totals reflect the new payout —
+        // the shift home's earnings card subscribes to driver state, but
+        // the reducer needs an explicit kick on delivery to reload.
+        return .send(.shift(.onAppear))
+
+      case .deliveryComplete(.delegate(.dismissed)):
+        state.deliveryComplete = nil
+        state.idScan = nil
+        state.activeRoute = nil
+        state.screen = .shift
+        return .none
+
+      case .deliveryComplete(.delegate(.requiresIdScan)):
+        // Defensive: backend rejected the delivery-confirm with the
+        // compliance gate. Pop back to the ID-scan screen — the
+        // verification fields will be re-validated on the next pass.
+        state.deliveryComplete = nil
+        state.screen = .idScan
+        return .none
+
+      case .deliveryComplete:
         return .none
 
       case .signOutTapped:
@@ -310,6 +418,9 @@ public struct DriverRootFeature: Sendable {
         state.onboarding = .init()
         state.shift = .init()
         state.earnings = nil
+        state.activeRoute = nil
+        state.idScan = nil
+        state.deliveryComplete = nil
         state.pendingDeepLinkURL = nil
         state.screen = .auth
         return .merge(
@@ -334,6 +445,15 @@ public struct DriverRootFeature: Sendable {
     }
     .ifLet(\.earnings, action: \.earnings) {
       DriverEarningsFeature()
+    }
+    .ifLet(\.activeRoute, action: \.activeRoute) {
+      ActiveRouteFeature()
+    }
+    .ifLet(\.idScan, action: \.idScan) {
+      IDScanFeature()
+    }
+    .ifLet(\.deliveryComplete, action: \.deliveryComplete) {
+      DeliveryCompleteFeature()
     }
   }
 
