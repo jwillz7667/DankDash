@@ -5,29 +5,36 @@ final class ColorTokensTests: XCTestCase {
   func test_primaryMatchesSpec() {
     XCTAssertEqual(
       DankColor.allTokens.first { $0.name == "primary" }?.hex,
-      0x1A4314
+      0x3B9322
     )
   }
 
   func test_primaryDarkMatchesSpec() {
     XCTAssertEqual(
       DankColor.allTokens.first { $0.name == "primaryDark" }?.hex,
-      0x0E2A0B
+      0x256014
     )
   }
 
-  func test_creamMatchesSpec() {
+  func test_creamIsWhiteAfterRebrand() {
     XCTAssertEqual(
       DankColor.allTokens.first { $0.name == "cream" }?.hex,
-      0xF5EFE0
+      0xFFFFFF
     )
   }
 
-  func test_accentMatchesSpec() {
-    XCTAssertEqual(
-      DankColor.allTokens.first { $0.name == "accent" }?.hex,
-      0xC9A961
-    )
+  func test_backgroundAliasesCream() {
+    let cream = DankColor.allTokens.first { $0.name == "cream" }?.hex
+    let background = DankColor.allTokens.first { $0.name == "background" }?.hex
+    XCTAssertEqual(cream, background)
+    XCTAssertEqual(background, 0xFFFFFF)
+  }
+
+  func test_accentAliasesPrimary() {
+    let primary = DankColor.allTokens.first { $0.name == "primary" }?.hex
+    let accent = DankColor.allTokens.first { $0.name == "accent" }?.hex
+    XCTAssertEqual(primary, accent)
+    XCTAssertEqual(accent, 0x3B9322)
   }
 
   func test_semanticToneInventoryIsExhaustive() {
@@ -46,7 +53,27 @@ final class ColorTokensTests: XCTestCase {
       .map(\.name)
     XCTAssertEqual(
       Set(textNames),
-      Set(["text.primary", "text.secondary", "text.muted", "text.onPrimary"])
+      Set([
+        "text.primary",
+        "text.secondary",
+        "text.muted",
+        "text.onPrimary",
+        "text.onBackground",
+      ])
+    )
+  }
+
+  func test_onPrimaryIsPureWhite() {
+    XCTAssertEqual(
+      DankColor.allTokens.first { $0.name == "text.onPrimary" }?.hex,
+      0xFFFFFF
+    )
+  }
+
+  func test_onBackgroundReadsAsDarkForAAAContrast() {
+    XCTAssertEqual(
+      DankColor.allTokens.first { $0.name == "text.onBackground" }?.hex,
+      0x0F1A0D
     )
   }
 
