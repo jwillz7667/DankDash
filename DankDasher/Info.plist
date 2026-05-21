@@ -30,9 +30,5 @@
 			</array>
 		</dict>
 	</array>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.business</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
 </dict>
 </plist>
