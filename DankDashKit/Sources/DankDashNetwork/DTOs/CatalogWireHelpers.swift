@@ -45,7 +45,10 @@ enum CatalogWire {
 /// it as a DTO rather than mapping straight to `Coordinate` because the
 /// wire tuple order is `[longitude, latitude]` and accidentally flipping
 /// the axes silently delivers the wrong store to the wrong customer.
-public struct GeoPointDTO: Decodable, Sendable, Equatable {
+///
+/// `Codable` (not just `Decodable`) so the driver-app shift-start /
+/// shift-end request bodies can carry the same shape on the way out.
+public struct GeoPointDTO: Codable, Sendable, Equatable {
   public let type: String
   public let coordinates: [Double]
 
