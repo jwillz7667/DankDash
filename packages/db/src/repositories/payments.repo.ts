@@ -427,6 +427,51 @@ export class PayoutsRepository extends BaseRepository {
       .returning();
     return row ?? null;
   }
+
+  /**
+   * Total of `net_cents` already paid out (or in-flight) for a recipient.
+   * Used by the driver cashout flow to compute available balance =
+   * lifetime delivery earnings - paid-out / in-flight payouts. Failed +
+   * canceled rows are excluded so a previous failure doesn't double-lock
+   * the same funds.
+   */
+  async sumOutstandingFor(recipientType: PayoutRecipient, recipientId: string): Promise<number> {
+    const [row] = await this.db
+      .select({
+        total: sql<string>`COALESCE(SUM(${payouts.netCents}), 0)`,
+      })
+      .from(payouts)
+      .where(
+        and(
+          eq(payouts.recipientType, recipientType),
+          eq(payouts.recipientId, recipientId),
+          sql`${payouts.status} NOT IN ('failed', 'canceled')`,
+        ),
+      );
+    return Number(row?.total ?? '0');
+  }
+
+  /**
+   * Number of payout rows persisted for a recipient. Used by the
+   * driver cashout flow to derive a per-row `period_start` offset so
+   * the `(recipient_type, recipient_id, period_start, period_end)`
+   * unique constraint — designed for the daily payout job's
+   * idempotency — does not block legitimate ad-hoc cashout requests
+   * from the driver app.
+   *
+   * A future windowed payout job will own the period_* columns
+   * outright; this counter is the Phase 20 shim while ad-hoc cashout
+   * is the only writer.
+   */
+  async countForRecipient(recipientType: PayoutRecipient, recipientId: string): Promise<number> {
+    const [row] = await this.db
+      .select({
+        total: sql<string>`COUNT(*)`,
+      })
+      .from(payouts)
+      .where(and(eq(payouts.recipientType, recipientType), eq(payouts.recipientId, recipientId)));
+    return Number(row?.total ?? '0');
+  }
 }
 
 export class RefundsRepository extends BaseRepository {

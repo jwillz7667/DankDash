@@ -14,7 +14,8 @@
  *       POST /v1/driver/orders/:id/id-scan-session    (Veriff)
  *       POST /v1/driver/orders/:id/id-scan-result     (Veriff)
  *       POST /v1/webhooks/veriff                      (Veriff push)
- *       POST /v1/driver/cashout
+ *       GET  /v1/driver/earnings                      (bucketed totals)
+ *       POST /v1/driver/cashout                       (Aeropay-gated)
  *   - DriverContextGuard, exported so future driver-self modules can
  *     `@UseGuards(DriverContextGuard)` without re-declaring the guard's
  *     repo provider
@@ -42,6 +43,13 @@
  * session + decision flows. The Veriff webhook controller lives here
  * (not in identity-verification) so the dependency graph stays one-
  * way: drivers → identity-verification.
+ *
+ * PaymentsModule is imported so the live cashout gateway can inject
+ * the shared AEROPAY_CLIENT token without re-wiring the auth / undici
+ * chain — same singleton the payment-methods + refunds surfaces use.
+ * The stub gateway needs nothing from PaymentsModule, but the live
+ * wrapper does; importing once keeps the future flip a single env-
+ * flag change.
  */
 import {
   AgeVerificationsRepository,
@@ -53,6 +61,7 @@ import {
   OrderEventsRepository,
   OrderItemsRepository,
   OrdersRepository,
+  PayoutsRepository,
   UsersRepository,
   type Database,
   type DocumentHasher,
@@ -67,6 +76,8 @@ import { IdentityVerificationModule } from '../identity-verification/identity-ve
 import { VeriffClient } from '../identity-verification/veriff.client.js';
 import { OrderTransitionService } from '../orders/order-transition.service.js';
 import { OrdersModule } from '../orders/orders.module.js';
+import { PaymentsModule } from '../payments/payments.module.js';
+import { AEROPAY_CLIENT, type AeropayClientLike } from '../payments/tokens.js';
 import { AdminDriversController } from './admin/admin-drivers.controller.js';
 import {
   AdminDriversService,
@@ -76,6 +87,8 @@ import {
 import { DriverAppController } from './app/driver-app.controller.js';
 import { DriverAppService } from './app/driver-app.service.js';
 import { DriverContextGuard } from './context/driver-context.guard.js';
+import { DriverCashoutController } from './controllers/driver-cashout.controller.js';
+import { DriverEarningsController } from './controllers/driver-earnings.controller.js';
 import { DriverOrdersController } from './controllers/driver-orders.controller.js';
 import { VeriffWebhookController } from './controllers/veriff-webhook.controller.js';
 import { DriverOffersController } from './offers/driver-offers.controller.js';
@@ -84,6 +97,19 @@ import {
   type DriverOffersScopedRepos,
   type DriverOffersScopedReposFactory,
 } from './offers/driver-offers.service.js';
+import {
+  LiveAeropayDriverPayoutGateway,
+  StubAeropayDriverPayoutGateway,
+} from './services/aeropay-driver-payout.gateway.js';
+import {
+  DriverCashoutService,
+  type AeropayDriverPayoutGateway,
+  type DriverCashoutScopedRepos,
+} from './services/driver-cashout.service.js';
+import {
+  DriverEarningsService,
+  type DriverEarningsScopedRepos,
+} from './services/driver-earnings.service.js';
 import {
   DriverIdScanService,
   type DriverIdScanScopedRepos,
@@ -98,6 +124,8 @@ import {
   type DriverShiftScopedRepos,
   type DriverShiftScopedReposFactory,
 } from './shift/driver-shift.service.js';
+
+const DRIVER_PAYOUT_GATEWAY = Symbol.for('DRIVER_PAYOUT_GATEWAY');
 
 const driversRepoProvider: FactoryProvider<DriversRepository> = {
   provide: DriversRepository,
@@ -250,6 +278,51 @@ const ageVerificationsRepoProvider: FactoryProvider<AgeVerificationsRepository> 
   useFactory: (db: Database): AgeVerificationsRepository => new AgeVerificationsRepository(db),
 };
 
+const driverEarningsServiceProvider: FactoryProvider<DriverEarningsService> = {
+  provide: DriverEarningsService,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriverEarningsService =>
+    new DriverEarningsService(
+      db,
+      (scopedDb): DriverEarningsScopedRepos => ({
+        orders: new OrdersRepository(scopedDb),
+      }),
+    ),
+};
+
+/**
+ * Stub-vs-live selection. `AEROPAY_LIVE=false` (default) returns the
+ * persisted-only stub. `AEROPAY_LIVE=true` wraps the real
+ * `AeropayClient.createPayout` — the live branch currently throws
+ * `PAYMENT_METHOD_INVALID` because the driver-side bank-link flow is
+ * a future phase; wiring this here keeps the eventual flip to a
+ * single env change.
+ */
+const driverPayoutGatewayProvider: FactoryProvider<AeropayDriverPayoutGateway> = {
+  provide: DRIVER_PAYOUT_GATEWAY,
+  inject: [ConfigService, AEROPAY_CLIENT],
+  useFactory: (config: ConfigService, aeropay: AeropayClientLike): AeropayDriverPayoutGateway => {
+    const live = config.get<boolean>('AEROPAY_LIVE') ?? false;
+    return live
+      ? new LiveAeropayDriverPayoutGateway({ aeropay })
+      : new StubAeropayDriverPayoutGateway();
+  },
+};
+
+const driverCashoutServiceProvider: FactoryProvider<DriverCashoutService> = {
+  provide: DriverCashoutService,
+  inject: [DRIZZLE_DB, DRIVER_PAYOUT_GATEWAY],
+  useFactory: (db: Database, gateway: AeropayDriverPayoutGateway): DriverCashoutService =>
+    new DriverCashoutService(
+      db,
+      (scopedDb): DriverCashoutScopedRepos => ({
+        orders: new OrdersRepository(scopedDb),
+        payouts: new PayoutsRepository(scopedDb),
+      }),
+      gateway,
+    ),
+};
+
 const providers: Provider[] = [
   driversRepoProvider,
   driverShiftsRepoProvider,
@@ -265,11 +338,20 @@ const providers: Provider[] = [
   driverAppServiceProvider,
   driverOrdersServiceProvider,
   driverIdScanServiceProvider,
+  driverEarningsServiceProvider,
+  driverPayoutGatewayProvider,
+  driverCashoutServiceProvider,
   DriverContextGuard,
 ];
 
 @Module({
-  imports: [AuthModule, DocumentHashModule, OrdersModule, IdentityVerificationModule],
+  imports: [
+    AuthModule,
+    DocumentHashModule,
+    OrdersModule,
+    IdentityVerificationModule,
+    PaymentsModule,
+  ],
   controllers: [
     AdminDriversController,
     DriverShiftController,
@@ -277,6 +359,8 @@ const providers: Provider[] = [
     DriverAppController,
     DriverOrdersController,
     VeriffWebhookController,
+    DriverEarningsController,
+    DriverCashoutController,
   ],
   providers,
   exports: [
@@ -286,6 +370,8 @@ const providers: Provider[] = [
     DriverAppService,
     DriverOrdersService,
     DriverIdScanService,
+    DriverEarningsService,
+    DriverCashoutService,
     DriversRepository,
     DriverShiftsRepository,
     DriverLocationHistoryRepository,

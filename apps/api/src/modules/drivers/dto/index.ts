@@ -1,4 +1,13 @@
 export {
+  CashoutStatusSchema,
+  DriverCashoutRequestDto,
+  DriverCashoutRequestSchema,
+  DriverCashoutResponseSchema,
+  type CashoutStatus,
+  type DriverCashoutRequest,
+  type DriverCashoutResponse,
+} from './cashout.dto.js';
+export {
   DriverResponseDto,
   DriverResponseSchema,
   DriverStatusSchema,
@@ -27,3 +36,12 @@ export {
   type DriverLocationFix,
   type DriverPickupConfirmRequest,
 } from './driver-confirm.dto.js';
+export {
+  DriverEarningsQueryDto,
+  DriverEarningsQuerySchema,
+  DriverEarningsResponseSchema,
+  EarningsPeriodSchema,
+  type DriverEarningsQuery,
+  type DriverEarningsResponse,
+  type EarningsPeriod,
+} from './earnings.dto.js';

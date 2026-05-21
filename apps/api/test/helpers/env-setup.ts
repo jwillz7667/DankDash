@@ -56,6 +56,7 @@ const DEFAULTS: Record<string, string> = {
   APNS_TEAM_ID: 'test',
   APNS_BUNDLE_ID: 'com.dankdash.test',
   APNS_PRIVATE_KEY_BASE64: Buffer.from('test-apns-key').toString('base64'),
+  AEROPAY_LIVE: 'false',
 };
 
 for (const [key, value] of Object.entries(DEFAULTS)) {

@@ -503,6 +503,57 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
+   * Earnings aggregate for a delivered-orders window — variant used by the
+   * Phase-20 driver earnings + cashout services. Sums `delivery_fee_cents`
+   * + `driver_tip_cents` (the two driver-bound components of an order's
+   * money split) over the half-open `[since, until)` `delivered_at` window.
+   *
+   * `since === null` (passed for the lifetime/all-time bucket) drops the
+   * lower bound entirely; this is the input shape the cashout flow uses to
+   * compute the available balance.
+   *
+   * Pure read — no row lock. The cashout submission re-runs the aggregate
+   * inside its own transaction with `FOR UPDATE` on the driver row to
+   * prevent two concurrent cashouts from both passing the balance gate.
+   */
+  async sumDriverEarnings(input: {
+    readonly driverId: string;
+    readonly since: Date | null;
+    readonly until: Date;
+  }): Promise<{
+    readonly tipsCents: number;
+    readonly deliveryFeesCents: number;
+    readonly deliveriesCount: number;
+  }> {
+    const windowClause =
+      input.since === null
+        ? and(
+            eq(orders.driverId, input.driverId),
+            eq(orders.status, 'delivered'),
+            lt(orders.deliveredAt, input.until),
+          )
+        : and(
+            eq(orders.driverId, input.driverId),
+            eq(orders.status, 'delivered'),
+            gte(orders.deliveredAt, input.since),
+            lt(orders.deliveredAt, input.until),
+          );
+    const [row] = await this.db
+      .select({
+        tipsCents: sql<string>`COALESCE(SUM(${orders.driverTipCents}), 0)`,
+        deliveryFeesCents: sql<string>`COALESCE(SUM(${orders.deliveryFeeCents}), 0)`,
+        deliveriesCount: sql<string>`COUNT(*)`,
+      })
+      .from(orders)
+      .where(windowClause);
+    return {
+      tipsCents: Number(row?.tipsCents ?? '0'),
+      deliveryFeesCents: Number(row?.deliveryFeesCents ?? '0'),
+      deliveriesCount: Number(row?.deliveriesCount ?? '0'),
+    };
+  }
+
+  /**
    * List all orders currently in a given status, oldest-first. Used by the
    * dispatch worker, which sweeps `awaiting_driver` orders on its tick and
    * decides whether to issue an offer, wait, or fail. Oldest-first ordering

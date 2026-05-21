@@ -107,6 +107,17 @@ export const EnvSchema = z
     ENABLE_METRC: booleanFromString.default(false),
     ENABLE_PERSONA: booleanFromString.default(true),
     ENABLE_VERIFF: booleanFromString.default(true),
+
+    /**
+     * Routes driver cashout requests to the real
+     * `AeropayClient.createPayout` when true; defaults to false so
+     * Phase 20 ships the persistence-only flow until the driver-side
+     * KYC + bank-link work lands. Flipping this on without the
+     * upstream wiring is a soft fail — see
+     * `LiveAeropayDriverPayoutGateway` in
+     * `apps/api/src/modules/drivers/services/aeropay-driver-payout.gateway.ts`.
+     */
+    AEROPAY_LIVE: booleanFromString.default(false),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not
