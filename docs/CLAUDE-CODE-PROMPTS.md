@@ -63,9 +63,9 @@ At the end, verify the Definition of Done checklist completely before declaring 
 ```
 [paste universal preamble above]
 
-We are now starting PHASE 16 — iOS Consumer: Foundation
+We are now starting PHASE 18 — iOS Consumer: Cart, Checkout, Tracking
 
-Read `docs/CLAUDE-CODE-PHASES.md` section "PHASE 16" carefully. Also re-read `PROGRESS.md` to see what was accomplished in prior phases. Pay particular attention to any conventions established earlier — your code must match the patterns already in the codebase, not invent new ones.
+Read `docs/CLAUDE-CODE-PHASES.md` section "PHASE 18" carefully. Also re-read `PROGRESS.md` to see what was accomplished in prior phases. Pay particular attention to any conventions established earlier — your code must match the patterns already in the codebase, not invent new ones.
 
 Work through every task listed for this phase, in order. Do not skip tasks. Do not stop short of the Definition of Done.
 
