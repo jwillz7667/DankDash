@@ -17,7 +17,10 @@ let package = Package(
   ],
   targets: [
     .target(name: "DankDashDomain"),
-    .target(name: "DankDashDesignSystem"),
+    .target(
+      name: "DankDashDesignSystem",
+      dependencies: ["DankDashDomain"]
+    ),
     .target(
       name: "DankDashStorage",
       dependencies: ["DankDashDomain"]
@@ -40,6 +43,7 @@ let package = Package(
       name: "DankDashDesignSystemTests",
       dependencies: [
         "DankDashDesignSystem",
+        "DankDashDomain",
         .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
       ]
     ),
