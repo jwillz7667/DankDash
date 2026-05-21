@@ -279,6 +279,279 @@ final class DriverEarningsFeatureTests: XCTestCase {
     XCTAssertFalse(state.isInitialLoading, "any content suppresses the initial-loading spinner")
   }
 
+  // MARK: - Cashout flow
+
+  func test_cashoutCtaTapped_opensSheet() async {
+    let store = TestStore(initialState: DriverEarningsFeature.State()) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutCtaTapped) {
+      $0.cashoutSheet = DriverEarningsFeature.CashoutSheetState()
+    }
+  }
+
+  func test_cashoutCtaTapped_whileSheetOpen_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "10")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutCtaTapped)
+  }
+
+  func test_cashoutAmountChanged_updatesAmountAndClearsError() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(
+          amountText: "0",
+          errorMessage: "Not enough available."
+        )
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutAmountChanged("25.50")) {
+      $0.cashoutSheet?.amountText = "25.50"
+      $0.cashoutSheet?.errorMessage = nil
+    }
+  }
+
+  func test_cashoutAmountChanged_withoutSheet_isNoOp() async {
+    let store = TestStore(initialState: DriverEarningsFeature.State()) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutAmountChanged("10"))
+  }
+
+  func test_cashoutConfirmed_happyPath_closesSheetAndShowsToast() async {
+    let cashout = Self.cashoutFixture(amountCents: 2_500, status: .pending)
+    let captured = Locker<[Int]>([])
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        earnings: Self.earnings(.today, totalCents: 4_500, deliveries: 3),
+        shifts: [Self.shift()],
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "25.00")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverCashoutAPIClient = DriverCashoutAPIClient(
+        requestCashout: { amount in
+          await captured.append(amount)
+          return cashout
+        }
+      )
+      $0.driverAppAPIClient = DriverAppAPIClient(
+        getMe: { throw DriverAPIError.unimplemented("getMe") },
+        getCurrentRoute: { throw DriverAPIError.unimplemented("getCurrentRoute") },
+        getEarnings: { _ in Self.earnings(.today, totalCents: 2_000, deliveries: 3) },
+        getShifts: { [Self.shift()] }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cashoutConfirmed) {
+      $0.cashoutSheet?.isSubmitting = true
+    }
+    await store.skipReceivedActions()
+    XCTAssertNil(store.state.cashoutSheet, "sheet dismissed after server success")
+    XCTAssertEqual(store.state.cashoutToast, "Cashout requested. We'll send it to your bank.")
+    XCTAssertEqual(store.state.recentCashouts.first, cashout)
+    let recordedAmounts = await captured.value
+    XCTAssertEqual(recordedAmounts, [2_500], "POST body uses parsed integer cents")
+  }
+
+  func test_cashoutConfirmed_insufficientFunds_keepsSheetWithInlineError() async {
+    let envelope = ErrorEnvelope(
+      error: .init(
+        code: "PAYMENT_AMOUNT_MISMATCH",
+        message: "requested cashout exceeds available balance",
+        details: .object([
+          "requestedCents": .number(10_000),
+          "availableCents": .number(1_500),
+          "lifetimeCents": .number(2_000),
+          "outstandingCents": .number(500)
+        ])
+      )
+    )
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "100.00")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverCashoutAPIClient = DriverCashoutAPIClient(
+        requestCashout: { _ in
+          throw APIError.server(status: 422, envelope: envelope)
+        }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cashoutConfirmed) {
+      $0.cashoutSheet?.isSubmitting = true
+    }
+    await store.skipReceivedActions()
+    XCTAssertNotNil(store.state.cashoutSheet, "sheet stays open on insufficient funds")
+    XCTAssertFalse(store.state.cashoutSheet?.isSubmitting ?? true)
+    XCTAssertEqual(
+      store.state.cashoutSheet?.errorMessage,
+      "Not enough available. You have $15.00 to cash out."
+    )
+    XCTAssertNil(store.state.cashoutToast, "no success toast on failure")
+  }
+
+  func test_cashoutConfirmed_serverError_surfacesGenericMessage() async {
+    let envelope = ErrorEnvelope(
+      error: .init(code: "INTERNAL", message: "Try again later")
+    )
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "10.00")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverCashoutAPIClient = DriverCashoutAPIClient(
+        requestCashout: { _ in
+          throw APIError.server(status: 500, envelope: envelope)
+        }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cashoutConfirmed) {
+      $0.cashoutSheet?.isSubmitting = true
+    }
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.cashoutSheet?.errorMessage, "Try again later")
+    XCTAssertFalse(store.state.cashoutSheet?.isSubmitting ?? true)
+  }
+
+  func test_cashoutConfirmed_invalidAmount_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "abc")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutConfirmed)
+  }
+
+  func test_cashoutConfirmed_whileSubmitting_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(
+          amountText: "10.00",
+          isSubmitting: true
+        )
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutConfirmed)
+  }
+
+  func test_cashoutSheetDismissed_clearsSheet() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "10.00")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutSheetDismissed) {
+      $0.cashoutSheet = nil
+    }
+  }
+
+  func test_cashoutToastDismissed_clearsToast() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(cashoutToast: "Cashout requested.")
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    await store.send(.cashoutToastDismissed) {
+      $0.cashoutToast = nil
+    }
+  }
+
+  func test_cashoutResponseSuccess_firesDelegate() async {
+    let cashout = Self.cashoutFixture(amountCents: 1_500, status: .processing)
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        earnings: Self.earnings(.today, totalCents: 4_500, deliveries: 3),
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(
+          amountText: "15.00",
+          isSubmitting: true
+        )
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverAppAPIClient = DriverAppAPIClient(
+        getMe: { throw DriverAPIError.unimplemented("getMe") },
+        getCurrentRoute: { throw DriverAPIError.unimplemented("getCurrentRoute") },
+        getEarnings: { _ in Self.earnings(.today, totalCents: 3_000, deliveries: 3) },
+        getShifts: { [] }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cashoutResponse(.success(cashout)))
+    await store.receive(\.delegate.cashoutSucceeded)
+    XCTAssertEqual(store.state.recentCashouts.first?.id, cashout.id)
+  }
+
+  // MARK: - CashoutSheetState parsing
+
+  func test_parsedAmountCents_acceptsDollarsAndCents() {
+    XCTAssertEqual(DriverEarningsFeature.CashoutSheetState(amountText: "25").parsedAmountCents, 2_500)
+    XCTAssertEqual(DriverEarningsFeature.CashoutSheetState(amountText: "25.5").parsedAmountCents, 2_550)
+    XCTAssertEqual(DriverEarningsFeature.CashoutSheetState(amountText: "25.50").parsedAmountCents, 2_550)
+    XCTAssertEqual(DriverEarningsFeature.CashoutSheetState(amountText: "$25.00").parsedAmountCents, 2_500)
+    XCTAssertEqual(DriverEarningsFeature.CashoutSheetState(amountText: " 10 ").parsedAmountCents, 1_000)
+  }
+
+  func test_parsedAmountCents_rejectsInvalid() {
+    XCTAssertNil(DriverEarningsFeature.CashoutSheetState(amountText: "").parsedAmountCents)
+    XCTAssertNil(DriverEarningsFeature.CashoutSheetState(amountText: "abc").parsedAmountCents)
+    XCTAssertNil(DriverEarningsFeature.CashoutSheetState(amountText: "0").parsedAmountCents)
+    XCTAssertNil(DriverEarningsFeature.CashoutSheetState(amountText: "-5").parsedAmountCents)
+  }
+
+  func test_isConfirmEnabled_requiresValidAmountAndNotSubmitting() {
+    XCTAssertTrue(DriverEarningsFeature.CashoutSheetState(amountText: "10").isConfirmEnabled)
+    XCTAssertFalse(DriverEarningsFeature.CashoutSheetState(amountText: "").isConfirmEnabled)
+    XCTAssertFalse(
+      DriverEarningsFeature.CashoutSheetState(amountText: "10", isSubmitting: true).isConfirmEnabled
+    )
+  }
+
   // MARK: - Fixtures
 
   nonisolated private static func earnings(
@@ -314,9 +587,50 @@ final class DriverEarningsFeatureTests: XCTestCase {
     )
   }
 
+  nonisolated private static func cashoutFixture(
+    id: UUID = UUID(uuidString: "00000000-0000-0000-0000-0000000000c1")!,
+    amountCents: Int = 2_500,
+    status: CashoutStatus = .pending,
+    aeropayPayoutRef: String? = nil
+  ) -> CashoutRequest {
+    CashoutRequest(
+      id: id,
+      amountCents: amountCents,
+      status: status,
+      requestedAt: Date(timeIntervalSince1970: 1_700_000_000),
+      aeropayPayoutRef: aeropayPayoutRef
+    )
+  }
+
   static func disableDependencies(_ values: inout DependencyValues) {
     values.driverAppAPIClient = .unimplemented
+    values.driverCashoutAPIClient = .unimplemented
     values.continuousClock = ImmediateClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
+  }
+}
+
+/// Actor-isolated capture helper for verifying side-effects (POST
+/// arguments) from inside a `@Sendable` test closure. Mirrors the
+/// `Locker<T>` pattern used in other feature tests.
+private actor Locker<T: Sendable> {
+  private var storage: T
+
+  init(_ initial: T) {
+    self.storage = initial
+  }
+
+  var value: T { storage }
+
+  func set(_ next: T) {
+    storage = next
+  }
+}
+
+private extension Locker where T == [Int] {
+  func append(_ next: Int) {
+    var next1 = value
+    next1.append(next)
+    set(next1)
   }
 }
