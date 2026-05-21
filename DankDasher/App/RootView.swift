@@ -1,9 +1,7 @@
 import SwiftUI
 import ComposableArchitecture
 import DankDashDesignSystem
-import DankDashDomain
 import DankDashFeatures
-import DankDashNetwork
 
 /// Top-level scene for the DankDasher driver app. Switches on
 /// ``DriverRootFeature/State/screen`` and mounts the matching subtree.
@@ -46,15 +44,15 @@ struct RootView: View {
         )
 
       case .shift:
-        ShiftPlaceholderView(
-          driver: store.shift.driver,
+        ShiftHomeView(
+          store: store.scope(state: \.shift, action: \.shift),
           onSignOut: { store.send(.signOutTapped) }
         )
 
       case .earnings:
-        if let earnings = store.earnings {
-          EarningsPlaceholderView(
-            period: earnings.period,
+        if let earningsStore = store.scope(state: \.earnings, action: \.earnings) {
+          EarningsView(
+            store: earningsStore,
             onDismiss: { store.send(.earningsDismissed) }
           )
         } else {
@@ -191,67 +189,3 @@ private struct OnboardingFlowView: View {
   }
 }
 
-/// Scaffolding for the shift home. Replaced in Commit 13 by
-/// `ShiftHomeView` (map + online toggle + earnings card). Surfaces the
-/// driver identity + a sign-out so the post-auth happy path is testable
-/// before the full screen lands.
-private struct ShiftPlaceholderView: View {
-  let driver: Driver?
-  let onSignOut: () -> Void
-
-  var body: some View {
-    VStack(spacing: DankSpacing.lg) {
-      DankLogo(.mark, size: 80)
-      Text("Driver shift")
-        .font(DankFont.title)
-        .foregroundStyle(DankColor.Text.primary)
-      if let driver {
-        Text("Driver \(driver.id.uuidString.prefix(8))")
-          .font(DankFont.bodySmall)
-          .foregroundStyle(DankColor.Text.muted)
-      } else {
-        Text("No driver record loaded")
-          .font(DankFont.bodySmall)
-          .foregroundStyle(DankColor.Text.muted)
-      }
-      DankButton(
-        "Sign out",
-        style: .ghost,
-        size: .medium,
-        action: onSignOut
-      )
-    }
-    .padding(DankSpacing.lg)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(DankColor.cream)
-  }
-}
-
-/// Scaffolding for the earnings detail. Replaced in Commit 13 by
-/// `EarningsView`. Surfaces the active period + a dismiss so the
-/// `.earnings` screen edge can be exercised end-to-end.
-private struct EarningsPlaceholderView: View {
-  let period: EarningsPeriod
-  let onDismiss: () -> Void
-
-  var body: some View {
-    VStack(spacing: DankSpacing.lg) {
-      DankLogo(.mark, size: 80)
-      Text("Earnings")
-        .font(DankFont.title)
-        .foregroundStyle(DankColor.Text.primary)
-      Text("Period: \(period.displayLabel)")
-        .font(DankFont.bodySmall)
-        .foregroundStyle(DankColor.Text.muted)
-      DankButton(
-        "Back to shift",
-        style: .primary,
-        size: .large,
-        action: onDismiss
-      )
-    }
-    .padding(DankSpacing.lg)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(DankColor.cream)
-  }
-}
