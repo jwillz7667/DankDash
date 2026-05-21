@@ -40,8 +40,8 @@ struct RootView: View {
         )
 
       case .onboarding:
-        OnboardingPlaceholderView(
-          step: store.onboarding.step,
+        OnboardingFlowView(
+          store: store.scope(state: \.onboarding, action: \.onboarding),
           onSignOut: { store.send(.signOutTapped) }
         )
 
@@ -159,45 +159,35 @@ private struct AuthFlowView: View {
   }
 }
 
-/// Scaffolding for the onboarding flow. Replaced wholesale in Commit 12
-/// by the per-step screens (`WelcomeView`, `VehicleDetailsView`,
-/// `DocumentsView`, `ReviewView`, `PendingReviewView`). Until then the
-/// view renders the current step plus a sign-out escape hatch so the
-/// reducer composition can be exercised on-device.
-private struct OnboardingPlaceholderView: View {
-  let step: DriverOnboardingFeature.Step
+/// Router for the driver onboarding flow. Mounts one of five
+/// per-step views — `WelcomeView`, `VehicleDetailsView`,
+/// `DocumentsView`, `ReviewView`, `PendingReviewView` — depending on
+/// the scoped reducer's `step`. Each child receives a `@Bindable`
+/// store scoped down to `DriverOnboardingFeature` so it can dispatch
+/// step-local actions; the `onSignOut` closure is the only
+/// parent-action escape hatch (delegates the actual sign-out to the
+/// root reducer). Triggers `.onAppear` once on mount so the draft
+/// store hydrates the form fields on a cold relaunch.
+private struct OnboardingFlowView: View {
+  @Bindable var store: StoreOf<DriverOnboardingFeature>
   let onSignOut: () -> Void
 
   var body: some View {
-    VStack(spacing: DankSpacing.lg) {
-      DankLogo(.mark, size: 80)
-      Text("Driver onboarding")
-        .font(DankFont.title)
-        .foregroundStyle(DankColor.Text.primary)
-      Text(stepLabel)
-        .font(DankFont.body)
-        .foregroundStyle(DankColor.Text.secondary)
-        .multilineTextAlignment(.center)
-      DankButton(
-        "Sign out",
-        style: .ghost,
-        size: .medium,
-        action: onSignOut
-      )
+    Group {
+      switch store.step {
+      case .welcome:
+        WelcomeView(store: store, onSignOut: onSignOut)
+      case .vehicle:
+        VehicleDetailsView(store: store)
+      case .documents:
+        DocumentsView(store: store)
+      case .review:
+        ReviewView(store: store)
+      case .pending:
+        PendingReviewView(store: store, onSignOut: onSignOut)
+      }
     }
-    .padding(DankSpacing.lg)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(DankColor.cream)
-  }
-
-  private var stepLabel: String {
-    switch step {
-    case .welcome: "Welcome step"
-    case .vehicle: "Vehicle details step"
-    case .documents: "Documents upload step"
-    case .review: "Application review step"
-    case .pending: "Awaiting admin approval"
-    }
+    .task { store.send(.onAppear) }
   }
 }
 
