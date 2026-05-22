@@ -1,0 +1,15 @@
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "low": false,
+  "moderate": false,
+  "high": true,
+  "critical": true,
+  "package-manager": "pnpm",
+  "report-type": "important",
+  "show-found": true,
+  "show-not-found": false,
+  "registry": "https://registry.npmjs.org",
+  "summary": true,
+  "extra-args": ["--prod"],
+  "allowlist": []
+}

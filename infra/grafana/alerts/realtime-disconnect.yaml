@@ -1,0 +1,82 @@
+# Realtime (Socket.io) disconnect-rate alerts.
+#
+# Outcome label values on realtime_connections_total are:
+#   - 'connected'    — a new session was accepted
+#   - 'rejected'     — auth or namespace deny
+#   - 'disconnected' — graceful close
+#   - 'error'        — abnormal disconnect (transport error, timeout)
+#
+# The disconnect ratio = error / (connected + error). A baseline of
+# 1-2% is normal (mobile networks). >5% sustained is either a
+# realtime-server bug or a Redis adapter problem.
+
+groups:
+  - name: dankdash-realtime-disconnect
+    interval: 30s
+    rules:
+      - alert: RealtimeDisconnectRate
+        expr: |
+          sum(rate(realtime_connections_total{outcome="error"}[10m]))
+          /
+          clamp_min(sum(rate(realtime_connections_total{outcome=~"connected|error"}[10m])), 0.0001)
+          > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: realtime
+        annotations:
+          summary: "Realtime disconnect-error ratio above 5% for 10m"
+          description: |
+            More than 5% of Socket.io sessions are ending in an error
+            disconnect. Walk the realtime dashboard, then check the
+            Redis adapter (BullMQ + Socket.io share Redis; if Redis
+            paused, both go red).
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/grafana-alert-triage.md#realtime-disconnects"
+
+      - alert: RealtimeActiveConnectionsCollapse
+        # Sudden drop to zero active connections during peak hours
+        # = process crash or Redis adapter wedged.
+        expr: |
+          sum(realtime_active_connections) == 0
+          and on()
+          (
+            hour(timestamp(realtime_active_connections)) >= 12
+            or hour(timestamp(realtime_active_connections)) < 4
+          )
+        for: 5m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: realtime
+        annotations:
+          summary: "Realtime active connections == 0 during business hours"
+          description: |
+            No active Socket.io connections at all during the 8AM-2AM
+            business window. Either the realtime process is down or
+            no clients are connecting (front-door / DNS issue). Check
+            healthcheck + railway logs first.
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/grafana-alert-triage.md#realtime-down"
+
+      - alert: RealtimeRedisOpsBurst
+        # If ops/sec ticks up by 5x baseline, often a sign of a
+        # broadcast loop (someone wired a listener to its own emit).
+        expr: |
+          redis_ops_per_second
+          > 5 * avg_over_time(redis_ops_per_second[1h] offset 1h)
+          and
+          redis_ops_per_second > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: dankdash-backend
+          service: realtime
+        annotations:
+          summary: "Redis ops/sec 5x baseline (possible broadcast loop)"
+          description: |
+            Redis ops/sec has spiked to >5x the previous hour's
+            average and is sustained above 500 ops/sec. Common
+            cause: a Socket.io listener firing its own emit and
+            entering a fan-out loop. Open the realtime spans in
+            Tempo and look for a single event-name dominating the
+            emit volume.

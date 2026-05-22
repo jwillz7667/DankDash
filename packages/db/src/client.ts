@@ -33,6 +33,22 @@ export interface CreatePoolOptions {
    * used by integration tests.
    */
   readonly prepare?: boolean;
+  /**
+   * Per-statement runtime cap (ms). Postgres aborts any single query
+   * that exceeds this. Set 0 to disable (workers can opt out for legitimate
+   * multi-minute batch jobs). Default 30s matches migration 0006's
+   * database-level default — application-layer enforcement is the
+   * authoritative copy when the DB-level ALTER DATABASE is unavailable
+   * (managed Postgres revokes ALTER DATABASE in some plans).
+   */
+  readonly statementTimeoutMs?: number;
+  /**
+   * How long an open transaction is allowed to sit idle (ms) before
+   * Postgres terminates the session. Defends against the
+   * "BEGIN; ...await something forever..." anti-pattern that pins a
+   * connection. 0 disables. Default 60s.
+   */
+  readonly idleInTransactionTimeoutMs?: number;
 }
 
 export interface Pool {
@@ -46,6 +62,8 @@ const DEFAULT_MAX_CONNECTIONS = 10;
 const DEFAULT_CONNECT_TIMEOUT_S = 10;
 const DEFAULT_IDLE_TIMEOUT_S = 30;
 const DEFAULT_SLOW_QUERY_MS = 500;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
+const DEFAULT_IDLE_IN_TXN_TIMEOUT_MS = 60_000;
 
 class PinoDrizzleLogger implements DrizzleLogger {
   constructor(private readonly logger: Logger) {}
@@ -60,14 +78,30 @@ export function createPool(opts: CreatePoolOptions): Pool {
   const connectTimeoutSeconds = opts.connectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_S;
   const idleTimeoutSeconds = opts.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_S;
   const slowQueryThresholdMs = opts.slowQueryThresholdMs ?? DEFAULT_SLOW_QUERY_MS;
+  const statementTimeoutMs = opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS;
+  const idleInTxnTimeoutMs = opts.idleInTransactionTimeoutMs ?? DEFAULT_IDLE_IN_TXN_TIMEOUT_MS;
   const usePrepared = opts.prepare ?? true;
   const logger = opts.logger;
+
+  // postgres-js `connection` is the libpq-style startup parameters bag;
+  // each new physical socket runs `SET <key> = <value>` once. Encoded as
+  // strings because postgres-js stringifies and pg parses GUC units from
+  // the literal — `'30000'` is interpreted as ms (the default unit for
+  // statement_timeout / idle_in_transaction_session_timeout).
+  const connection: Record<string, string> = {};
+  if (statementTimeoutMs > 0) {
+    connection['statement_timeout'] = String(statementTimeoutMs);
+  }
+  if (idleInTxnTimeoutMs > 0) {
+    connection['idle_in_transaction_session_timeout'] = String(idleInTxnTimeoutMs);
+  }
 
   const sql = postgres(opts.databaseUrl, {
     max: maxConnections,
     prepare: usePrepared,
     connect_timeout: connectTimeoutSeconds,
     idle_timeout: idleTimeoutSeconds,
+    connection,
     onnotice: (notice) => {
       logger.debug({ notice }, 'postgres notice');
     },
@@ -105,5 +139,7 @@ export function createPoolFromEnv(env: Env, logger: Logger): Pool {
     logger,
     maxConnections: env.DATABASE_POOL_SIZE,
     slowQueryThresholdMs: env.DATABASE_SLOW_QUERY_MS,
+    statementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS,
+    idleInTransactionTimeoutMs: env.DATABASE_IDLE_IN_TXN_TIMEOUT_MS,
   });
 }

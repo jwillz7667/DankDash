@@ -1,0 +1,39 @@
+# Tempo datasource — OTLP trace storage.
+#
+# DankDash exports OTLP spans from api + realtime + workers via
+# `@dankdash/observability` (see packages/observability/src/otel/sdk.ts).
+# Tempo is the canonical span store; the Trace ID exemplars dropped
+# into Mimir histograms link back here so the on-call can pivot
+# from a slow-request panel to the span in two clicks.
+
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: ${TEMPO_URL}
+    editable: false
+    basicAuth: true
+    basicAuthUser: ${TEMPO_USERNAME}
+    secureJsonData:
+      basicAuthPassword: ${TEMPO_PASSWORD}
+    jsonData:
+      httpMethod: GET
+      tracesToLogs:
+        datasourceUid: loki
+        # When the Sentry / log line has a trace_id field, this lets
+        # the operator click through from a span to its surrounding
+        # log lines (we ship the trace_id via the pino mixin already).
+        mapTagNamesEnabled: false
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 1m
+      tracesToMetrics:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: loki
+      serviceMap:
+        datasourceUid: prometheus

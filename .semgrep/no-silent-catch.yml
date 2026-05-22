@@ -1,0 +1,39 @@
+# Forbid empty catch blocks. CLAUDE.md: "Zero silent catches." Either
+# handle the error, log it with context, or rethrow with `cause`. A
+# bare `catch {}` discards the failure and is almost always a bug.
+#
+# We accept catches that re-throw because the rethrow is the explicit
+# handling decision.
+
+rules:
+  - id: dankdash-no-silent-catch
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Silent catch — handle the error, log it with context, or rethrow.
+      Bare catch blocks discard failure information and break error
+      observability. See CLAUDE.md "Zero silent catches."
+    paths:
+      include:
+        - apps/
+        - packages/
+      exclude:
+        - "**/test/**"
+        - "**/tests/**"
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.spec.ts"
+        - "**/dist/**"
+        - "**/build/**"
+        - "**/node_modules/**"
+    pattern-either:
+      - pattern: |
+          try {
+            ...
+          } catch {
+          }
+      - pattern: |
+          try {
+            ...
+          } catch ($E) {
+          }

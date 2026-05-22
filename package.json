@@ -18,6 +18,10 @@
     "test": "turbo run test",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\" --ignore-path .gitignore",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\" --ignore-path .gitignore",
+    "security:audit": "audit-ci --config audit-ci.json",
+    "security:secrets": "bash ./scripts/verify-no-secrets.sh",
+    "security:semgrep": "bash ./scripts/run-semgrep.sh",
+    "security:licenses": "bash ./scripts/audit-licenses.sh",
     "prepare": "bash ./scripts/install-git-hooks.sh"
   },
   "devDependencies": {
@@ -25,6 +29,7 @@
     "@commitlint/config-conventional": "^19.5.0",
     "@dankdash/config": "workspace:*",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "audit-ci": "^7.1.0",
     "@typescript-eslint/parser": "^8.18.0",
     "eslint": "^9.17.0",
     "eslint-config-prettier": "^9.1.0",

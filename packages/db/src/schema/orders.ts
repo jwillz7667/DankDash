@@ -104,6 +104,13 @@ export const orders = pgTable(
     index('orders_active_idx')
       .on(table.placedAt)
       .where(sql`${table.status} NOT IN ('delivered','canceled','rejected')`),
+    // Veriff webhook receiver looks up the order by verification id (which
+    // we stash in delivery_id_scan_ref when the scan session is created).
+    // Partial WHERE NOT NULL keeps the index small — only orders that have
+    // been (or are being) handed off carry a value.
+    index('orders_delivery_id_scan_ref_idx')
+      .on(table.deliveryIdScanRef)
+      .where(sql`${table.deliveryIdScanRef} IS NOT NULL`),
   ],
 );
 

@@ -7,10 +7,27 @@
  *
  * The process stays alive by virtue of the node-cron timers; SIGTERM
  * triggers a graceful shutdown that stops the cron, drains in-flight
- * jobs (none currently), and closes the db pool. Railway sends SIGTERM
- * 30s before SIGKILL on rolling restarts, which is plenty for the
- * payout job — the only mutation it performs is bounded per recipient.
+ * jobs (none currently), closes the metrics HTTP listener, flushes
+ * pending OTel spans, and finally closes the db pool. Railway sends
+ * SIGTERM 30s before SIGKILL on rolling restarts, which is plenty for
+ * the payout job — the only mutation it performs is bounded per
+ * recipient.
+ *
+ * Observability bootstrap order matters:
+ *   1. `./tracing.js`  — must be FIRST so OTel's require-hooks can
+ *      patch pg / ioredis / undici before the repositories pull them
+ *      in transitively. This is also why the import lives in its own
+ *      file: tree-shaking the side effect away would silently disable
+ *      tracing.
+ *   2. `loadEnv`        — gives us `WORKERS_METRICS_PORT` + NODE_ENV.
+ *   3. `configureRegistry` + `createCronMetrics` + `createMetricsServer`
+ *      — register the cron histograms with the registry before the
+ *      schedulers receive the metrics handle.
+ *   4. Schedulers receive `cronMetrics` so every job invocation
+ *      records duration / outcome / last-run timestamp.
  */
+/* eslint-disable import/order -- tracing must be imported before any other module that OTel auto-instruments (pg, undici, etc.). */
+import { workersOtelHandle } from './tracing.js';
 import { AeropayAuth, AeropayClient, HttpClient, createUndiciDispatcher } from '@dankdash/aeropay';
 import { createLogger, loadEnv } from '@dankdash/config';
 import {
@@ -34,10 +51,13 @@ import {
   MetrcClient,
   createUndiciDispatcher as createMetrcDispatcher,
 } from '@dankdash/metrc';
+import { configureRegistry } from '@dankdash/observability';
 import { publishRealtimeEvent } from '@dankdash/realtime-events';
 import { R2Storage } from '@dankdash/storage';
 import { Redis } from 'ioredis';
 import { uuidv7 } from 'uuidv7';
+import { createCronMetrics } from './instrumentation/cron-spans.js';
+import { createMetricsServer } from './instrumentation/metrics-server.js';
 import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
 import {
   createEtaObserver,
@@ -53,10 +73,27 @@ import {
 } from './jobs/partition-management/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
+/* eslint-enable import/order */
 
 async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger({ name: 'workers', environment: env.NODE_ENV });
+
+  // The registry is a process-global singleton inside @dankdash/observability;
+  // configuring it here pins service+environment labels on every series and
+  // turns on the default Node.js process gauges (RSS, GC pause, event-loop
+  // lag). Disabled under NODE_ENV=test so vitest doesn't leak the collection
+  // timer between specs.
+  const registry = configureRegistry({
+    service: 'workers',
+    environment: env.NODE_ENV,
+    collectDefault: env.NODE_ENV !== 'test',
+  });
+
+  const cronMetrics = createCronMetrics(registry);
+  const metricsServer = createMetricsServer({ registry, port: env.WORKERS_METRICS_PORT });
+  await metricsServer.start();
+  logger.info({ port: env.WORKERS_METRICS_PORT }, 'workers metrics listener up');
 
   const pool = createPoolFromEnv(env, logger);
   const dispensaries = new DispensariesRepository(pool.db);
@@ -105,8 +142,14 @@ async function main(): Promise<void> {
     http: metrcHttp,
   });
 
-  const payoutTask = schedulePayoutJob({ dispensaries, ledger, payouts, aeropay, logger });
-  const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
+  const payoutTask = schedulePayoutJob(
+    { dispensaries, ledger, payouts, aeropay, logger },
+    { cronMetrics },
+  );
+  const webhookCleanupTask = scheduleWebhookEventsCleanupJob(
+    { webhookEvents, logger },
+    { cronMetrics },
+  );
   const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
 
@@ -244,6 +287,12 @@ async function main(): Promise<void> {
     await locationIngest.stop();
     etaCacheRedis.disconnect();
     etaPublishRedis.disconnect();
+    // Close the HTTP listener before flushing OTel so the final scrape
+    // (if any) sees the same counters the trace exporter is about to
+    // ship; then flush spans before closing the pool so any in-flight
+    // SQL span gets a parent context.
+    await metricsServer.close();
+    await workersOtelHandle.shutdown();
     await pool.close();
     process.exit(0);
   };

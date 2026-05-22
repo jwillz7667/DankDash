@@ -38,6 +38,7 @@ export {
   type CreateUserAddressInput,
   type RotateSessionInput,
   SessionsRepository,
+  type UpdateUserAddressPatch,
   UserAddressesRepository,
   UserIdDocumentsRepository,
   UsersRepository,

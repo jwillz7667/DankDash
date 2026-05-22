@@ -1,5 +1,5 @@
-import { NotFoundError, RepositoryError } from '@dankdash/types';
-import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { ConflictError, NotFoundError, RepositoryError } from '@dankdash/types';
+import { and, asc, desc, eq, gte, inArray, lt, not, or, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
 import { users } from '../schema/identity.js';
 import {
@@ -74,6 +74,16 @@ export interface OrderStatusTransitionInput {
    * Used for cancellations and rejections; ignored otherwise.
    */
   readonly reason?: string | undefined;
+  /**
+   * Optional FROM-state guard. When provided, the row's current status
+   * must be one of these values or the transition is rejected with
+   * `ConflictError('ORDER_STATE_INVALID')`. Callers that already locked
+   * the row in their own SELECT can omit this; callers driving the
+   * state machine from the outside (driver app, vendor portal) pass
+   * the expected predecessor set so two parallel taps cannot double-
+   * transition.
+   */
+  readonly expectedFromStatus?: readonly OrderStatus[] | undefined;
 }
 
 /**
@@ -198,6 +208,109 @@ export class OrdersRepository extends BaseRepository {
       .where(eq(orders.userId, userId))
       .orderBy(desc(orders.placedAt))
       .limit(limit);
+  }
+
+  /**
+   * Cursor pagination ordered by `(placedAt DESC, id DESC)`. The cursor
+   * fixes the position to the row immediately AFTER the last one
+   * returned in the previous page — `placedAt < cursor.placedAt OR
+   * (placedAt = cursor.placedAt AND id < cursor.id)`. Pairs with the
+   * `orders_user_placed_idx` btree so the predicate is a single index
+   * scan no matter where in the user's history the page sits.
+   *
+   * `statusFilter` partitions the user's orders into "still in flight"
+   * vs "done with". Both surfaces (the Active and Past tabs) call the
+   * same endpoint with a different filter; `'all'` is reserved for
+   * admin-tooling read paths.
+   *
+   * The repo asks for `limit + 1` rows so the caller can tell whether
+   * a next page exists without a separate count query — if the extra
+   * row comes back, drop it and emit a cursor for the LAST kept row.
+   */
+  async listForUserCursored(input: {
+    readonly userId: string;
+    readonly limit: number;
+    readonly statusFilter: 'active' | 'completed' | 'all';
+    readonly cursor: { readonly placedAt: Date; readonly id: string } | null;
+  }): Promise<readonly Order[]> {
+    const TERMINAL_STATUSES: readonly OrderStatus[] = [
+      'delivered',
+      'canceled',
+      'rejected',
+      'returned_to_store',
+      'disputed',
+      'id_scan_failed',
+      'payment_failed',
+    ];
+    const statusPredicate =
+      input.statusFilter === 'active'
+        ? not(inArray(orders.status, TERMINAL_STATUSES))
+        : input.statusFilter === 'completed'
+          ? inArray(orders.status, TERMINAL_STATUSES)
+          : undefined;
+    const cursorPredicate =
+      input.cursor === null
+        ? undefined
+        : or(
+            lt(orders.placedAt, input.cursor.placedAt),
+            and(eq(orders.placedAt, input.cursor.placedAt), lt(orders.id, input.cursor.id)),
+          );
+    const wheres = [eq(orders.userId, input.userId), statusPredicate, cursorPredicate].filter(
+      (clause): clause is Exclude<typeof clause, undefined> => clause !== undefined,
+    );
+    return this.db
+      .select()
+      .from(orders)
+      .where(wheres.length === 1 ? wheres[0] : and(...wheres))
+      .orderBy(desc(orders.placedAt), desc(orders.id))
+      .limit(input.limit);
+  }
+
+  /**
+   * User-scoped detail read. Pairs id + userId in the WHERE so a
+   * cross-user id matches zero rows (same response shape as missing —
+   * a probe cannot distinguish ownership-fail from existence-fail).
+   */
+  async findByIdForUser(orderId: string, userId: string): Promise<Order | null> {
+    const [row] = await this.db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.userId, userId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Driver-scoped detail read — same probe-resistance shape as
+   * findByIdForUser. A driver who pastes another driver's order id
+   * gets a 404, not a 403, so they can't enumerate the assignment
+   * graph by status code.
+   */
+  async findByIdForDriver(orderId: string, driverUserId: string): Promise<Order | null> {
+    const [row] = await this.db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.driverId, driverUserId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Veriff webhook lookup fallback. When a webhook arrives without a
+   * usable `vendorData` (truncated or stripped by a proxy), the
+   * receiver still has the verification id and can find the order via
+   * the partial `orders_delivery_id_scan_ref_idx`. The webhook handler
+   * cross-checks `deliveryIdScanRef` after the lookup so a leftover
+   * value from a previous session does not let a stale webhook
+   * mutate the wrong order.
+   */
+  async findByDeliveryIdScanRef(deliveryIdScanRef: string): Promise<Order | null> {
+    const [row] = await this.db
+      .select()
+      .from(orders)
+      .where(eq(orders.deliveryIdScanRef, deliveryIdScanRef))
+      .limit(1);
+    return row ?? null;
   }
 
   async listForDispensary(
@@ -390,6 +503,57 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
+   * Earnings aggregate for a delivered-orders window — variant used by the
+   * Phase-20 driver earnings + cashout services. Sums `delivery_fee_cents`
+   * + `driver_tip_cents` (the two driver-bound components of an order's
+   * money split) over the half-open `[since, until)` `delivered_at` window.
+   *
+   * `since === null` (passed for the lifetime/all-time bucket) drops the
+   * lower bound entirely; this is the input shape the cashout flow uses to
+   * compute the available balance.
+   *
+   * Pure read — no row lock. The cashout submission re-runs the aggregate
+   * inside its own transaction with `FOR UPDATE` on the driver row to
+   * prevent two concurrent cashouts from both passing the balance gate.
+   */
+  async sumDriverEarnings(input: {
+    readonly driverId: string;
+    readonly since: Date | null;
+    readonly until: Date;
+  }): Promise<{
+    readonly tipsCents: number;
+    readonly deliveryFeesCents: number;
+    readonly deliveriesCount: number;
+  }> {
+    const windowClause =
+      input.since === null
+        ? and(
+            eq(orders.driverId, input.driverId),
+            eq(orders.status, 'delivered'),
+            lt(orders.deliveredAt, input.until),
+          )
+        : and(
+            eq(orders.driverId, input.driverId),
+            eq(orders.status, 'delivered'),
+            gte(orders.deliveredAt, input.since),
+            lt(orders.deliveredAt, input.until),
+          );
+    const [row] = await this.db
+      .select({
+        tipsCents: sql<string>`COALESCE(SUM(${orders.driverTipCents}), 0)`,
+        deliveryFeesCents: sql<string>`COALESCE(SUM(${orders.deliveryFeeCents}), 0)`,
+        deliveriesCount: sql<string>`COUNT(*)`,
+      })
+      .from(orders)
+      .where(windowClause);
+    return {
+      tipsCents: Number(row?.tipsCents ?? '0'),
+      deliveryFeesCents: Number(row?.deliveryFeesCents ?? '0'),
+      deliveriesCount: Number(row?.deliveriesCount ?? '0'),
+    };
+  }
+
+  /**
    * List all orders currently in a given status, oldest-first. Used by the
    * dispatch worker, which sweeps `awaiting_driver` orders on its tick and
    * decides whether to issue an offer, wait, or fail. Oldest-first ordering
@@ -450,6 +614,21 @@ export class OrdersRepository extends BaseRepository {
    *
    * The repo deliberately knows nothing about the state machine — that
    * stays in `@dankdash/orders`. The resolver is the seam.
+   *
+   * The driver-app `transitionStatus` wrapper (below) layers two
+   * non-bypassable gates on top of the resolver:
+   *
+   *   - **FROM-state guard** (`expectedFromStatus`): the row's current
+   *     status must be one of the expected predecessors or the
+   *     transition throws `ConflictError('ORDER_STATE_INVALID')`. A
+   *     driver double-tapping Confirm Pickup gets a 409, not a silent
+   *     double-transition.
+   *
+   *   - **ID-scan gate**: when `toStatus === 'delivered'` the row must
+   *     carry `delivery_id_scan_passed = true`. Otherwise throws
+   *     `ConflictError('COMPLIANCE_ID_SCAN_REQUIRED')`. Spec §6.2 —
+   *     even a future caller bypassing the service layer cannot reach
+   *     delivered without a Veriff-approved scan recorded on the row.
    */
   async applyTransition(orderId: string, resolve: TransitionResolver): Promise<Order> {
     return this.db.transaction(async (tx) => {
@@ -460,6 +639,7 @@ export class OrdersRepository extends BaseRepository {
           userId: orders.userId,
           dispensaryId: orders.dispensaryId,
           driverId: orders.driverId,
+          deliveryIdScanPassed: orders.deliveryIdScanPassed,
         })
         .from(orders)
         .where(eq(orders.id, orderId))
@@ -475,6 +655,14 @@ export class OrdersRepository extends BaseRepository {
         dispensaryId: lockedRow.dispensaryId,
         driverId: lockedRow.driverId,
       });
+
+      if (decision.toStatus === 'delivered' && lockedRow.deliveryIdScanPassed !== true) {
+        throw new ConflictError(
+          'COMPLIANCE_ID_SCAN_REQUIRED',
+          `order ${orderId} cannot transition to delivered without a successful ID scan`,
+          { orderId },
+        );
+      }
 
       const fromStatus = lockedRow.status;
       const now = new Date();
@@ -524,23 +712,47 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
-   * Legacy unchecked transition — flips status without re-validating
-   * against the locked-in row. Retained for the few callers that have
-   * already validated by other means; new code should call
-   * `applyTransition` so the state-machine check runs under the lock.
+   * Driver-app transition path. Enforces `expectedFromStatus` under the
+   * row lock (via the `applyTransition` resolver), so a driver tap that
+   * races with another status flip serialises and the loser gets a
+   * `ConflictError('ORDER_STATE_INVALID')` instead of a silent
+   * double-transition. The ID-scan gate is enforced inside
+   * `applyTransition` for any caller — bypassable only by inserting a
+   * `delivery_id_scan_passed = true` row out-of-band.
    *
-   * @deprecated Use `applyTransition` with a resolver.
+   * The state-machine resolver-based path (`applyTransition` directly)
+   * remains the canonical surface for non-driver callers (vendor,
+   * customer, system); this wrapper exists for the Phase 20 driver-app
+   * endpoints that need to assert "I expect to be transitioning from
+   * one of these states" without rebuilding the resolver pattern.
    */
   async transitionStatus(input: OrderStatusTransitionInput): Promise<Order> {
-    return this.applyTransition(input.orderId, () => ({
-      toStatus: input.toStatus,
-      eventType: input.eventType,
-      actorUserId: input.actorUserId,
-      actorRole: input.actorRole,
-      payload: input.payload,
-      patch: input.patch,
-      reason: input.reason,
-    }));
+    return this.applyTransition(input.orderId, (locked) => {
+      if (
+        input.expectedFromStatus !== undefined &&
+        !input.expectedFromStatus.includes(locked.status)
+      ) {
+        throw new ConflictError(
+          'ORDER_STATE_INVALID',
+          `order ${input.orderId} is in status ${locked.status}, expected one of [${input.expectedFromStatus.join(', ')}]`,
+          {
+            orderId: input.orderId,
+            currentStatus: locked.status,
+            expectedFromStatus: [...input.expectedFromStatus],
+            toStatus: input.toStatus,
+          },
+        );
+      }
+      return {
+        toStatus: input.toStatus,
+        eventType: input.eventType,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        payload: input.payload,
+        patch: input.patch,
+        reason: input.reason,
+      };
+    });
   }
 
   /**

@@ -29,6 +29,7 @@ import type {
   RegisterResponse,
 } from './dto/index.js';
 import type { AuthenticatedUser } from './guards/auth-types.js';
+import type { CheckoutHandoffService } from './handoff/checkout-handoff.service.js';
 import type { FastifyRequest } from 'fastify';
 
 const USER: AuthenticatedUser = {
@@ -129,7 +130,12 @@ function makeRequest(ip: string, userAgent?: string): FastifyRequest {
 describe('AuthController', () => {
   const buildController = (): { controller: AuthController; auth: FakeAuthService } => {
     const auth = new FakeAuthService();
-    const controller = new AuthController(auth as unknown as AuthService);
+    // CheckoutHandoffService is not exercised by these tests (covered by its
+    // own service-level suite). Pass a stub the controller never calls.
+    const checkoutHandoff = {
+      issue: (): Promise<never> => Promise.reject(new Error('not used in these tests')),
+    } as unknown as CheckoutHandoffService;
+    const controller = new AuthController(auth as unknown as AuthService, checkoutHandoff);
     return { controller, auth };
   };
 

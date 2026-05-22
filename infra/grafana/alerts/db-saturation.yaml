@@ -1,0 +1,71 @@
+# Postgres pool saturation alerts.
+#
+# Pool waiters > 0 is the canonical "we are about to fall over"
+# signal: every additional request is blocked until a connection
+# frees, so latency tail explodes. The 5m sustained window catches
+# real saturation while ignoring transient spikes during deploys.
+
+groups:
+  - name: dankdash-db-saturation
+    interval: 30s
+    rules:
+      - alert: DBPoolWaiters
+        # Anything sustained > 0 over 5m is real saturation; one
+        # request waiting 200ms during a slow query is fine.
+        expr: |
+          sum(db_pool_waiting) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "Postgres pool has waiters for 5m"
+          description: |
+            The Postgres connection pool is saturated — at least one
+            caller has been blocked waiting for a connection for the
+            past 5 minutes. The pgbouncer-saturation runbook walks
+            through diagnosis (slow query? leaked connection? raise
+            pool size?).
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/pgbouncer-saturation.md"
+
+      - alert: DBPoolHighUtilization
+        # Soft warning — pool >70% busy for 10m suggests we should
+        # think about raising the pool size before it bites.
+        expr: |
+          sum(db_pool_active) / clamp_min(sum(db_pool_size), 1) > 0.7
+        for: 10m
+        labels:
+          severity: warning
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "Postgres pool utilization above 70% for 10m"
+          description: |
+            Pool utilization has been above 70% for 10 minutes. Not
+            currently blocking, but the headroom is gone. Review the
+            db-pool dashboard's slow-query panel to see whether the
+            pressure is real load or a slow query holding connections.
+
+      - alert: DBSlowQueryP95
+        # The slow-query histogram only observes queries that
+        # crossed SLOW_QUERY_MS (default 1500ms in client.ts). If the
+        # p95 of *those* exceeds 5s, something is wrong — usually
+        # missing index or a runaway lock.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(db_slow_query_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "Slow query p95 above 5s for 10m"
+          description: |
+            The 95th percentile of slow queries (queries already over
+            SLOW_QUERY_MS) is over 5s. This is the canary for an
+            index regression or a long-running maintenance task.
+            Check pg_stat_statements and pg_stat_activity.

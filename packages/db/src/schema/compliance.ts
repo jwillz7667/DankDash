@@ -8,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { complianceCheckType, metrcStatus, verificationContext } from './enums.js';
@@ -108,6 +109,10 @@ export const ageVerifications = pgTable(
     index('age_verifications_order_idx')
       .on(table.orderId)
       .where(sql`${table.orderId} IS NOT NULL`),
+    // Webhook idempotency: a Veriff retry storm on the same verification
+    // re-inserts the same (provider, provider_session_id) pair, which the
+    // repository handles via ON CONFLICT DO NOTHING.
+    unique('age_verifications_provider_session_unique').on(table.provider, table.providerSessionId),
   ],
 );
 
