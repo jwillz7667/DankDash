@@ -194,6 +194,76 @@ jobs:
             --verbose \
             --exit-code=1
 
+  snyk:
+    name: snyk vulnerability scan (high+critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Snyk requires SNYK_TOKEN. Skip when running against a fork PR
+    # (forks cannot read repo secrets) so contributors are not blocked
+    # waiting on a job that cannot succeed for them.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Snyk test
+        # `--all-projects` walks every workspace lockfile. We pin the
+        # severity threshold to high so the gate stays in sync with the
+        # `pnpm audit` policy — moderate/low advisories are reported in
+        # the Snyk UI but do not block the merge.
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --all-projects --policy-path=.snyk
+
+  license-audit:
+    name: license audit (forbid GPL/AGPL/LGPL family)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production licenses
+        # Script lives at scripts/audit-licenses.sh and is the source of
+        # truth for forbidden license SPDX identifiers. Updating the
+        # forbidden list is a deliberate code change with legal review.
+        run: pnpm run security:licenses
+
   semgrep:
     name: semgrep SAST (owasp + typescript + nodejs + repo-local)
     runs-on: ubuntu-latest

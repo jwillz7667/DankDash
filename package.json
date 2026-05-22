@@ -21,6 +21,7 @@
     "security:audit": "audit-ci --config audit-ci.json",
     "security:secrets": "bash ./scripts/verify-no-secrets.sh",
     "security:semgrep": "bash ./scripts/run-semgrep.sh",
+    "security:licenses": "bash ./scripts/audit-licenses.sh",
     "prepare": "bash ./scripts/install-git-hooks.sh"
   },
   "devDependencies": {
