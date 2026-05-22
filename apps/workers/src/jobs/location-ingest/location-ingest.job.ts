@@ -62,6 +62,9 @@ export async function startLocationIngest(deps: LocationIngestDeps): Promise<Loc
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: false,
+    // `family: 0` is required for Railway private networking — see the
+    // commentary on apps/api/src/infrastructure/redis.module.ts.
+    family: 0,
   });
 
   redis.on('error', (err) => {

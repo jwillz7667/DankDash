@@ -81,13 +81,16 @@ export async function buildServer(options: BuildServerOptions): Promise<Realtime
     new Redis(options.env.REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
+      // `family: 0` is required for Railway private networking — see
+      // the commentary on apps/api/src/infrastructure/redis.module.ts.
+      family: 0,
     });
   // The consumer's XREADGROUP BLOCK <ms> holds the ioredis connection for
   // the full block duration; sharing the producer's streamClient would
   // deadlock its XADDs behind a 5s block. Keep the consumer on a
   // dedicated connection (always owned by buildServer — we never accept
   // an injected one because the producer-vs-consumer distinction is an
-  // internal invariant).
+  // internal invariant). `.duplicate()` inherits `family: 0`.
   const consumerClient = streamClient.duplicate();
 
   app.use(createHealthRouter({ redis: streamClient }));
