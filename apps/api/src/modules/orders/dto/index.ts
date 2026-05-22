@@ -199,6 +199,29 @@ export const TransitionResponseSchema = z
 export type TransitionResponse = z.infer<typeof TransitionResponseSchema>;
 
 /**
+ * Append-only `order_events` row projected for HTTP surfaces (driver
+ * order detail, future vendor / consumer timeline views). `eventType`
+ * is left as a free-form string here rather than narrowed to
+ * `OrderEventType` — historical rows written before a renaming would
+ * fail strict enum parsing, and the timeline UI renders them verbatim.
+ * `actorUserId` and `actorRole` are nullable because system-fired
+ * events (DISPATCH_QUEUE, ID_SCAN_PASSED via webhook) have no human
+ * actor on the row.
+ */
+export const OrderEventResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    orderId: z.string().uuid(),
+    eventType: z.string(),
+    actorUserId: z.string().uuid().nullable(),
+    actorRole: z.string().nullable(),
+    payload: z.record(z.unknown()),
+    occurredAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+export type OrderEventResponse = z.infer<typeof OrderEventResponseSchema>;
+
+/**
  * Lean queue-card projection for the vendor portal. Carries only what
  * a kanban card needs (status, who, totals, timestamps); the drawer
  * fetches the full {@link OrderResponse} via `GET /:id` when the staff

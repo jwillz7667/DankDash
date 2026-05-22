@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		2F52C201000000000000C001 /* DankDashDomain in Frameworks */ = {isa = PBXBuildFile; productRef = 2F52C201000000000000B001 /* DankDashDomain */; };
+		2F52C201000000000000C002 /* DankDashDesignSystem in Frameworks */ = {isa = PBXBuildFile; productRef = 2F52C201000000000000B002 /* DankDashDesignSystem */; };
+		2F52C201000000000000C003 /* DankDashStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 2F52C201000000000000B003 /* DankDashStorage */; };
+		2F52C201000000000000C004 /* DankDashNetwork in Frameworks */ = {isa = PBXBuildFile; productRef = 2F52C201000000000000B004 /* DankDashNetwork */; };
+		2F52C201000000000000C005 /* DankDashFeatures in Frameworks */ = {isa = PBXBuildFile; productRef = 2F52C201000000000000B005 /* DankDashFeatures */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		2F52C1E42FBAB05400BB1B87 /* DankDash.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DankDash.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +44,11 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2F52C201000000000000C001 /* DankDashDomain in Frameworks */,
+				2F52C201000000000000C002 /* DankDashDesignSystem in Frameworks */,
+				2F52C201000000000000C003 /* DankDashStorage in Frameworks */,
+				2F52C201000000000000C004 /* DankDashNetwork in Frameworks */,
+				2F52C201000000000000C005 /* DankDashFeatures in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +91,11 @@
 			);
 			name = DankDash;
 			packageProductDependencies = (
+				2F52C201000000000000B001 /* DankDashDomain */,
+				2F52C201000000000000B002 /* DankDashDesignSystem */,
+				2F52C201000000000000B003 /* DankDashStorage */,
+				2F52C201000000000000B004 /* DankDashNetwork */,
+				2F52C201000000000000B005 /* DankDashFeatures */,
 			);
 			productName = DankDash;
 			productReference = 2F52C1E42FBAB05400BB1B87 /* DankDash.app */;
@@ -107,6 +125,9 @@
 			);
 			mainGroup = 2F52C1DB2FBAB05300BB1B87;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2F52C1E52FBAB05400BB1B87 /* Products */;
 			projectDirPath = "";
@@ -349,6 +370,41 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = DankDashKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2F52C201000000000000B001 /* DankDashDomain */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
+			productName = DankDashDomain;
+		};
+		2F52C201000000000000B002 /* DankDashDesignSystem */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
+			productName = DankDashDesignSystem;
+		};
+		2F52C201000000000000B003 /* DankDashStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
+			productName = DankDashStorage;
+		};
+		2F52C201000000000000B004 /* DankDashNetwork */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
+			productName = DankDashNetwork;
+		};
+		2F52C201000000000000B005 /* DankDashFeatures */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2F52C201000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
+			productName = DankDashFeatures;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 2F52C1DC2FBAB05400BB1B87 /* Project object */;
 }

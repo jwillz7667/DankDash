@@ -1,0 +1,18 @@
+Drop three transparent PNGs into this directory and Xcode will pick them up.
+
+Files expected (filenames must match exactly):
+  - BrandLogoMonochrome.png      —  ~240 × 60   @ 1x
+  - BrandLogoMonochrome@2x.png   —  ~480 × 120  @ 2x
+  - BrandLogoMonochrome@3x.png   —  ~720 × 180  @ 3x
+
+Source artwork should be:
+  - Single-color silhouette of the brand mark (no fills, no shadows)
+  - Solid black (#000000) on a transparent background — the asset is
+    rendered as a template so iOS will tint it with the foreground color
+    of the SwiftUI view (e.g. `.foregroundStyle(DankColor.primary)`)
+  - sRGB, 8-bit-per-channel PNG
+  - No DPI metadata that contradicts the @nx scale
+
+Once the PNGs are in place this marker can be deleted; the asset catalog
+already references the three filenames in Contents.json with
+`template-rendering-intent = "template"`.

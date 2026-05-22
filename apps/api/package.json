@@ -35,6 +35,7 @@
     "@nestjs/platform-fastify": "^11.1.21",
     "@nestjs/swagger": "^11.4.3",
     "@nestjs/throttler": "^6.5.0",
+    "@types/luxon": "^3.4.2",
     "argon2": "^0.44.0",
     "decimal.js": "^10.6.0",
     "fastify": "^5.8.5",

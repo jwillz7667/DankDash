@@ -25,6 +25,17 @@ export const EnvSchema = z
     JWT_PUBLIC_KEY_BASE64: z.string().min(1),
     JWT_ACCESS_TTL_SECONDS: positiveInt.default(900),
     JWT_REFRESH_TTL_SECONDS: positiveInt.default(2_592_000),
+    // Apple §10.4 checkout handoff. The iOS consumer hits POST
+    // /v1/auth/checkout-handoff and opens the returned `exchangeUrl`
+    // inside SFSafariViewController; checkout-web is the only surface
+    // that touches the payment flow. CHECKOUT_BASE_URL is the
+    // fully-qualified prefix the API embeds in the response so iOS
+    // never composes its own URL — pinned per environment so a misconfigured
+    // staging build cannot accidentally redirect to production checkout.
+    // The handoff token is single-shot with a tight TTL; 5 minutes is the
+    // Apple-spec-aligned default (one cold-start + one retry budget).
+    CHECKOUT_BASE_URL: z.string().url().default('https://app.dankdash.com'),
+    CHECKOUT_HANDOFF_TTL_SECONDS: positiveInt.default(300),
     PASSWORD_PEPPER: z.string().min(32, 'PASSWORD_PEPPER must be at least 32 bytes'),
 
     COLUMN_ENCRYPTION_KEY_BASE64: z
@@ -52,6 +63,7 @@ export const EnvSchema = z
 
     VERIFF_API_KEY: z.string().min(1),
     VERIFF_WEBHOOK_SECRET: z.string().min(1),
+    VERIFF_API_BASE_URL: z.string().url().default('https://stationapi.veriff.com'),
 
     METRC_API_KEY: z.string().min(1),
     METRC_USER_KEY: z.string().min(1),
@@ -95,6 +107,17 @@ export const EnvSchema = z
     ENABLE_METRC: booleanFromString.default(false),
     ENABLE_PERSONA: booleanFromString.default(true),
     ENABLE_VERIFF: booleanFromString.default(true),
+
+    /**
+     * Routes driver cashout requests to the real
+     * `AeropayClient.createPayout` when true; defaults to false so
+     * Phase 20 ships the persistence-only flow until the driver-side
+     * KYC + bank-link work lands. Flipping this on without the
+     * upstream wiring is a soft fail — see
+     * `LiveAeropayDriverPayoutGateway` in
+     * `apps/api/src/modules/drivers/services/aeropay-driver-payout.gateway.ts`.
+     */
+    AEROPAY_LIVE: booleanFromString.default(false),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not

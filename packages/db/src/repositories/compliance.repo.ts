@@ -388,4 +388,31 @@ export class AgeVerificationsRepository extends BaseRepository {
     if (row === undefined) throw new RepositoryError('age_verifications insert returned no row');
     return row;
   }
+
+  /**
+   * Idempotent variant for webhook receivers. Veriff retries on 5xx and
+   * may deliver the same verification outcome more than once; the unique
+   * constraint on (provider, provider_session_id) makes the second
+   * INSERT a no-op. Returns the existing row when a conflict happens so
+   * the caller doesn't need a second SELECT.
+   */
+  async recordIdempotent(
+    input: Omit<NewAgeVerification, 'id'> & { readonly id?: string },
+  ): Promise<AgeVerification> {
+    const [inserted] = await this.db
+      .insert(ageVerifications)
+      .values({ ...input, id: input.id ?? newId() })
+      .onConflictDoNothing({
+        target: [ageVerifications.provider, ageVerifications.providerSessionId],
+      })
+      .returning();
+    if (inserted !== undefined) return inserted;
+    const existing = await this.findByProviderSessionId(input.provider, input.providerSessionId);
+    if (existing === null) {
+      throw new RepositoryError(
+        'age_verifications conflict resolved to no row — schema invariant violated',
+      );
+    }
+    return existing;
+  }
 }
