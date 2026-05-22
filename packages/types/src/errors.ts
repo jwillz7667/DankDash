@@ -366,6 +366,25 @@ export class PasswordError extends DomainError {
   }
 }
 
+/**
+ * Raised when a feature has been intentionally disabled at the deployment
+ * (its `ENABLE_*` flag is false) but a request reached a code path that
+ * needs it. 503 Service Unavailable is the right status: the surface
+ * isn't broken, the deployment is simply not offering it right now.
+ *
+ * Used by the API's `createDisabledFeatureProxy` to keep the DI graph
+ * satisfied at module construction without requiring credentials for a
+ * service that won't be called.
+ */
+export class FeatureDisabledError extends DomainError {
+  public readonly code = 'FEATURE_DISABLED';
+  public readonly statusCode = 503;
+
+  constructor(feature: string, details: ErrorDetails = {}) {
+    super(`feature '${feature}' is disabled`, { ...details, feature });
+  }
+}
+
 export function toErrorEnvelope(error: DomainError, requestId?: string): ErrorEnvelope {
   return {
     error: {

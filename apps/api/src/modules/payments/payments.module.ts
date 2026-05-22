@@ -50,6 +50,7 @@ import {
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
+import { createDisabledFeatureProxy } from '../../common/disabled-feature.proxy.js';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { REDIS_CLIENT } from '../../infrastructure/redis.module.js';
 import { AuthModule } from '../auth/auth.module.js';
@@ -91,37 +92,55 @@ const httpClientProvider: FactoryProvider<HttpClient> = {
     }),
 };
 
+// Aeropay providers are gated on `ENABLE_AEROPAY`. When the flag is off the
+// factories yield disabled proxies so the DI graph is satisfied without
+// requiring `AEROPAY_*` credentials at module construction; PaymentsModule
+// still mounts (the payment-methods and refunds controllers remain
+// addressable), but any code path that actually hits the proxies surfaces
+// `503 FEATURE_DISABLED`.
 const authProvider: FactoryProvider<AeropayAuth> = {
   provide: AEROPAY_AUTH,
   inject: [ConfigService, AEROPAY_HTTP, TOKEN_CACHE],
-  useFactory: (config: ConfigService, http: HttpClient, cache: TokenCache): AeropayAuth =>
-    new AeropayAuth({
+  useFactory: (config: ConfigService, http: HttpClient, cache: TokenCache): AeropayAuth => {
+    if (!config.getOrThrow<boolean>('ENABLE_AEROPAY')) {
+      return createDisabledFeatureProxy<AeropayAuth>('aeropay');
+    }
+    return new AeropayAuth({
       clientId: config.getOrThrow<string>('AEROPAY_CLIENT_ID'),
       clientSecret: config.getOrThrow<string>('AEROPAY_CLIENT_SECRET'),
       apiBaseUrl: config.getOrThrow<string>('AEROPAY_API_BASE_URL'),
       http,
       cache,
-    }),
+    });
+  },
 };
 
 const clientProvider: FactoryProvider<AeropayClient> = {
   provide: AEROPAY_CLIENT,
   inject: [ConfigService, AEROPAY_HTTP, AEROPAY_AUTH],
-  useFactory: (config: ConfigService, http: HttpClient, auth: AeropayAuth): AeropayClient =>
-    new AeropayClient({
+  useFactory: (config: ConfigService, http: HttpClient, auth: AeropayAuth): AeropayClient => {
+    if (!config.getOrThrow<boolean>('ENABLE_AEROPAY')) {
+      return createDisabledFeatureProxy<AeropayClient>('aeropay');
+    }
+    return new AeropayClient({
       apiBaseUrl: config.getOrThrow<string>('AEROPAY_API_BASE_URL'),
       http,
       auth,
-    }),
+    });
+  },
 };
 
 const webhookVerifierProvider: FactoryProvider<AeropayWebhookVerifier> = {
   provide: AEROPAY_WEBHOOK_VERIFIER,
   inject: [ConfigService],
-  useFactory: (config: ConfigService): AeropayWebhookVerifier =>
-    new AeropayWebhookVerifier({
+  useFactory: (config: ConfigService): AeropayWebhookVerifier => {
+    if (!config.getOrThrow<boolean>('ENABLE_AEROPAY')) {
+      return createDisabledFeatureProxy<AeropayWebhookVerifier>('aeropay');
+    }
+    return new AeropayWebhookVerifier({
       webhookSecret: config.getOrThrow<string>('AEROPAY_WEBHOOK_SECRET'),
-    }),
+    });
+  },
 };
 
 const paymentMethodsRepoProvider: FactoryProvider<PaymentMethodsRepository> = {
