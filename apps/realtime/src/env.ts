@@ -83,7 +83,10 @@ export class RealtimeEnvValidationError extends Error {
 
 export function loadRealtimeEnv(options: LoadEnvOptions = {}): RealtimeEnv {
   const source = options.source ?? process.env;
-  const schema = options.allowPartial === true ? RealtimeEnvSchema.partial() : RealtimeEnvSchema;
+  // Mirror @dankdash/config's loadEnv: if the caller didn't pass an
+  // explicit allowPartial, fall back to the ALLOW_PARTIAL_ENV=1 opt-in.
+  const allowPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
+  const schema = allowPartial ? RealtimeEnvSchema.partial() : RealtimeEnvSchema;
   const result = schema.safeParse(source);
   if (!result.success) {
     const issues = result.error.issues.map((issue) => ({
