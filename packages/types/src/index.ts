@@ -21,6 +21,7 @@ export {
   type PasswordErrorCode,
   DriverError,
   type DriverErrorCode,
+  FeatureDisabledError,
   type ErrorDetails,
   type ErrorEnvelope,
   toErrorEnvelope,

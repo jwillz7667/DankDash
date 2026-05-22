@@ -95,6 +95,13 @@ export const EnvSchema = z
     ENABLE_METRC: booleanFromString.default(false),
     ENABLE_PERSONA: booleanFromString.default(true),
     ENABLE_VERIFF: booleanFromString.default(true),
+    // Twilio (transactional SMS) and Resend (transactional email) are
+    // surfaced as feature flags so deployments without those creds can
+    // boot. When the flag is `false` the API installs a no-op provider
+    // that records a non-retryable skip on every send — the order
+    // lifecycle continues, the notification row carries the reason.
+    ENABLE_TWILIO: booleanFromString.default(true),
+    ENABLE_RESEND: booleanFromString.default(true),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not
