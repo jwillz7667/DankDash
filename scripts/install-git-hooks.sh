@@ -3,13 +3,16 @@
 # Invoked automatically by the root `prepare` npm script after install.
 #
 # Skipped when:
-#   - CI=true              (CI does not need local pre-commit enforcement)
+#   - CI is set to any non-empty value (CI does not need local pre-commit enforcement)
 #   - Running inside CI's `pnpm install --frozen-lockfile` on a non-git tree
 #   - The current working tree is not a git checkout
 
 set -euo pipefail
 
-if [[ "${CI:-}" == "true" ]]; then
+# Providers normalize CI inconsistently — GitHub Actions/Vercel set CI=true,
+# Railway/Docker BuildKit conventions use CI=1. Treat any non-empty value as
+# "skip local hook wiring" so the prepare lifecycle is a no-op in containers.
+if [[ -n "${CI:-}" ]]; then
   exit 0
 fi
 

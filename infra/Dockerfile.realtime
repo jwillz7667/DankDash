@@ -25,6 +25,7 @@ WORKDIR /repo
 
 FROM base AS build
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json ./
+COPY scripts ./scripts
 COPY packages ./packages
 COPY apps/realtime ./apps/realtime
 RUN pnpm install --frozen-lockfile --filter "@dankdash/realtime..."
@@ -34,6 +35,7 @@ RUN pnpm --filter "@dankdash/realtime^..." build \
 FROM base AS runtime
 ENV NODE_ENV=production
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY scripts ./scripts
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/realtime/package.json ./apps/realtime/package.json
 COPY --from=build /repo/apps/realtime/dist ./apps/realtime/dist
