@@ -1,5 +1,5 @@
 import { NotFoundError, RepositoryError } from '@dankdash/types';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
 import {
   orderEvents,
@@ -126,6 +126,19 @@ export class OrdersRepository extends BaseRepository {
       .where(eq(orders.shortCode, shortCode))
       .limit(1);
     return row ?? null;
+  }
+
+  /**
+   * Batched lookup used by the Metrc reconciliation cron to map a set of
+   * `metric_transactions.order_id` values back to their owning dispensary
+   * without an N+1. Empty input short-circuits — Drizzle's `inArray` on
+   * an empty list emits a degenerate `WHERE id IN ()` that some drivers
+   * reject outright and others read as "match nothing", and we'd rather
+   * make that contract explicit at the call site than depend on either.
+   */
+  async findManyByIds(ids: readonly string[]): Promise<readonly Order[]> {
+    if (ids.length === 0) return [];
+    return this.db.select().from(orders).where(inArray(orders.id, ids));
   }
 
   /**

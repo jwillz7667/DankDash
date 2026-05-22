@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { type GeoPoint } from '../schema/custom-types.js';
 import {
   dispatchOffers,
@@ -240,16 +240,40 @@ export class DriversRepository extends BaseRepository {
       .where(eq(drivers.id, id));
   }
 
-  async updateLocation(id: string, location: GeoPoint): Promise<void> {
+  /**
+   * Patch `currentLocation` + `currentLocationUpdatedAt` for one driver.
+   *
+   * `recordedAt` is the timestamp the *event* claims — when omitted, the
+   * wall clock is used (shift start/end, manual ops actions). The location
+   * ingest worker passes the ping's `recordedAt` so the row reflects the
+   * actual freshness of the location, not the latency it took to drain the
+   * Redis Stream.
+   *
+   * Out-of-order writes are dropped via a `WHERE` guard rather than an
+   * application-side compare-and-swap loop. At-least-once delivery on the
+   * realtime stream means the worker can re-process an entry that was
+   * already applied (claim recovery > recoverIdleMs) — in that case the
+   * write must be a no-op so a stale point does not overwrite a fresher
+   * one. The guard is `current_location_updated_at IS NULL OR
+   * current_location_updated_at < recordedAt`; equal timestamps lose the
+   * tie because the existing row's data is at least as good.
+   */
+  async updateLocation(id: string, location: GeoPoint, recordedAt?: Date): Promise<void> {
     const now = new Date();
+    const stamp = recordedAt ?? now;
     await this.db
       .update(drivers)
       .set({
         currentLocation: pointToSql(location),
-        currentLocationUpdatedAt: now,
+        currentLocationUpdatedAt: stamp,
         updatedAt: now,
       })
-      .where(eq(drivers.id, id));
+      .where(
+        and(
+          eq(drivers.id, id),
+          or(isNull(drivers.currentLocationUpdatedAt), lt(drivers.currentLocationUpdatedAt, stamp)),
+        ),
+      );
   }
 
   async incrementDeliveryCount(id: string): Promise<void> {

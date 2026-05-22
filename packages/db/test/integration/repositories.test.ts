@@ -1026,11 +1026,11 @@ describe('repository coverage', () => {
       expect(latest?.checkType).toBe('per_transaction_limit');
     });
 
-    it('MetrcTransactionsRepository: full lifecycle (reported, failed, reconciled)', async () => {
+    it('MetrcTransactionsRepository: full lifecycle (claim, retry, terminal, reported, reconciled)', async () => {
       const pool = getPool();
       const metrc = new MetrcTransactionsRepository(pool.db);
 
-      // Build orders to attach two metrc transactions.
+      // Build orders to attach metrc transactions to.
       async function makeOrder(): Promise<string> {
         const shortCode = `MT${Math.floor(Math.random() * 1_000_000)}`;
         const [order] = await pool.sql<{ id: string }[]>`
@@ -1052,6 +1052,7 @@ describe('repository coverage', () => {
 
       const orderA = await makeOrder();
       const orderB = await makeOrder();
+      const orderC = await makeOrder();
 
       const tA = await metrc.create({
         orderId: orderA,
@@ -1061,25 +1062,98 @@ describe('repository coverage', () => {
         orderId: orderB,
         packageTags: ['1A4060300000002'],
       });
+      const tC = await metrc.create({
+        orderId: orderC,
+        packageTags: ['1A4060300000003'],
+      });
       expect(tA.status).toBe('pending');
+      // Default `next_retry_at = NOW()` so a fresh row is immediately due.
+      expect(tA.nextRetryAt.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
 
       expect((await metrc.findById(tA.id))?.id).toBe(tA.id);
       expect((await metrc.findByOrderId(orderA))?.id).toBe(tA.id);
 
       const pending = await metrc.listByStatus('pending');
-      expect(pending.length).toBeGreaterThanOrEqual(2);
+      expect(pending.length).toBeGreaterThanOrEqual(3);
 
-      const reported = await metrc.markReported(tA.id, 'metrc-receipt-1', { ok: true });
+      // Claim a batch — the lease pushes next_retry_at forward by the
+      // configured window so a concurrent claim doesn't re-pick the row.
+      const claimNow = new Date();
+      const leaseMs = 60_000;
+      const claimed = await metrc.claimDueForReporting(claimNow, 10, leaseMs);
+      const claimedIds = new Set(claimed.map((r) => r.id));
+      expect(claimedIds.has(tA.id)).toBe(true);
+      expect(claimedIds.has(tB.id)).toBe(true);
+      expect(claimedIds.has(tC.id)).toBe(true);
+      for (const row of claimed) {
+        expect(row.nextRetryAt.getTime()).toBe(claimNow.getTime() + leaseMs);
+      }
+
+      // A second claim at the same instant finds nothing — the lease
+      // covers every row we just took.
+      const secondClaim = await metrc.claimDueForReporting(claimNow, 10, leaseMs);
+      const secondClaimIds = new Set(secondClaim.map((r) => r.id));
+      expect(secondClaimIds.has(tA.id)).toBe(false);
+      expect(secondClaimIds.has(tB.id)).toBe(false);
+      expect(secondClaimIds.has(tC.id)).toBe(false);
+
+      // markReported leaves metricReceiptId NULL — Metrc's POST returns
+      // an empty body and the receipt id only surfaces later via the
+      // reconciliation cron's /receipts/active query.
+      const reported = await metrc.markReported(tA.id, { ok: true });
       expect(reported?.status).toBe('reported');
-      expect(reported?.metrcReceiptId).toBe('metrc-receipt-1');
+      expect(reported?.metrcReceiptId).toBeNull();
+      expect(reported?.failureReason).toBeNull();
 
-      const failedOnce = await metrc.markFailed(tB.id, 'timeout', { code: 504 });
-      expect(failedOnce?.retryCount).toBe(1);
-      const failedTwice = await metrc.markFailed(tB.id, 'timeout');
-      expect(failedTwice?.retryCount).toBe(2);
+      // Transient failure → row stays in pending, retry_count bumps,
+      // nextRetryAt advances to the caller-supplied window.
+      const retryAt1 = new Date(claimNow.getTime() + 60_000);
+      const retried = await metrc.scheduleRetry(tB.id, retryAt1, 'timeout', { code: 504 });
+      expect(retried?.status).toBe('pending');
+      expect(retried?.retryCount).toBe(1);
+      expect(retried?.nextRetryAt.getTime()).toBe(retryAt1.getTime());
 
-      const reconciled = await metrc.markReconciled(tA.id);
+      const retryAt2 = new Date(claimNow.getTime() + 300_000);
+      const retried2 = await metrc.scheduleRetry(tB.id, retryAt2, 'timeout');
+      expect(retried2?.status).toBe('pending');
+      expect(retried2?.retryCount).toBe(2);
+
+      // Terminal failure on tC (e.g. 422) — status flips to failed,
+      // retry_count still increments so the alert payload shows the
+      // full attempt count.
+      const failed = await metrc.markFailedTerminal(tC.id, 'invalid package tag', { code: 422 });
+      expect(failed?.status).toBe('failed');
+      expect(failed?.failureReason).toBe('invalid package tag');
+      expect(failed?.retryCount).toBe(1);
+
+      // Reconciliation cron matched the reported row to an upstream
+      // receipt; markReconciled stamps the receipt id and flips status.
+      const reconciled = await metrc.markReconciled(tA.id, 'metrc-receipt-1');
       expect(reconciled?.status).toBe('reconciled');
+      expect(reconciled?.metrcReceiptId).toBe('metrc-receipt-1');
+
+      // Empty receipt id is rejected — caller passed the cron a row it
+      // could not actually match.
+      await expect(metrc.markReconciled(tA.id, '')).rejects.toThrow(/receiptId/);
+
+      // Reconciliation window query: reported + reconciled rows whose
+      // reportedAt falls inside [since, until].
+      const since = new Date(claimNow.getTime() - 60_000);
+      const until = new Date(claimNow.getTime() + 60_000);
+      const inWindow = await metrc.listReportedSince(since, until);
+      const inWindowIds = new Set(inWindow.map((r) => r.id));
+      expect(inWindowIds.has(tA.id)).toBe(true);
+      expect(inWindowIds.has(tB.id)).toBe(false);
+      expect(inWindowIds.has(tC.id)).toBe(false);
+    });
+
+    it('MetrcTransactionsRepository.claimDueForReporting: validates limit and leaseMs', async () => {
+      const pool = getPool();
+      const metrc = new MetrcTransactionsRepository(pool.db);
+      const now = new Date();
+      await expect(metrc.claimDueForReporting(now, 0, 1_000)).rejects.toThrow(/limit/);
+      await expect(metrc.claimDueForReporting(now, 1, 0)).rejects.toThrow(/leaseMs/);
+      await expect(metrc.claimDueForReporting(now, 1.5, 1_000)).rejects.toThrow(/limit/);
     });
 
     it('AgeVerificationsRepository: latestPassed + findForOrder + findByProviderSessionId', async () => {

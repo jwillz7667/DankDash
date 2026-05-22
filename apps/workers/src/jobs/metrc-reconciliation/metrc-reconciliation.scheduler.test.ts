@@ -1,0 +1,105 @@
+/**
+ * scheduleMetrcReconciliationJob wiring tests. Pins the cron constants
+ * and verifies that node-cron is invoked with the right (expression,
+ * fn, options) triple. The fn itself wraps `runMetrcReconciliationJob`
+ * and swallows orchestration failures via `.catch` so per-tick errors
+ * never crash the worker process — we exercise that by handing the
+ * scheduler a deps shape whose `dispensaries.listActive` rejects and
+ * asserting that the wrapper logs but does not re-throw.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+const scheduleMock = vi.fn();
+
+vi.mock('node-cron', () => ({
+  schedule: scheduleMock,
+}));
+
+const {
+  METRC_RECONCILIATION_CRON_EXPRESSION,
+  METRC_RECONCILIATION_CRON_TIMEZONE,
+  scheduleMetrcReconciliationJob,
+} = await import('./metrc-reconciliation.scheduler.js');
+
+interface LoggerStub {
+  error: ReturnType<typeof vi.fn>;
+  info: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
+  debug: ReturnType<typeof vi.fn>;
+  child: () => LoggerStub;
+}
+
+function makeLogger(): LoggerStub {
+  const stub: LoggerStub = {
+    error: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    child: () => stub,
+  };
+  return stub;
+}
+
+describe('METRC_RECONCILIATION_CRON constants', () => {
+  it('fires at 04:00 every day, America/Chicago', () => {
+    expect(METRC_RECONCILIATION_CRON_EXPRESSION).toBe('0 4 * * *');
+    expect(METRC_RECONCILIATION_CRON_TIMEZONE).toBe('America/Chicago');
+  });
+});
+
+describe('scheduleMetrcReconciliationJob', () => {
+  it('registers a node-cron task with the reconciliation expression and timezone', () => {
+    scheduleMock.mockReset();
+    scheduleMock.mockReturnValue({ stop: vi.fn(), start: vi.fn() });
+
+    const deps = {
+      metricTransactions: {} as never,
+      orders: {} as never,
+      dispensaries: {} as never,
+      metrc: {} as never,
+      encryption: {} as never,
+      logger: makeLogger() as never,
+    };
+
+    scheduleMetrcReconciliationJob(deps);
+
+    expect(scheduleMock).toHaveBeenCalledTimes(1);
+    expect(scheduleMock.mock.calls[0]?.[0]).toBe('0 4 * * *');
+    expect(scheduleMock.mock.calls[0]?.[2]).toEqual({ timezone: 'America/Chicago' });
+    expect(typeof scheduleMock.mock.calls[0]?.[1]).toBe('function');
+  });
+
+  it('swallows orchestration failures and logs at error level (cron keeps firing)', async () => {
+    scheduleMock.mockReset();
+    scheduleMock.mockReturnValue({ stop: vi.fn(), start: vi.fn() });
+
+    const listErr = new Error('postgres pool drained');
+    const logger = makeLogger();
+    const deps = {
+      // The very first DB call the job makes is
+      // `metricTransactions.listReportedSince`; rejecting that path
+      // exercises the `.catch` arm without needing a full DI graph.
+      metricTransactions: {
+        listReportedSince: () => Promise.reject(listErr),
+      } as never,
+      orders: {} as never,
+      dispensaries: {} as never,
+      metrc: {} as never,
+      encryption: {} as never,
+      logger: logger as never,
+    };
+
+    scheduleMetrcReconciliationJob(deps);
+    const tickFn = scheduleMock.mock.calls[0]?.[1] as () => void;
+    expect(tickFn).toBeDefined();
+
+    tickFn();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error.mock.calls[0]?.[0]).toMatchObject({
+      err: 'postgres pool drained',
+      event: 'metrc.reconcile.scheduler_failed',
+    });
+  });
+});

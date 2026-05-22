@@ -55,15 +55,32 @@ export const metrcTransactions = pgTable(
     reportedAt: timestamp('reported_at', { withTimezone: true, mode: 'date' }),
     status: metrcStatus('status').notNull().default('pending'),
     retryCount: integer('retry_count').notNull().default(0),
+    /**
+     * Earliest wall-clock time the reporting worker is allowed to attempt
+     * this row. Drives the 1m/5m/15m/1h/6h/24h backoff schedule per
+     * DankDash-Technical-Spec.md §7.2: on each transient failure the
+     * worker increments `retryCount` and pushes `nextRetryAt` forward by
+     * the matching delay; on a successful claim the worker also pushes
+     * `nextRetryAt` forward by the lease window so a parallel claim by
+     * another worker pod cannot double-fire if this one crashes
+     * mid-attempt. Default `NOW()` so a freshly-inserted row is
+     * immediately due.
+     */
+    nextRetryAt: timestamp('next_retry_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
     responsePayload: jsonb('response_payload'),
     failureReason: text('failure_reason'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   },
   (table) => [
-    index('metrc_transactions_status_idx')
-      .on(table.status)
-      .where(sql`${table.status} != 'reconciled'`),
+    index('metrc_transactions_due_idx')
+      .on(table.nextRetryAt)
+      .where(sql`${table.status} = 'pending'`),
+    index('metrc_transactions_failed_idx')
+      .on(table.updatedAt)
+      .where(sql`${table.status} = 'failed'`),
   ],
 );
 

@@ -18,16 +18,24 @@
     "@dankdash/config": "workspace:*",
     "@dankdash/db": "workspace:*",
     "@dankdash/dispatch": "workspace:*",
+    "@dankdash/eta": "workspace:*",
+    "@dankdash/metrc": "workspace:*",
     "@dankdash/orders": "workspace:*",
+    "@dankdash/realtime-events": "workspace:*",
+    "@dankdash/storage": "workspace:*",
     "@dankdash/types": "workspace:*",
+    "@dsnp/parquetjs": "^1.8.7",
+    "ioredis": "^5.10.1",
     "luxon": "^3.5.0",
     "node-cron": "^3.0.3",
-    "pino": "^9.5.0"
+    "pino": "^9.5.0",
+    "uuidv7": "^1.2.1"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.2",
     "@types/node": "^22.10.2",
     "@types/node-cron": "^3.0.11",
+    "testcontainers": "^11.14.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

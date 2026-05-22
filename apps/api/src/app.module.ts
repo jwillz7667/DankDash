@@ -27,6 +27,12 @@
  *                         Dispatch / Notifications modules will subscribe to)
  *   - DriversModule      (driver admin onboarding + DriverContextGuard for
  *                         driver-self routes — mounted /v1/admin and /v1/driver)
+ *   - ComplianceModule   (event-bus only — Metrc enqueue listener that
+ *                         creates a `metric_transactions` row in
+ *                         `pending` on every order → `delivered`. The
+ *                         worker (apps/workers) polls those rows on a
+ *                         60s tick and submits to Metrc with retry +
+ *                         reconciliation per spec §7.2.)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -46,6 +52,7 @@ import { CartModule } from './modules/cart/cart.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module.js';
 import { CheckoutModule } from './modules/checkout/checkout.module.js';
+import { ComplianceModule } from './modules/compliance/compliance.module.js';
 import { DispensariesModule } from './modules/dispensaries/dispensaries.module.js';
 import { DriversModule } from './modules/drivers/drivers.module.js';
 import { HealthModule } from './modules/health/health.module.js';
@@ -90,6 +97,7 @@ import { SearchModule } from './modules/search/search.module.js';
     PaymentsModule,
     OrdersModule,
     DriversModule,
+    ComplianceModule,
   ],
 })
 export class AppModule {}

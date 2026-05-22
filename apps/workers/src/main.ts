@@ -16,18 +16,45 @@ import { createLogger, loadEnv } from '@dankdash/config';
 import {
   DispatchOffersRepository,
   DispensariesRepository,
+  DriverLocationHistoryRepository,
   DriversRepository,
   LedgerEntriesRepository,
+  MetrcTransactionsRepository,
+  OrderItemsRepository,
   OrdersRepository,
+  PartitionsRepository,
   PayoutsRepository,
   WebhookEventsProcessedRepository,
+  createEncryptionServiceFromBase64,
   createPoolFromEnv,
 } from '@dankdash/db';
+import { EtaService, MapboxClient } from '@dankdash/eta';
+import {
+  HttpClient as MetrcHttpClient,
+  MetrcClient,
+  createUndiciDispatcher as createMetrcDispatcher,
+} from '@dankdash/metrc';
+import { publishRealtimeEvent } from '@dankdash/realtime-events';
+import { R2Storage } from '@dankdash/storage';
+import { Redis } from 'ioredis';
+import { uuidv7 } from 'uuidv7';
 import { scheduleDispatchJob, scheduleOfferExpiryJob } from './jobs/dispatch/index.js';
+import {
+  createEtaObserver,
+  createGeofenceObserver,
+  startLocationIngest,
+  type LocationIngestItem,
+} from './jobs/location-ingest/index.js';
+import { scheduleMetrcReconciliationJob } from './jobs/metrc-reconciliation/index.js';
+import { scheduleMetrcReportingJob } from './jobs/metrc-reporting/index.js';
+import {
+  ParquetPartitionArchiver,
+  schedulePartitionManagementJob,
+} from './jobs/partition-management/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 
-function main(): void {
+async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger({ name: 'workers', environment: env.NODE_ENV });
 
@@ -39,6 +66,11 @@ function main(): void {
   const orders = new OrdersRepository(pool.db);
   const drivers = new DriversRepository(pool.db);
   const dispatchOffers = new DispatchOffersRepository(pool.db);
+  const driverLocationHistory = new DriverLocationHistoryRepository(pool.db);
+  const partitions = new PartitionsRepository(pool.db);
+  const metricTransactions = new MetrcTransactionsRepository(pool.db);
+  const orderItems = new OrderItemsRepository(pool.db);
+  const encryption = createEncryptionServiceFromBase64(env.COLUMN_ENCRYPTION_KEY_BASE64);
 
   const http = new HttpClient({
     dispatcher: createUndiciDispatcher({ maxConnections: 8, keepAliveTimeoutMs: 30_000 }),
@@ -60,10 +92,143 @@ function main(): void {
     auth: aeropayAuth,
   });
 
+  // Dedicated undici pool for Metrc. The vendor recommends ≤4 concurrent
+  // connections per integrator (see spec §7.3) and they keep idle sockets
+  // alive aggressively, so we share the pool across the reporting and
+  // reconciliation cron paths but isolate it from the Aeropay one.
+  const metrcHttp = new MetrcHttpClient({
+    dispatcher: createMetrcDispatcher({ maxConnections: 4, keepAliveTimeoutMs: 30_000 }),
+  });
+  const metrcClient = new MetrcClient({
+    apiBaseUrl: env.METRC_API_BASE_URL,
+    vendorKey: env.METRC_API_KEY,
+    http: metrcHttp,
+  });
+
   const payoutTask = schedulePayoutJob({ dispensaries, ledger, payouts, aeropay, logger });
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob({ webhookEvents, logger });
   const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+
+  // Archive bucket shares the same R2 account as the rest of the storage
+  // layer. We construct a dedicated client here rather than reuse one
+  // from `apps/api` because the worker process owns its DI graph.
+  const archiveStorage = new R2Storage({
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    bucket: env.R2_BUCKET_NAME,
+  });
+  const partitionArchiver = new ParquetPartitionArchiver({
+    partitions,
+    storage: archiveStorage,
+    logger,
+  });
+  const partitionTask = schedulePartitionManagementJob({
+    partitions,
+    archiver: partitionArchiver,
+    logger,
+    clock: () => new Date(),
+  });
+
+  // Metrc reporting is gated by `ENABLE_METRC` so non-production
+  // environments (PR previews, local) can stay off the cron entirely —
+  // even with a misconfigured vendor key the scheduler would otherwise
+  // wake every minute and burn through the per-row backoff ladder.
+  const metrcReportingTask = env.ENABLE_METRC
+    ? scheduleMetrcReportingJob({
+        metricTransactions,
+        orders,
+        orderItems,
+        dispensaries,
+        metrc: metrcClient,
+        encryption,
+        logger,
+      })
+    : null;
+
+  // Reconciliation cron pairs with the reporting cron — same gate
+  // (`ENABLE_METRC`) and same DI graph, distinct schedule. Runs daily
+  // at 04:00 Central so the local row that the reporting cron just
+  // POSTed is settled in Metrc's backend by the time we look for it.
+  const metrcReconciliationTask = env.ENABLE_METRC
+    ? scheduleMetrcReconciliationJob({
+        metricTransactions,
+        orders,
+        dispensaries,
+        metrc: metrcClient,
+        encryption,
+        logger,
+      })
+    : null;
+
+  // Two extra Redis connections for the ETA path:
+  //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
+  //   - etaPublishRedis: XADD to dankdash:realtime.
+  // We deliberately keep these off the location-ingest connection because
+  // ioredis serialises commands per connection and the ingest connection
+  // spends most of its time BLOCKed on XREADGROUP; any XADD/GET queued
+  // behind it would wait up to `blockMs` for no reason.
+  const etaCacheRedis = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+  });
+  const etaPublishRedis = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+  });
+  for (const [name, client] of [
+    ['eta-cache', etaCacheRedis],
+    ['eta-publish', etaPublishRedis],
+  ] as const) {
+    client.on('error', (err: Error) => {
+      logger.error(
+        { event: 'workers.redis_error', connection: name, err: err.message },
+        'workers: redis client error',
+      );
+    });
+  }
+  const mapbox = new MapboxClient({ accessToken: env.MAPBOX_ACCESS_TOKEN });
+  const etaService = new EtaService({ redis: etaCacheRedis, mapbox, logger });
+
+  const geofenceObserver = createGeofenceObserver({ orders, logger });
+  const etaObserver = createEtaObserver({
+    orders,
+    eta: etaService,
+    publish: (input) => publishRealtimeEvent(etaPublishRedis, input),
+    logger,
+    idGen: uuidv7,
+  });
+
+  // Per-item fan-out across observers. Each observer reports its own
+  // failures with the right context; `Promise.allSettled` keeps a single
+  // observer crash from cascading into the others. The consumer's outer
+  // allSettled becomes a no-op for this combined function (it never
+  // rejects), which is exactly what we want — observer-specific logs are
+  // strictly more useful than the generic "observer failed" line.
+  const onLocationCommitted = async (item: LocationIngestItem): Promise<void> => {
+    const results = await Promise.allSettled([geofenceObserver(item), etaObserver(item)]);
+    for (let i = 0; i < results.length; i += 1) {
+      const result = results[i];
+      if (result?.status !== 'rejected') continue;
+      logger.warn(
+        {
+          event: 'workers.location_observer_failed',
+          observer: i === 0 ? 'geofence' : 'eta',
+          err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        },
+        'workers: location observer failed',
+      );
+    }
+  };
+
+  const locationIngest = await startLocationIngest({
+    drivers,
+    history: driverLocationHistory,
+    logger,
+    redisUrl: env.REDIS_URL,
+    onCommitted: onLocationCommitted,
+  });
 
   logger.info({ env: env.NODE_ENV }, 'workers started');
 
@@ -73,6 +238,12 @@ function main(): void {
     webhookCleanupTask.stop();
     dispatchTask.stop();
     offerExpiryTask.stop();
+    partitionTask.stop();
+    metrcReportingTask?.stop();
+    metrcReconciliationTask?.stop();
+    await locationIngest.stop();
+    etaCacheRedis.disconnect();
+    etaPublishRedis.disconnect();
     await pool.close();
     process.exit(0);
   };
@@ -113,10 +284,8 @@ function createMemoryTokenCache(): {
   };
 }
 
-try {
-  main();
-} catch (err: unknown) {
+main().catch((err: unknown) => {
   const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
   process.stderr.write(`workers fatal: ${message}\n`);
   process.exit(1);
-}
+});
