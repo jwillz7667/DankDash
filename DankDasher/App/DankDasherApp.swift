@@ -30,6 +30,7 @@ struct DankDasherApp: App {
     WindowGroup {
       RootView(store: Self.store)
         .preferredColorScheme(.light)
+        .dynamicTypeSize(.medium ... .accessibility1)
         .onOpenURL { url in
           // Phase 19 plumbing: forward every URL into the reducer.
           // Phase 20 introduces the `dankdasher://offer/<id>` route

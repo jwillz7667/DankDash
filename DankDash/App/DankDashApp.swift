@@ -25,6 +25,7 @@ struct DankDashApp: App {
     WindowGroup {
       RootView(store: Self.store)
         .preferredColorScheme(.dark)
+        .dynamicTypeSize(.medium ... .accessibility1)
         .onOpenURL { url in
           // Phase-18 deep-link surface. `RootFeature` parses via
           // `DeepLinkRouter.route(_:)`; unknown URLs are silently
