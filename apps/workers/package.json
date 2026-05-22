@@ -17,6 +17,8 @@
     "@dankdash/aeropay": "workspace:*",
     "@dankdash/config": "workspace:*",
     "@dankdash/db": "workspace:*",
+    "@dankdash/dispatch": "workspace:*",
+    "@dankdash/orders": "workspace:*",
     "@dankdash/types": "workspace:*",
     "luxon": "^3.5.0",
     "node-cron": "^3.0.3",

@@ -32,6 +32,7 @@ const DEFAULTS: Record<string, string> = {
   ).toString('base64'),
   PASSWORD_PEPPER: 'a'.repeat(32),
   COLUMN_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 1).toString('base64'),
+  DOCUMENT_HASH_PEPPER_BASE64: Buffer.alloc(32, 2).toString('base64'),
   R2_ACCOUNT_ID: 'test',
   R2_ACCESS_KEY_ID: 'test',
   R2_SECRET_ACCESS_KEY: 'test',

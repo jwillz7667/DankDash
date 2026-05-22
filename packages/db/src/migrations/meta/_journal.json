@@ -43,6 +43,20 @@
       "when": 1747929600000,
       "tag": "0005_order_status_history",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1748016000000,
+      "tag": "0006_dispatch_failed",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1748102400000,
+      "tag": "0007_dispatch_failed_column",
+      "breakpoints": true
     }
   ]
 }

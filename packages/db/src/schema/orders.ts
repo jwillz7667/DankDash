@@ -56,6 +56,7 @@ export const orders = pgTable(
     preppingAt: timestamp('prepping_at', { withTimezone: true, mode: 'date' }),
     preparedAt: timestamp('prepared_at', { withTimezone: true, mode: 'date' }),
     awaitingDriverAt: timestamp('awaiting_driver_at', { withTimezone: true, mode: 'date' }),
+    dispatchFailedAt: timestamp('dispatch_failed_at', { withTimezone: true, mode: 'date' }),
     driverAssignedAt: timestamp('driver_assigned_at', { withTimezone: true, mode: 'date' }),
     enRoutePickupAt: timestamp('en_route_pickup_at', { withTimezone: true, mode: 'date' }),
     pickedUpAt: timestamp('picked_up_at', { withTimezone: true, mode: 'date' }),

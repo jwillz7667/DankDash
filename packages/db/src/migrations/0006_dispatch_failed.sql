@@ -1,0 +1,23 @@
+-- ============================================================================
+-- DankDash — 0006_dispatch_failed
+-- Phase 8 (Dispatch & Driver Foundation): introduces the `dispatch_failed`
+-- terminal enum value on `order_status`. This is the state an order falls
+-- into when the dispatch loop has cycled through every eligible driver and
+-- either offered + timed out (default 30s each offer, 3min total) or found
+-- no driver online in the dispensary's polygon at all.
+--
+-- The state is terminal — the spec (§3.3) says a dispatch failure escalates
+-- to dispensary staff to either reschedule a fresh attempt (operationally a
+-- new order) or refund the customer. We don't allow a transition back to
+-- `awaiting_driver` because the dispatch attempt window is timestamped on
+-- `dispatch_failed_at` (added in 0007) and we want operator action to
+-- surface as a distinct event rather than a silent retry.
+--
+-- This migration is intentionally a single ALTER TYPE statement. Postgres
+-- rejects use of a newly-added enum value in the same transaction
+-- (`unsafe use of new value … new enum values must be committed before they
+-- can be used`). The column + index work that *references* the new value
+-- ships in 0007 once this migration has committed.
+-- ============================================================================
+
+ALTER TYPE "order_status" ADD VALUE IF NOT EXISTS 'dispatch_failed' AFTER 'awaiting_driver';

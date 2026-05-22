@@ -31,6 +31,7 @@ const FORWARD_TRANSITIONS: ReadonlyArray<{
   { from: 'ready_for_pickup', event: 'DISPATCH_QUEUE', to: 'awaiting_driver' },
   { from: 'ready_for_pickup', event: 'STORE_CANCEL', to: 'canceled' },
   { from: 'awaiting_driver', event: 'DRIVER_ASSIGNED', to: 'driver_assigned' },
+  { from: 'awaiting_driver', event: 'DISPATCH_FAILED', to: 'dispatch_failed' },
   { from: 'awaiting_driver', event: 'STORE_CANCEL', to: 'canceled' },
   { from: 'driver_assigned', event: 'DRIVER_EN_ROUTE_PICKUP', to: 'en_route_pickup' },
   { from: 'en_route_pickup', event: 'DRIVER_PICKED_UP', to: 'picked_up' },
@@ -54,6 +55,7 @@ const ALL_EVENT_TYPES: readonly OrderEventType[] = [
   'VENDOR_READY',
   'STORE_CANCEL',
   'DISPATCH_QUEUE',
+  'DISPATCH_FAILED',
   'DRIVER_ASSIGNED',
   'DRIVER_EN_ROUTE_PICKUP',
   'DRIVER_PICKED_UP',
@@ -74,6 +76,7 @@ describe('orderMachine — terminal-state classification', () => {
       [
         'canceled',
         'delivered',
+        'dispatch_failed',
         'disputed',
         'payment_failed',
         'rejected',

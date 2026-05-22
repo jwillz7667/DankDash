@@ -38,3 +38,11 @@ export {
   type EncryptionContext,
   type EncryptionService,
 } from './encryption.js';
+export {
+  createDocumentHasher,
+  createDocumentHasherFromBase64,
+  DOCUMENT_HASH_CONTEXT,
+  type CreateDocumentHasherOptions,
+  type DocumentHashContext,
+  type DocumentHasher,
+} from './document-hash.js';

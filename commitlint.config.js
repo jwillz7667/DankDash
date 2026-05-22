@@ -55,6 +55,8 @@ const config = {
         'orders',
         'aeropay',
         'payments',
+        'dispatch',
+        'driver',
         'config',
         'types',
         'ui',

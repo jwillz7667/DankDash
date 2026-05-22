@@ -19,6 +19,8 @@ export {
   type KycErrorCode,
   PasswordError,
   type PasswordErrorCode,
+  DriverError,
+  type DriverErrorCode,
   type ErrorDetails,
   type ErrorEnvelope,
   toErrorEnvelope,

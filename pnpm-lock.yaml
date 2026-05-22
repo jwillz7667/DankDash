@@ -134,6 +134,9 @@ importers:
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
+      luxon:
+        specifier: ^3.5.0
+        version: 3.7.2
       nestjs-zod:
         specifier: ^5.4.0
         version: 5.4.0(@nestjs/common@11.1.21(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/swagger@11.4.3(@nestjs/common@11.1.21(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.21(@nestjs/common@11.1.21(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2))(rxjs@7.8.2)(zod@3.25.76)
@@ -168,6 +171,9 @@ importers:
       '@types/jsonwebtoken':
         specifier: ^9.0.10
         version: 9.0.10
+      '@types/luxon':
+        specifier: ^3.4.2
+        version: 3.7.1
       '@types/node':
         specifier: ^22.10.2
         version: 22.19.19
@@ -227,6 +233,12 @@ importers:
       '@dankdash/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@dankdash/dispatch':
+        specifier: workspace:*
+        version: link:../../packages/dispatch
+      '@dankdash/orders':
+        specifier: workspace:*
+        version: link:../../packages/orders
       '@dankdash/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -385,6 +397,25 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.22.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)
+
+  packages/dispatch:
+    dependencies:
+      '@dankdash/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.19.19))
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
