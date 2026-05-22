@@ -144,9 +144,8 @@ describe('MetrcEnqueueListener', () => {
     // We read from the function rather than booting Nest so a rename of
     // the event constant fails this test, not a runtime regression in
     // integration.
-    // unbound-method off: we are reading reflect metadata off the
-    // function value itself, never invoking it — `this` is irrelevant.
-    // eslint-disable-next-line @typescript-eslint/unbound-method
+    // Reads reflect metadata off the function value itself, never
+    // invokes it — `this` is irrelevant.
     const handler = MetrcEnqueueListener.prototype.onOrderTransitioned;
     const meta = Reflect.getMetadata('EVENT_LISTENER_METADATA', handler) as
       | ReadonlyArray<{ event: unknown }>

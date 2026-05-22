@@ -172,8 +172,15 @@ export default tseslint.config(
   // INSERT or a known-seeded read are idiomatic in tests — the assertion is
   // the test (if the row really were null, the test would fail loudly on
   // the next access). Same for explicit any when poking at internal state.
+  //
+  // The Vitest + jsdom layer ("portal tests, packages that ship React") adds
+  // more legitimate patterns the production rules misread: `vi.fn(async () =>
+  // new Response(...))` mocks that satisfy `Promise<Response>` without an
+  // await; one-line arrow wrappers around void-returning APIs; type-only
+  // imports grouped beside their value-import companions for legibility.
+  // These all stay errors in production code.
   {
-    files: ['**/test/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
+    files: ['**/test/**/*.{ts,tsx}', '**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
@@ -183,6 +190,26 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-return': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
       'no-console': 'off',
+      // Async helpers — RTL's user-event API returns promises that consumers
+      // legitimately fire-and-forget in setup; vitest spies are typed `any`.
+      '@typescript-eslint/no-floating-promises': 'off',
+      '@typescript-eslint/no-misused-promises': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-base-to-string': 'off',
+      '@typescript-eslint/no-invalid-void-type': 'off',
+      '@typescript-eslint/no-confusing-void-expression': 'off',
+      // Tests deliberately assert on values across guards and `as`-cast
+      // through opaque internals to exercise narrow code paths.
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      // `throw new Error("test scaffolding precondition")` is allowed in
+      // test helpers — these never reach production and the typed
+      // DomainError pattern only applies to real domain code.
+      'no-restricted-syntax': 'off',
+      // Type-only imports in tests are commonly grouped beside their
+      // value-import companions for legibility.
+      'import/order': 'off',
     },
   },
   // Config files in TS (vitest.config.ts, drizzle.config.ts) — relax type

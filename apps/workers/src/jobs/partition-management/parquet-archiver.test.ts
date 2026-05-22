@@ -76,7 +76,6 @@ function makePartitionsRepo(rows: readonly DriverLocationHistoryArchiveRow[]): {
   readonly streamCalls: { partitionName: string; batchSize: number }[];
 } {
   const streamCalls: { partitionName: string; batchSize: number }[] = [];
-  // eslint-disable-next-line @typescript-eslint/require-await
   const stream = async function* (
     partitionName: string,
     batchSize: number,

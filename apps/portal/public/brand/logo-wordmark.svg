@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" fill="none" role="img" aria-label="DankDash">
+  <!-- Placeholder wordmark. Replace with production artwork (see brand/README.md). -->
+  <text
+    x="0"
+    y="28"
+    font-family="ui-sans-serif, system-ui, -apple-system, Inter, 'Segoe UI', Roboto, sans-serif"
+    font-size="26"
+    font-weight="700"
+    letter-spacing="-0.02em"
+    fill="#0F172A"
+  >Dank<tspan fill="#3C9322">Dash</tspan></text>
+</svg>
