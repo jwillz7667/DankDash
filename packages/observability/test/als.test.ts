@@ -12,7 +12,13 @@
  * valid.
  */
 import { describe, expect, it } from 'vitest';
-import { getRequestContext, getRequestId, runWithRequestContext } from '../src/context/als.js';
+import {
+  enterRequestContext,
+  getRequestContext,
+  getRequestId,
+  runWithRequestContext,
+  updateRequestContext,
+} from '../src/context/als.js';
 
 describe('AsyncLocalStorage request context', () => {
   it('returns undefined when called outside any runWithRequestContext boundary', () => {
@@ -58,5 +64,35 @@ describe('AsyncLocalStorage request context', () => {
       expect(getRequestId()).toBe('outer');
     });
     expect(getRequestId()).toBeUndefined();
+  });
+
+  it('enterRequestContext pushes onto the current scope without a wrapper', async () => {
+    // enterWith mutates the current async scope; we need a child
+    // resource that doesn't leak back to the test runner. Wrap in
+    // `runWithRequestContext` with a sentinel context, then call
+    // `enterRequestContext` to swap; the wrapper scope cleans up.
+    const captured = await runWithRequestContext({ requestId: 'sentinel' }, async () => {
+      enterRequestContext({ requestId: 'entered', userId: 'u-9' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return getRequestContext();
+    });
+    expect(captured).toEqual({ requestId: 'entered', userId: 'u-9' });
+    // Outside the wrapper, no leakage.
+    expect(getRequestContext()).toBeUndefined();
+  });
+
+  it('updateRequestContext mutates the current store in place', () => {
+    runWithRequestContext({ requestId: 'r-update' }, () => {
+      expect(updateRequestContext({ userId: 'u-late', dispensaryId: 'd-late' })).toBe(true);
+      expect(getRequestContext()).toEqual({
+        requestId: 'r-update',
+        userId: 'u-late',
+        dispensaryId: 'd-late',
+      });
+    });
+  });
+
+  it('updateRequestContext returns false when no active context', () => {
+    expect(updateRequestContext({ userId: 'orphan' })).toBe(false);
   });
 });

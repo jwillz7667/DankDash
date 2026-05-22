@@ -6,6 +6,10 @@
  * the global pipes / filters / interceptors that every controller depends on.
  *
  * Runtime composition (top-down):
+ *   tracing            — OTel SDK init (FIRST import; auto-instrumentations
+ *                         monkey-patch http/pg/ioredis/fastify/socket.io at
+ *                         require time, so this must beat any dependent
+ *                         import)
  *   process            — Node 22, ESM
  *   NestFactory        — wires the module graph and DI container
  *   FastifyAdapter     — HTTP layer (Fastify 5 with Helmet plugin)
@@ -13,7 +17,15 @@
  *   pino               — log sink; PII redaction paths come from
  *                         @dankdash/config/logger.ts
  */
+// MUST be the first non-type import — initOtel registers `require`-time
+// monkey-patches against http/pg/ioredis/fastify/socket.io, so loading
+// any of those modules before this line (directly or transitively
+// through AppModule) silently disables instrumentation. Import order
+// is enforced here intentionally over the lint rule.
+/* eslint-disable import/order */
+import { apiOtelHandle } from './infrastructure/tracing.js';
 import { loadEnv } from '@dankdash/config';
+import { registerGracefulShutdown } from '@dankdash/observability';
 import helmet from '@fastify/helmet';
 import { Logger } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
@@ -27,8 +39,11 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
 import { ZodValidationPipe } from './common/pipes/zod-validation.pipe.js';
 import { RATE_LIMIT_STORE, type RateLimitStore } from './common/rate-limit/rate-limit-store.js';
 import { resolveLogger } from './infrastructure/logger.js';
+import { HTTP_HISTOGRAMS, SENTRY_HANDLE } from './infrastructure/observability.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
 import { JwtService } from './modules/auth/jwt/jwt.service.js';
+import type { HttpHistograms, SentryHandle } from '@dankdash/observability';
+/* eslint-enable import/order */
 
 async function bootstrap(): Promise<void> {
   // Validate env early — fail fast on a misconfigured deployment before
@@ -64,19 +79,27 @@ async function bootstrap(): Promise<void> {
     crossOriginEmbedderPolicy: false,
   });
 
-  app.useGlobalPipes(new ZodValidationPipe());
-  app.useGlobalFilters(new GlobalExceptionFilter(logger));
-  app.useGlobalInterceptors(new RequestIdInterceptor(), new LoggingInterceptor(logger));
-
-  // Bind JwtAuthGuard globally so deny-by-default applies: any new route is
-  // authenticated unless it carries @Public. Resolve the dependencies from
-  // the DI container so the guard shares the same JwtService + Reflector as
-  // the rest of the app — never instantiate guards manually with `new`.
-  // Order matters: RateLimitGuard runs AFTER JwtAuthGuard so the 'user'
-  // tracker can read req.user; guards execute in declaration order.
+  // Resolve cross-cutting dependencies from the DI container up front so
+  // both interceptor + guard registrations see the same instances the rest
+  // of the app uses (HttpHistograms + Sentry are @Global singletons; the
+  // guards need Reflector + JwtService + the rate-limit store).
   const reflector = app.get(Reflector);
   const jwtService = app.get(JwtService);
   const rateLimitStore = app.get<RateLimitStore>(RATE_LIMIT_STORE);
+  const httpHistograms = app.get<HttpHistograms>(HTTP_HISTOGRAMS);
+  const sentryHandle = app.get<SentryHandle>(SENTRY_HANDLE);
+
+  app.useGlobalPipes(new ZodValidationPipe());
+  app.useGlobalFilters(new GlobalExceptionFilter(logger));
+  app.useGlobalInterceptors(
+    new RequestIdInterceptor(),
+    new LoggingInterceptor(logger, httpHistograms),
+  );
+
+  // Bind JwtAuthGuard globally so deny-by-default applies: any new route is
+  // authenticated unless it carries @Public. Order matters: RateLimitGuard
+  // runs AFTER JwtAuthGuard so the 'user' tracker can read req.user; guards
+  // execute in declaration order.
   app.useGlobalGuards(
     new JwtAuthGuard(reflector, jwtService),
     new RateLimitGuard(reflector, rateLimitStore),
@@ -93,6 +116,15 @@ async function bootstrap(): Promise<void> {
     .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
     .build();
   SwaggerModule.setup('docs', app, () => SwaggerModule.createDocument(app, swagger));
+
+  // Wire SIGTERM/SIGINT to flush OTel + Sentry before exit. Registered
+  // before `app.listen` so a signal arriving mid-bootstrap still drains;
+  // the bootstrap().catch at the bottom of this file owns the
+  // listen-failure path so we don't leak signal handlers there either.
+  registerGracefulShutdown({
+    otel: apiOtelHandle,
+    sentryClose: (timeoutMs) => sentryHandle.close(timeoutMs),
+  });
 
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
   logger.info({ port: env.PORT }, 'apps/api listening');

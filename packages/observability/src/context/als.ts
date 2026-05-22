@@ -60,3 +60,35 @@ export function getRequestContext(): RequestContext | undefined {
 export function getRequestId(): string | undefined {
   return als.getStore()?.requestId;
 }
+
+/**
+ * Push a context onto the *current* async execution scope without
+ * needing a wrapper callback. Use this from a NestJS interceptor or
+ * Fastify hook where we want every continuation of the current
+ * request to see the context but cannot easily wrap the rest of the
+ * request inside a closure.
+ *
+ * Prefer `runWithRequestContext` from boundary code that owns the
+ * scope. Use `enterRequestContext` only where wrapping is awkward
+ * (interceptors, controller decorators).
+ */
+export function enterRequestContext(context: RequestContext): void {
+  als.enterWith(context);
+}
+
+/**
+ * Mutate the current ALS-stored context in place. Useful when a guard
+ * resolves the JWT subject after the request boundary middleware has
+ * already created the context — we want `userId`/`dispensaryId` on
+ * every later log without re-entering a new store. Safe because each
+ * request has its own store; mutation is scoped to that one request.
+ *
+ * Returns `false` when there is no active context to update — callers
+ * can decide whether that is an error or a no-op for their flow.
+ */
+export function updateRequestContext(patch: Partial<RequestContext>): boolean {
+  const current = als.getStore();
+  if (current === undefined) return false;
+  Object.assign(current, patch);
+  return true;
+}

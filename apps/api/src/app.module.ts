@@ -58,6 +58,7 @@ import { RateLimitModule } from './common/rate-limit/rate-limit.module.js';
 import { DocumentHashModule } from './infrastructure/document-hash.module.js';
 import { DrizzleModule } from './infrastructure/drizzle.module.js';
 import { EncryptionModule } from './infrastructure/encryption.module.js';
+import { ObservabilityModule } from './infrastructure/observability.module.js';
 import { RedisModule } from './infrastructure/redis.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
@@ -98,6 +99,7 @@ import { StaffModule } from './modules/staff/staff.module.js';
       maxListeners: 20,
       verboseMemoryLeak: false,
     }),
+    ObservabilityModule,
     DrizzleModule,
     EncryptionModule,
     DocumentHashModule,

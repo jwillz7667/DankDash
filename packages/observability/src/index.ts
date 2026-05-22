@@ -21,7 +21,13 @@
  *
  *   - errors: Sentry init that consumes ALS context for tagging.
  */
-export { getRequestContext, getRequestId, runWithRequestContext } from './context/als.js';
+export {
+  enterRequestContext,
+  getRequestContext,
+  getRequestId,
+  runWithRequestContext,
+  updateRequestContext,
+} from './context/als.js';
 export type { RequestContext, WithRequestId } from './context/request-context.js';
 
 export { requestContextMixin } from './logging/pino-mixin.js';
