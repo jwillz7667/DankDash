@@ -1,0 +1,32 @@
+# ============================================================================
+# DankDash — Railway service config for @dankdash/workers
+# ============================================================================
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "infra/Dockerfile.workers"
+watchPatterns = [
+  "apps/workers/**",
+  "packages/**",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "package.json",
+  "tsconfig.base.json",
+  "infra/Dockerfile.workers",
+  "infra/railway.workers.toml",
+]
+
+[deploy]
+# Workers binds no HTTP port — no healthcheck path. Railway observes the
+# process; cron loops keep it alive between job ticks.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# Single replica avoids cron double-firing. BullMQ acquires a Redis lock
+# per job to coordinate inside the queue, but the lightweight schedulers
+# (node-cron in scheduleDispatchJob/scheduleOfferExpiryJob) are not lock-
+# coordinated — duplicate ticks would create duplicate dispatch attempts.
+numReplicas = 1
+
+[deploy.envs]
+NODE_ENV = "production"
+ALLOW_PARTIAL_ENV = "0"

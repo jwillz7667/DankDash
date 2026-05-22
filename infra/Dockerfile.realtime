@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# DankDash — apps/realtime production image
+#
+# Placeholder image for the Socket.io standalone service. The real
+# implementation lands in Phase 9 (Realtime Service) — the namespaces,
+# Redis adapter, and JWT auth are wired there. This Dockerfile exists so
+# the Railway service has a well-defined build/start contract from day
+# one, and so the image shape can be exercised in CI before Phase 9
+# adds the runtime code.
+# ============================================================================
+
+ARG NODE_VERSION=22.11.0
+ARG PNPM_VERSION=9.12.3
+
+FROM --platform=linux/amd64 node:${NODE_VERSION}-alpine AS base
+ARG PNPM_VERSION
+ENV PNPM_HOME="/pnpm" \
+    PATH="/pnpm:$PATH" \
+    CI=1
+RUN apk add --no-cache libc6-compat tini \
+ && corepack enable \
+ && corepack prepare pnpm@${PNPM_VERSION} --activate
+WORKDIR /repo
+
+FROM base AS build
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY tsconfig.base.json ./
+COPY packages ./packages
+COPY apps/realtime ./apps/realtime
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter "@dankdash/realtime..."
+RUN pnpm --filter "@dankdash/realtime^..." build \
+ && pnpm --filter "@dankdash/realtime" build
+
+FROM base AS runtime
+ENV NODE_ENV=production
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY --from=build /repo/packages ./packages
+COPY --from=build /repo/apps/realtime/package.json ./apps/realtime/package.json
+COPY --from=build /repo/apps/realtime/dist ./apps/realtime/dist
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --prod --filter "@dankdash/realtime..."
+USER node
+EXPOSE 4000
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "apps/realtime/dist/main.js"]

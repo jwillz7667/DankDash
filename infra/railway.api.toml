@@ -1,0 +1,48 @@
+# ============================================================================
+# DankDash — Railway service config for @dankdash/api
+#
+# Per-service railway.toml — configured on the service via `configPath`
+# (see infra/README.md for the one-shot GraphQL call that wires it up).
+# Lets the api, workers, and realtime services share the repo root for
+# uploads while each picks up its own build + deploy rules.
+# ============================================================================
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "infra/Dockerfile.api"
+# Treat any change inside these paths as a build trigger. Touching docs/,
+# the iOS apps, or another service should NOT rebuild api.
+watchPatterns = [
+  "apps/api/**",
+  "packages/**",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "package.json",
+  "tsconfig.base.json",
+  "infra/Dockerfile.api",
+  "infra/railway.api.toml",
+]
+
+[deploy]
+# Fastify binds 0.0.0.0:$PORT; healthcheck hits the liveness probe that
+# is intentionally cheap and dependency-free (apps/api/src/modules/health).
+healthcheckPath = "/health/live"
+healthcheckTimeout = 30
+# Restart on crash, but cap the retry storm — three failed restarts and
+# the deploy is marked unhealthy so an oncall page fires.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# Number of replicas. Single-region launch starts at 2 for HA; scale
+# from the dashboard once we have load data.
+numReplicas = 2
+# Send SIGTERM, give the process 30s to drain, then SIGKILL. Fastify
+# closes connections on SIGTERM via NestJS shutdown hooks.
+sleepApplication = false
+
+[deploy.envs]
+# Tells the api process to fail fast on missing required env vars
+# (default behavior — set to "1" only for local dev / preview builds).
+ALLOW_PARTIAL_ENV = "0"
+NODE_ENV = "production"
+# loadEnv() reads PORT from the runtime env; Railway injects $PORT
+# automatically and Fastify binds 0.0.0.0:$PORT.

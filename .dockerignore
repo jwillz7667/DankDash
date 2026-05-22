@@ -1,0 +1,56 @@
+# Build outputs — rebuilt inside the image
+**/dist
+**/build
+**/.next
+**/.turbo
+
+# Node / pnpm
+**/node_modules
+
+# Tests + coverage — not shipped to runtime
+**/coverage
+**/test-results
+**/.vitest-cache
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode
+*.log
+*.swp
+
+# Git / CI
+.git
+.github
+.gitignore
+
+# Local infra
+infra/postgres
+infra/localstack
+docker-compose*.yml
+.env
+.env.*
+
+# Xcode (iOS apps live in the same repo but aren't dockerized)
+DankDash.xcodeproj
+DankDash
+DankDasher
+DankDash.xctestplan
+*.xcuserstate
+*.xcworkspace
+
+# Spec docs / planning — not needed at runtime
+docs
+BLOCKED.md
+PROGRESS.md
+**/*.md
+
+# Test containers / fixtures
+**/fixtures
+**/__fixtures__
+**/__mocks__
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/test
+**/tests

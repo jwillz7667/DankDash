@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# DankDash — apps/api production image
+#
+# Three stages so the final image carries only the runtime bits:
+#   1. base    — node + corepack + pnpm pinned to the workspace version
+#   2. build   — full repo + dev deps + tsc output
+#   3. runtime — node + prod deps + compiled JS, runs as the non-root `node`
+#
+# The image is designed for Railway's container runtime (linux/amd64). The
+# `--platform=linux/amd64` flag on FROM lets local arm64 builds (Apple
+# Silicon) produce an x86-64 image that Railway can run without surprise.
+#
+# Build context expected: repo root. .dockerignore strips node_modules,
+# tests, docs, and the iOS Xcode project so the build context stays lean.
+# ============================================================================
+
+ARG NODE_VERSION=22.11.0
+ARG PNPM_VERSION=9.12.3
+
+FROM --platform=linux/amd64 node:${NODE_VERSION}-alpine AS base
+ARG PNPM_VERSION
+ENV PNPM_HOME="/pnpm" \
+    PATH="/pnpm:$PATH" \
+    CI=1
+RUN apk add --no-cache libc6-compat tini \
+ && corepack enable \
+ && corepack prepare pnpm@${PNPM_VERSION} --activate
+WORKDIR /repo
+
+# ----------------------------------------------------------------------------
+# Stage 2 — build
+# Copies the full workspace, installs every workspace dependency (dev
+# included) so `tsc -p tsconfig.build.json` can compile, then runs the
+# api package's build through pnpm's filter so transitive workspace deps
+# build in the right order.
+# ----------------------------------------------------------------------------
+FROM base AS build
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY tsconfig.base.json ./
+COPY packages ./packages
+COPY apps/api ./apps/api
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter "@dankdash/api..."
+RUN pnpm --filter "@dankdash/api^..." build \
+ && pnpm --filter "@dankdash/api" build
+
+# ----------------------------------------------------------------------------
+# Stage 3 — runtime
+# Reinstalls without dev deps so the final layer is small. Symlinks
+# resolve correctly because pnpm preserves the same workspace shape that
+# the build stage produced.
+# ----------------------------------------------------------------------------
+FROM base AS runtime
+ENV NODE_ENV=production
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY --from=build /repo/packages ./packages
+COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
+COPY --from=build /repo/apps/api/dist ./apps/api/dist
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --prod --filter "@dankdash/api..."
+USER node
+EXPOSE 3000
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "apps/api/dist/main.js"]
