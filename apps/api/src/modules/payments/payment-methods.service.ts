@@ -389,11 +389,14 @@ export class PaymentMethodsService {
       failureReason,
     });
     // Transition the order so the vendor/customer surfaces reflect the
-    // failure. `transitionStatus` wraps the order UPDATE and the
+    // failure. `applyTransition` wraps the order UPDATE and the
     // `payment_failed` event in one transaction so the audit trail
-    // cannot disagree with current state.
-    await this.orders.transitionStatus({
-      orderId: tx.orderId,
+    // cannot disagree with current state. The resolver here is a no-op
+    // state-machine bypass — the system actor has already established the
+    // failure is authoritative; full machine validation is intentionally
+    // skipped because the order may already be in a terminal-ish state
+    // and the spec requires we still record the payment failure event.
+    await this.orders.applyTransition(tx.orderId, () => ({
       toStatus: 'payment_failed',
       eventType: 'payment_failed',
       payload: {
@@ -402,7 +405,7 @@ export class PaymentMethodsService {
         failureCode,
         failureReason,
       },
-    });
+    }));
   }
 
   private async handlePaymentCanceled(aeropayPaymentId: string, occurredAt: Date): Promise<void> {

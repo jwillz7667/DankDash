@@ -1,0 +1,36 @@
+{
+  "name": "@dankdash/orders",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Order lifecycle — XState v5 state machine, domain errors, transition vocabulary. Pure functions: no I/O, no DB, no Nest. The API consumes this from `OrderTransitionService` to validate every state change; iOS mirrors the same enum for UI gating.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dankdash/types": "workspace:*",
+    "xstate": "^5.18.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
