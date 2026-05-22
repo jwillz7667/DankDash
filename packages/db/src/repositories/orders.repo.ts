@@ -1,5 +1,5 @@
 import { NotFoundError, RepositoryError } from '@dankdash/types';
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
 import { users } from '../schema/identity.js';
 import {
@@ -29,6 +29,23 @@ export interface VendorQueueOrderRow extends Order {
   readonly customerFirstName: string | null;
   readonly customerLastName: string | null;
   readonly itemCount: number;
+}
+
+/**
+ * Projection used by the vendor-portal payouts detail view — one row per
+ * delivered order that contributed to a given payout window. Only the
+ * fields the detail page renders are selected, so we avoid hauling the
+ * full order row + compliance payload across the wire for every line.
+ */
+export interface VendorPayoutOrderRow {
+  readonly id: string;
+  readonly shortCode: string;
+  readonly deliveredAt: Date;
+  readonly subtotalCents: number;
+  readonly totalCents: number;
+  readonly discountCents: number;
+  readonly customerFirstName: string | null;
+  readonly customerLastName: string | null;
 }
 
 /**
@@ -242,6 +259,77 @@ export class OrdersRepository extends BaseRepository {
       customerLastName: r.customerLastName,
       itemCount: r.itemCount,
     }));
+  }
+
+  /**
+   * Constituent-orders query for the vendor payouts detail page. Returns
+   * every `delivered` order belonging to `dispensaryId` whose `delivered_at`
+   * falls in the half-open window `[deliveredFromUtc, deliveredToUtc)`.
+   *
+   * Window semantics mirror the payout job: `period_start` and `period_end`
+   * are stored as Central calendar dates, and the boundary instants
+   * computed in `computePayoutPeriod` are the same UTC instants this
+   * predicate filters on. An order delivered at exactly the upper bound
+   * belongs to the next period and is intentionally excluded.
+   *
+   * Joins `users` so the table can render "Jane D." without a second
+   * roundtrip per row — same projection shape (modulo selected columns)
+   * as `listForDispensaryQueue`. Newest-first ordering matches how an
+   * operator reads a statement (most recent activity at the top); the
+   * sum of `totalCents` across the rows should reconcile to the payout's
+   * gross, less any in-window refunds the ledger has already netted out.
+   *
+   * Index-supported via `orders_dispensary_status_idx (dispensary_id,
+   * status, placed_at)`. The `delivered_at` predicate filters in-memory
+   * after the index lookup, which is fine for a single day's volume per
+   * dispensary (≤ a few hundred rows typical); larger windows are capped
+   * by the `limit` parameter (default 500).
+   */
+  async listDeliveredForDispensaryBetween(
+    dispensaryId: string,
+    deliveredFromUtc: Date,
+    deliveredToUtc: Date,
+    limit = 500,
+  ): Promise<readonly VendorPayoutOrderRow[]> {
+    const rows = await this.db
+      .select({
+        id: orders.id,
+        shortCode: orders.shortCode,
+        deliveredAt: orders.deliveredAt,
+        subtotalCents: orders.subtotalCents,
+        totalCents: orders.totalCents,
+        discountCents: orders.discountCents,
+        customerFirstName: users.firstName,
+        customerLastName: users.lastName,
+      })
+      .from(orders)
+      .leftJoin(users, eq(users.id, orders.userId))
+      .where(
+        and(
+          eq(orders.dispensaryId, dispensaryId),
+          eq(orders.status, 'delivered'),
+          gte(orders.deliveredAt, deliveredFromUtc),
+          lt(orders.deliveredAt, deliveredToUtc),
+        ),
+      )
+      .orderBy(desc(orders.deliveredAt))
+      .limit(limit);
+    return rows.flatMap((row) =>
+      row.deliveredAt === null
+        ? []
+        : [
+            {
+              id: row.id,
+              shortCode: row.shortCode,
+              deliveredAt: row.deliveredAt,
+              subtotalCents: row.subtotalCents,
+              totalCents: row.totalCents,
+              discountCents: row.discountCents,
+              customerFirstName: row.customerFirstName,
+              customerLastName: row.customerLastName,
+            },
+          ],
+    );
   }
 
   async listForDriver(driverId: string, limit = 100): Promise<readonly Order[]> {

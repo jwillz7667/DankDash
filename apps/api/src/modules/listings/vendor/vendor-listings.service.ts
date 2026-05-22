@@ -57,6 +57,7 @@ import {
   type Database,
   type DispensaryListing,
   type NewDispensaryListing,
+  type Product,
   type ProductsRepository,
 } from '@dankdash/db';
 import { ConflictError, NotFoundError, ValidationError } from '@dankdash/types';
@@ -66,7 +67,10 @@ import type {
   CreateListingRequest,
   ListingListResponse,
   ListingResponse,
+  ListingWithProductResponse,
   PatchListingRequest,
+  SyncListingsResponse,
+  VendorListingProductSummary,
 } from './dto/index.js';
 import type { VendorContext } from './vendor-context.types.js';
 
@@ -87,9 +91,11 @@ export class VendorListingsService {
 
   async list(ctx: VendorContext): Promise<ListingListResponse> {
     const rows = await this.withScope(ctx, ({ listings }) =>
-      listings.listAllForDispensary(ctx.dispensaryId),
+      listings.listAllForDispensaryWithProducts(ctx.dispensaryId),
     );
-    return { listings: rows.map((row) => projectListing(row)) };
+    return {
+      listings: rows.map(({ listing, product }) => projectListingWithProduct(listing, product)),
+    };
   }
 
   async create(ctx: VendorContext, body: CreateListingRequest): Promise<ListingResponse> {
@@ -196,6 +202,35 @@ export class VendorListingsService {
   }
 
   /**
+   * Manual POS sync. Stamps `lastSyncedAt = now` on every active listing
+   * the dispensary owns so the vendor portal's staleness banner clears
+   * after a one-click gesture. The cache invalidation that follows is the
+   * conservative move — a listing's projected payload includes
+   * `lastSyncedAt`, and a sync that doesn't flush the public-facing
+   * projections would leave the menu reading the pre-sync timestamp until
+   * the next write.
+   *
+   * Returns the count of rows updated and the canonical timestamp. The
+   * controller serializes the Date to ISO-with-offset to match
+   * `SyncListingsResponseSchema`.
+   *
+   * Async POS reconciliation (Treez / Dutchie listing diff, Metrc package
+   * pull) replaces this internal implementation in a follow-up phase
+   * without changing the wire contract — the vendor portal already knows
+   * to await this Promise before re-listing.
+   */
+  async sync(ctx: VendorContext): Promise<SyncListingsResponse> {
+    const result = await this.withScope(ctx, ({ listings }) =>
+      listings.stampActiveSyncedForDispensary(ctx.dispensaryId),
+    );
+    await this.cache.invalidateListing(ctx.dispensaryId);
+    return {
+      updated: result.updated,
+      syncedAt: result.syncedAt.toISOString(),
+    };
+  }
+
+  /**
    * Runs `fn` inside a tx that sets `app.current_dispensary_id` so the RLS
    * policies on `dispensary_listings` (defined `FOR ALL TO app_vendor` in
    * migration 0000_init.sql) read it through `current_setting`. In the
@@ -254,4 +289,26 @@ function projectListing(row: DispensaryListing): ListingResponse {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function projectProductSummary(product: Product): VendorListingProductSummary {
+  return {
+    id: product.id,
+    brand: product.brand,
+    name: product.name,
+    productType: product.productType,
+    strainType: product.strainType,
+    thcMgPerUnit: product.thcMgPerUnit,
+    weightGramsPerUnit: product.weightGramsPerUnit,
+    imageKeys: product.imageKeys,
+    isActive: product.isActive,
+    deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
+  };
+}
+
+function projectListingWithProduct(
+  listing: DispensaryListing,
+  product: Product,
+): ListingWithProductResponse {
+  return { ...projectListing(listing), product: projectProductSummary(product) };
 }

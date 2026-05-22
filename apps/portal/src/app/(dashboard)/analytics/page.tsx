@@ -1,17 +1,10 @@
-import { type Metadata } from 'next';
-import { type ReactNode } from 'react';
-import { PagePlaceholder } from '../../../components/shell/page-placeholder.js';
+import { redirect } from 'next/navigation';
 
-export const metadata: Metadata = {
-  title: 'Analytics — DankDash for Business',
-};
-
-export default function AnalyticsPage(): ReactNode {
-  return (
-    <PagePlaceholder
-      title="Analytics"
-      description="Revenue by day, top SKUs, customer cohorts, and compliance trends."
-      phase="Phase 17"
-    />
-  );
+/**
+ * `/analytics` has no content of its own — it redirects to the default
+ * tab. Keeps the sidebar item targeting a stable path while letting the
+ * tab routes own the actual surfaces.
+ */
+export default function AnalyticsIndexPage(): never {
+  redirect('/analytics/sales');
 }

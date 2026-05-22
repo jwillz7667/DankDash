@@ -1,5 +1,13 @@
 export { BaseRepository, newId } from './base.js';
 
+export {
+  AnalyticsRepository,
+  type DeadInventoryRow,
+  type HourlyBucketRow,
+  type ReorderCountsRow,
+  type SalesAggregateRow,
+  type TopProductRow,
+} from './analytics.repo.js';
 export { AuditLogRepository } from './audit.repo.js';
 export { CartItemsRepository, CartsRepository, CART_TTL_MS } from './cart.repo.js';
 export {
@@ -24,6 +32,7 @@ export {
   type CreateDispensaryInput,
   DispensariesRepository,
   DispensaryStaffRepository,
+  type StaffWithUserRow,
 } from './dispensaries.repo.js';
 export {
   type CreateUserAddressInput,
@@ -42,6 +51,7 @@ export {
   type OrderStatusTransitionInput,
   type TransitionDecision,
   type TransitionResolver,
+  type VendorPayoutOrderRow,
   type VendorQueueOrderRow,
 } from './orders.repo.js';
 export {

@@ -316,6 +316,30 @@ export class DispensaryListingsRepository extends BaseRepository {
   }
 
   /**
+   * Vendor menu — every listing joined to its product so the portal can
+   * render the table without an N+1 trip back to the catalog endpoint.
+   * Includes soft-deleted and inactive products (`LEFT JOIN ... ON id`) so a
+   * vendor whose product was archived globally still sees the row in their
+   * own table and knows why it disappeared from the public menu.
+   *
+   * Sort matches `listAllForDispensary` (updated-then-created desc) so the
+   * table reflects the same ordering across the two endpoints. The non-
+   * vendor join in `listMenuForDispensary` sorts by brand+name for stable
+   * customer-facing display; vendors care about recency.
+   */
+  async listAllForDispensaryWithProducts(
+    dispensaryId: string,
+  ): Promise<readonly { readonly listing: DispensaryListing; readonly product: Product }[]> {
+    const rows = await this.db
+      .select({ listing: dispensaryListings, product: products })
+      .from(dispensaryListings)
+      .innerJoin(products, eq(dispensaryListings.productId, products.id))
+      .where(eq(dispensaryListings.dispensaryId, dispensaryId))
+      .orderBy(desc(dispensaryListings.updatedAt), desc(dispensaryListings.createdAt));
+    return rows;
+  }
+
+  /**
    * Vendor-scoped read — returns the listing only if it belongs to the given
    * dispensary. Crossing dispensary boundaries returns `null`, which the
    * service translates to a 404 so cross-vendor probing cannot distinguish
@@ -462,6 +486,45 @@ export class DispensaryListingsRepository extends BaseRepository {
       .from(dispensaryListings)
       .where(inArray(dispensaryListings.id, ids))
       .for('update');
+  }
+
+  /**
+   * Stamp `lastSyncedAt = now` on every active listing the dispensary owns.
+   * Returns the count of rows touched so the caller can surface a "synced
+   * N listings" message without re-listing the table.
+   *
+   * Used by the vendor portal's manual-sync affordance (POST
+   * /v1/vendor/listings/sync). Async POS reconciliation lands in a follow-up
+   * phase; today this gives the vendor an idempotent "I know what I'm
+   * looking at" gesture and primes the same column the async sync will
+   * update later, so consumers (menu projection, staleness banner) never
+   * have to learn two code paths.
+   *
+   * Only active rows are updated — a deactivated listing isn't visible on
+   * the public menu and there is no Metrc transaction generating its
+   * inventory either, so a sync stamp would be misleading. Bulk-update via
+   * a single UPDATE rather than a per-row loop because both the DB
+   * round-trip overhead and the index-update fanout are fixed regardless
+   * of result-set size.
+   *
+   * Returned `syncedAt` is the timestamp written to the rows so the
+   * caller can return it to the client without a re-select.
+   */
+  async stampActiveSyncedForDispensary(
+    dispensaryId: string,
+  ): Promise<{ readonly updated: number; readonly syncedAt: Date }> {
+    const now = new Date();
+    const rows = await this.db
+      .update(dispensaryListings)
+      .set({ lastSyncedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(dispensaryListings.dispensaryId, dispensaryId),
+          eq(dispensaryListings.isActive, true),
+        ),
+      )
+      .returning({ id: dispensaryListings.id });
+    return { updated: rows.length, syncedAt: now };
   }
 
   /**

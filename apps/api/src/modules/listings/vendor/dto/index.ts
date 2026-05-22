@@ -9,6 +9,11 @@ export {
 export {
   ListingListResponseSchema,
   ListingResponseSchema,
+  ListingWithProductResponseSchema,
+  VendorListingProductSummarySchema,
   type ListingListResponse,
   type ListingResponse,
+  type ListingWithProductResponse,
+  type VendorListingProductSummary,
 } from './listing.dto.js';
+export { SyncListingsResponseSchema, type SyncListingsResponse } from './sync-listings.dto.js';

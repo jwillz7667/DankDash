@@ -17,6 +17,7 @@ import type {
   CreateListingRequest,
   ListingListResponse,
   ListingResponse,
+  ListingWithProductResponse,
   PatchListingRequest,
 } from './dto/index.js';
 import type { VendorContext } from './vendor-context.types.js';
@@ -50,15 +51,32 @@ const LISTING: ListingResponse = {
   updatedAt: '2026-05-18T19:00:00.000Z',
 };
 
+const LISTING_WITH_PRODUCT: ListingWithProductResponse = {
+  ...LISTING,
+  product: {
+    id: PRODUCT_ID,
+    brand: 'North Star',
+    name: 'Pineapple Express 3.5g',
+    productType: 'flower',
+    strainType: 'sativa',
+    thcMgPerUnit: '875.000',
+    weightGramsPerUnit: '3.500',
+    imageKeys: [],
+    isActive: true,
+    deletedAt: null,
+  },
+};
+
 class FakeVendorListingsService {
   public listCalls: VendorContext[] = [];
   public createCalls: { ctx: VendorContext; body: CreateListingRequest }[] = [];
   public patchCalls: { ctx: VendorContext; id: string; body: PatchListingRequest }[] = [];
   public deleteCalls: { ctx: VendorContext; id: string }[] = [];
+  public syncCalls: VendorContext[] = [];
 
   list = (ctx: VendorContext): Promise<ListingListResponse> => {
     this.listCalls.push(ctx);
-    return Promise.resolve({ listings: [LISTING] });
+    return Promise.resolve({ listings: [LISTING_WITH_PRODUCT] });
   };
   create = (ctx: VendorContext, body: CreateListingRequest): Promise<ListingResponse> => {
     this.createCalls.push({ ctx, body });
@@ -72,6 +90,10 @@ class FakeVendorListingsService {
     this.deleteCalls.push({ ctx, id });
     return Promise.resolve();
   };
+  sync = (ctx: VendorContext): Promise<{ readonly updated: number; readonly syncedAt: string }> => {
+    this.syncCalls.push(ctx);
+    return Promise.resolve({ updated: 3, syncedAt: '2026-05-20T12:00:00.000Z' });
+  };
 }
 
 describe('VendorListingsController.list', () => {
@@ -82,7 +104,7 @@ describe('VendorListingsController.list', () => {
     const res = await controller.list(CTX);
 
     expect(svc.listCalls).toEqual([CTX]);
-    expect(res).toEqual({ listings: [LISTING] });
+    expect(res).toEqual({ listings: [LISTING_WITH_PRODUCT] });
   });
 });
 
@@ -124,5 +146,17 @@ describe('VendorListingsController.delete', () => {
     await expect(controller.delete(CTX, LISTING_ID)).resolves.toBeUndefined();
 
     expect(svc.deleteCalls).toEqual([{ ctx: CTX, id: LISTING_ID }]);
+  });
+});
+
+describe('VendorListingsController.sync', () => {
+  it('forwards ctx and returns the {updated, syncedAt} envelope', async () => {
+    const svc = new FakeVendorListingsService();
+    const controller = new VendorListingsController(svc as unknown as VendorListingsService);
+
+    const res = await controller.sync(CTX);
+
+    expect(svc.syncCalls).toEqual([CTX]);
+    expect(res).toEqual({ updated: 3, syncedAt: '2026-05-20T12:00:00.000Z' });
   });
 });

@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { type GeoPoint, type GeoPolygon } from '../schema/custom-types.js';
 import {
   dispensaries,
@@ -9,8 +9,34 @@ import {
   type NewDispensary,
   type NewDispensaryStaffMember,
 } from '../schema/dispensaries.js';
+import { type StaffRole } from '../schema/enums.js';
 import { parsePoint, parsePolygon, pointToSql, polygonToSql } from '../schema/geo.js';
+import { users } from '../schema/identity.js';
 import { BaseRepository, newId } from './base.js';
+
+/**
+ * Wire shape for a staff row joined with the underlying user. The portal
+ * staff page reads every field except `permissions` (Phase 15.4 surfaces a
+ * fixed role grid; per-permission overrides land later). `removedAt` is
+ * carried so the portal can render a "Removed" row when an operator wants
+ * historic context — actively filtering it out on the SQL side would hide
+ * the trail an owner needs to audit who used to have access.
+ */
+export interface StaffWithUserRow {
+  readonly id: string;
+  readonly dispensaryId: string;
+  readonly userId: string;
+  readonly role: StaffRole;
+  readonly invitedAt: Date;
+  readonly invitedBy: string | null;
+  readonly acceptedAt: Date | null;
+  readonly removedAt: Date | null;
+  readonly email: string;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  readonly mfaEnabled: boolean;
+  readonly lastLoginAt: Date | null;
+}
 
 export interface CreateDispensaryInput extends Omit<NewDispensary, 'location' | 'deliveryPolygon'> {
   readonly location: GeoPoint;
@@ -214,6 +240,47 @@ export class DispensaryStaffRepository extends BaseRepository {
       .where(and(eq(dispensaryStaff.userId, userId), isNull(dispensaryStaff.removedAt)));
   }
 
+  /**
+   * Staff roster joined with the underlying users row. Used by the
+   * vendor-portal staff page (Phase 15.4) — returns every membership the
+   * dispensary has ever held (active and removed) so the operator can see
+   * who used to have access. Ordered: active first (removedAt NULL), then
+   * by invitedAt desc within each group, so the most recent invite is at
+   * the top of the list.
+   */
+  async listWithUserForDispensary(dispensaryId: string): Promise<readonly StaffWithUserRow[]> {
+    const rows = await this.db
+      .select({
+        id: dispensaryStaff.id,
+        dispensaryId: dispensaryStaff.dispensaryId,
+        userId: dispensaryStaff.userId,
+        role: dispensaryStaff.role,
+        invitedAt: dispensaryStaff.invitedAt,
+        invitedBy: dispensaryStaff.invitedBy,
+        acceptedAt: dispensaryStaff.acceptedAt,
+        removedAt: dispensaryStaff.removedAt,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        mfaEnabled: users.mfaEnabled,
+        lastLoginAt: users.lastLoginAt,
+      })
+      .from(dispensaryStaff)
+      .innerJoin(users, eq(users.id, dispensaryStaff.userId))
+      .where(eq(dispensaryStaff.dispensaryId, dispensaryId))
+      .orderBy(sql`${dispensaryStaff.removedAt} IS NOT NULL`, desc(dispensaryStaff.invitedAt));
+    return rows;
+  }
+
+  async findById(id: string): Promise<DispensaryStaffMember | null> {
+    const [row] = await this.db
+      .select()
+      .from(dispensaryStaff)
+      .where(eq(dispensaryStaff.id, id))
+      .limit(1);
+    return row ?? null;
+  }
+
   async invite(
     input: Omit<NewDispensaryStaffMember, 'id'> & { readonly id?: string },
   ): Promise<DispensaryStaffMember> {
@@ -225,11 +292,40 @@ export class DispensaryStaffRepository extends BaseRepository {
     return row;
   }
 
+  async updateRole(id: string, role: StaffRole): Promise<DispensaryStaffMember | null> {
+    const [row] = await this.db
+      .update(dispensaryStaff)
+      .set({ role })
+      .where(eq(dispensaryStaff.id, id))
+      .returning();
+    return row ?? null;
+  }
+
   async accept(id: string, at: Date): Promise<void> {
     await this.db.update(dispensaryStaff).set({ acceptedAt: at }).where(eq(dispensaryStaff.id, id));
   }
 
   async remove(id: string, at: Date): Promise<void> {
     await this.db.update(dispensaryStaff).set({ removedAt: at }).where(eq(dispensaryStaff.id, id));
+  }
+
+  /**
+   * Count of staff at a given role that are still active. The staff
+   * service uses this for the "don't remove the last owner" invariant —
+   * demoting or removing the last active owner would lock the dispensary
+   * out of owner-only operations forever.
+   */
+  async countActiveByRole(dispensaryId: string, role: StaffRole): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(dispensaryStaff)
+      .where(
+        and(
+          eq(dispensaryStaff.dispensaryId, dispensaryId),
+          eq(dispensaryStaff.role, role),
+          isNull(dispensaryStaff.removedAt),
+        ),
+      );
+    return row?.count ?? 0;
   }
 }

@@ -58,6 +58,7 @@ import { DocumentHashModule } from './infrastructure/document-hash.module.js';
 import { DrizzleModule } from './infrastructure/drizzle.module.js';
 import { EncryptionModule } from './infrastructure/encryption.module.js';
 import { RedisModule } from './infrastructure/redis.module.js';
+import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CartModule } from './modules/cart/cart.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
@@ -72,8 +73,11 @@ import { ListingsModule } from './modules/listings/listings.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { PayoutsModule } from './modules/payouts/payouts.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.module.js';
 import { SearchModule } from './modules/search/search.module.js';
+import { SettingsModule } from './modules/settings/settings.module.js';
+import { StaffModule } from './modules/staff/staff.module.js';
 
 @Module({
   imports: [
@@ -104,10 +108,14 @@ import { SearchModule } from './modules/search/search.module.js';
     DispensariesModule,
     CatalogModule,
     ListingsModule,
+    AnalyticsModule,
     SearchModule,
     CartModule,
     CheckoutModule,
     PaymentsModule,
+    PayoutsModule,
+    StaffModule,
+    SettingsModule,
     OrdersModule,
     DriversModule,
     ComplianceModule,
