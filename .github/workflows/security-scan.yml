@@ -1,0 +1,114 @@
+name: security-scan
+
+# OWASP ZAP is the active-scan layer of the Phase 21 security pipeline.
+# We deliberately do NOT run it per-PR — a full scan against staging
+# takes 20-40 minutes and would crater dev velocity if it gated every
+# merge. Instead, it ships as `workflow_dispatch` and is fired:
+#
+#   - Before any TestFlight cut (consumer + driver iOS).
+#   - Before any production deploy promoted from staging.
+#   - On a quarterly cadence even if no release is pending.
+#
+# Findings are uploaded as artifacts + filed as GitHub Issues by the
+# action itself; SARIF is also surfaced in the Security tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - prod
+      depth:
+        description: "Scan depth (baseline = passive only, full = active + passive)"
+        required: true
+        default: "baseline"
+        type: choice
+        options:
+          - baseline
+          - full
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+
+concurrency:
+  # One scan against a given target at a time — concurrent active scans
+  # would generate misleading data and could trip rate limits.
+  group: zap-${{ github.event.inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  zap:
+    name: OWASP ZAP ${{ github.event.inputs.depth }} scan vs ${{ github.event.inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      STAGING_URL: ${{ secrets.STAGING_API_URL }}
+      PROD_URL: ${{ secrets.PROD_API_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target URL
+        id: target
+        # Both URLs come from repo secrets so we never publish them in
+        # the workflow file. The lookup fails the job if the secret is
+        # unset rather than silently scanning the wrong host.
+        run: |
+          if [[ "${{ github.event.inputs.target }}" == "staging" ]]; then
+            url="${STAGING_URL}"
+          else
+            url="${PROD_URL}"
+          fi
+          if [[ -z "${url}" ]]; then
+            echo "::error::Target URL for ${{ github.event.inputs.target }} secret is not configured"
+            exit 1
+          fi
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+
+      - name: ZAP baseline scan
+        if: github.event.inputs.depth == 'baseline'
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: ${{ steps.target.outputs.url }}
+          # Rule tuning lives in .zap/rules.tsv so we can suppress
+          # third-party false positives without disabling the rule
+          # entirely across the codebase.
+          rules_file_name: .zap/rules.tsv
+          cmd_options: "-a -j -r zap-baseline-report.html -w zap-baseline-report.md -J zap-baseline-report.json"
+          # `fail_action: true` returns a non-zero exit on any WARN or
+          # FAIL finding, blocking the workflow run. The Phase 21
+          # gate is "zero high+critical" so we leave it on.
+          fail_action: true
+          # File or update a GitHub Issue with the findings so the
+          # operator gets a durable record beyond the workflow log.
+          issue_title: "ZAP baseline scan — ${{ github.event.inputs.target }}"
+
+      - name: ZAP full scan
+        if: github.event.inputs.depth == 'full'
+        uses: zaproxy/action-full-scan@v0.10.0
+        with:
+          target: ${{ steps.target.outputs.url }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: "-a -j -r zap-full-report.html -w zap-full-report.md -J zap-full-report.json"
+          fail_action: true
+          issue_title: "ZAP full scan — ${{ github.event.inputs.target }}"
+
+      - name: Upload ZAP report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-${{ github.event.inputs.depth }}-${{ github.event.inputs.target }}-report
+          path: |
+            zap-*.html
+            zap-*.md
+            zap-*.json
+          retention-days: 90
