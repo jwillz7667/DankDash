@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
     "test": "vitest run --passWithNoTests",
+    "env-check": "tsx src/cli/env-check.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -66,6 +67,7 @@
     "@types/supertest": "^7.2.0",
     "@vitest/coverage-v8": "^2.1.8",
     "supertest": "^7.2.2",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "unplugin-swc": "^1.5.9",
     "vitest": "^2.1.8"
