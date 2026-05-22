@@ -121,8 +121,9 @@ Each phase below is a single Claude Code session. At the end of a phase:
 | 20  | iOS Driver — offers, navigation, ID scan       | 2.5h         | 19         |
 | 21  | Hardening — security, observability, load test | 2h           | all        |
 | 22  | Pre-launch — admin console, runbooks           | 2h           | 21         |
+| 23  | Final integration — env validation, cutover    | 1.5h         | 22         |
 
-Total: ~45 hours of focused work.
+Total: ~46.5 hours of focused work.
 
 ---
 
@@ -2201,6 +2202,57 @@ These should be reviewed by counsel before launch — placeholder content accept
 - [ ] All green-light commands pass
 - [ ] Branch pushed, PR opened
 - [ ] **Ready to ship.**
+
+---
+
+# PHASE 23 — Final integration: production env validation + cutover
+
+**Goal:** Close the gap between "Phase 22 docs exist" and "the CEO can walk the launch checklist top-to-bottom." Phase 22 left two operational gaps the checklist explicitly references: a production env-validation CLI (`pnpm --filter @dankdash/api run env-check`, called out in launch-checklist §2.3) and a production-shaped env template separate from the dev `.env.example`. Phase 23 ships both, plus the schema-level changes that let the launch-checklist §2.1 variables be enforced rather than aspirational. The integration-test suite the original ADR 0009 footnote referenced ("Phase 23 explicitly depends on the runbooks") is deferred to a follow-up — the integration tests that already exist under `apps/api/test/integration/` cover the order-lifecycle happy path against testcontainers, and the runbook-driven dry-runs are operational rehearsals (per launch-checklist §8 last bullet) rather than CI artifacts.
+
+## Tasks
+
+### 23.1 — Production env-check CLI
+
+`apps/api/src/cli/env-check.ts` — a standalone CLI that loads `process.env`, runs the `EnvSchema` validator from `@dankdash/config`, and applies a stricter production-mode overlay when `NODE_ENV=production`:
+
+- `NODE_ENV` must be exactly `production` (not `staging`, not `development`).
+- `DATABASE_URL` / `REDIS_URL` must not be `localhost` / `127.0.0.1` / `::1`.
+- `LOG_LEVEL` must not be `debug` or `trace` (defaults to `info`; `warn` / `error` allowed).
+- `SENTRY_DSN` must be present.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` must be present.
+- Feature-flag/credential coherence: if `ENABLE_AEROPAY=true`, then `AEROPAY_CLIENT_ID`/`AEROPAY_CLIENT_SECRET`/`AEROPAY_WEBHOOK_SECRET` must be non-empty and not `test_*` / `sandbox_*`; same for `ENABLE_METRC`/`METRC_*`, `ENABLE_PERSONA`/`PERSONA_*`, `ENABLE_VERIFF`/`VERIFF_*`. If `AEROPAY_LIVE=true`, the same Aeropay creds must be non-test.
+- `AEROPAY_API_BASE_URL` / `METRC_API_BASE_URL` / `VERIFF_API_BASE_URL` must not be sandbox hostnames.
+- JWT key material must decode to a valid PEM and the public key must match the private key — surface a clear error if the pair is mismatched (a common rotation foot-gun).
+
+Exit code 0 on success; non-zero with a structured human-readable list of failures otherwise. Wired into `apps/api/package.json` as `"env-check": "tsx src/cli/env-check.ts"`.
+
+The pure check functions live in `packages/config/src/env-check.ts` (so the test suite runs against vitest defaults — no testcontainers, no Docker, ~8ms). The CLI in `apps/api/src/cli/env-check.ts` is a thin shim that calls `loadEnv()` + `runAllChecks()` and translates the result into stdout/stderr + exit codes. `packages/config/src/env-check.test.ts` covers the dev-mode pass case, every production strict-mode failure, every feature-flag coherence case (matched / unmatched / sandbox-host base URL / test-credential prefix), the Twilio sender XOR (both-unset, both-set, exactly-one), and the JWT-pair check (matched, mismatched, invalid PEM, absent).
+
+### 23.2 — `.env.production.example` template
+
+A production-shaped env template at repo root, distinct from the dev `.env.example`. Every key the `EnvSchema` enforces is present with an empty placeholder; every key the launch-checklist §2.1 names but the schema does not yet enforce (e.g. `DATABASE_REPLICA_URL`, `STICKY_SESSION_KEY`, `BULLMQ_PREFIX`, `WEB_BASE_URL`) is present as a commented `# OPTIONAL` placeholder with a one-line note. The template documents where each value comes from (Railway secret manager, R2 dashboard, Aeropay portal, Apple Developer portal, etc.).
+
+Gitignored siblings: `.env.production`, `.env.staging`, `.env.local` remain ignored. The `.env.production.example` is committed.
+
+### 23.3 — Phase 20 typecheck sweep-fix + Phase 23 doc entries + ADR 0010
+
+- **Sweep-fix.** Three pre-existing typecheck errors in `apps/api/src/modules/drivers/services/` from incomplete Phase 20 work surfaced when the final-integration sweep ran `pnpm --filter @dankdash/api typecheck`. Mechanical fixes: `driver-orders.service.ts:190` calls `OrderEventsRepository.listForOrder` (was `listTimelineForOrder` — wrong name); `driver-id-scan.service.test.ts:48` imports `OrderTransitionService` from `../../orders/order-transition.service.js` (was importing a non-existent `OrderEventsService`); both `makeOrder` test fixtures extended with the post-Phase-20 nullable `Order` columns (`paymentFailedAt`, `rejectedAt`, `preppingAt`, `awaitingDriverAt`, `dispatchFailedAt`, `driverAssignedAt`, `enRoutePickupAt`, `enRouteDropoffAt`, `arrivedAtDropoffAt`, `idScanPendingAt`, `returnedToStoreAt`, `disputedAt`, `ratedAt`) so the literals satisfy the Drizzle `$inferSelect` shape under `exactOptionalPropertyTypes`. The `FakeOrderEventsRepo` and `FakeOrderEventsService` test doubles renamed to match the corrected types. No behavioral changes; the integration tests that exercise these services were already green.
+- **Doc entries.**
+  - `docs/CLAUDE-CODE-PHASES.md` — this section.
+  - `docs/adr/0010-phase23-final-integration.md` — scope decision, what shipped, what was deferred, why the integration-test suite is not in this phase.
+  - `docs/LAUNCH-CHECKLIST.md` §2.1 + §2.3 — corrected `env.schema.ts` → `env.ts` references and described what the env-check CLI actually does.
+  - `PROGRESS.md` — Phase 23 entry.
+
+## Phase 23 — Definition of Done
+
+- [x] `pnpm --filter @dankdash/api run env-check` exists; runs `loadEnv()` + `runAllChecks()` and exits 0/1/2.
+- [x] Running `env-check` against a deliberately broken production env produces a clean, actionable failure list and exit code 2 (verified via the 27-test unit suite against synthetic envs).
+- [x] `.env.production.example` committed at repo root and not gitignored.
+- [x] ADR 0010 committed.
+- [x] `PROGRESS.md` updated.
+- [x] `pnpm --filter @dankdash/api typecheck` passes (sweep-fix lands the leftover Phase 20 regressions).
+- [x] `pnpm --filter @dankdash/config typecheck` and `pnpm --filter @dankdash/config test` pass.
+- [x] Branch pushed, PR opened.
 
 ---
 
