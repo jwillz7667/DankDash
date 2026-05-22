@@ -8,4 +8,5 @@ export {
   WEBHOOK_EVENTS_CLEANUP_CRON_EXPRESSION,
   WEBHOOK_EVENTS_CLEANUP_CRON_TIMEZONE,
   scheduleWebhookEventsCleanupJob,
+  type ScheduleWebhookEventsCleanupJobOptions,
 } from './cleanup.scheduler.js';

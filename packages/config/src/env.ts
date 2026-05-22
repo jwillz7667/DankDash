@@ -102,6 +102,7 @@ export const EnvSchema = z
 
     PORT: portSchema.default(3000),
     REALTIME_PORT: portSchema.default(3001),
+    WORKERS_METRICS_PORT: portSchema.default(3002),
 
     ENABLE_AEROPAY: booleanFromString.default(true),
     ENABLE_METRC: booleanFromString.default(false),
