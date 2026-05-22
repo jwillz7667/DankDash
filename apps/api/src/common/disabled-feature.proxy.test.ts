@@ -57,4 +57,18 @@ describe('createDisabledFeatureProxy', () => {
     expect(proxy['beforeApplicationShutdown']).toBeUndefined();
     expect(proxy['onApplicationShutdown']).toBeUndefined();
   });
+
+  it('returns undefined for Object.prototype names so framework provider scans do not crash', () => {
+    // @nestjs/event-emitter walks Object.getOwnPropertyNames(Object.prototype)
+    // on every provider instance to find decorated event listeners; if those
+    // accesses threw, the EventSubscribersLoader bootstrap hook crashes the
+    // app before HTTP starts. See: file:///repo/.../event-subscribers.loader.js
+    const proxy = createDisabledFeatureProxy<FakeService>('persona') as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const inherited of Object.getOwnPropertyNames(Object.prototype)) {
+      expect(proxy[inherited]).toBeUndefined();
+    }
+  });
 });

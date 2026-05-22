@@ -1,23 +1,37 @@
 /**
  * Returns a Proxy that throws {@link FeatureDisabledError} on any
- * non-symbol property access. Used by feature modules to provide a
- * placeholder DI token when the feature's `ENABLE_*` flag is off: the
- * DI graph stays satisfied at module construction, no third-party
- * credentials are required, and any call that actually reaches the
- * proxy surfaces as a typed 503 instead of crashing the process.
+ * property access that looks like a real method invocation. Used by
+ * feature modules to provide a placeholder DI token when the feature's
+ * `ENABLE_*` flag is off: the DI graph stays satisfied at module
+ * construction, no third-party credentials are required, and any call
+ * that actually reaches the proxy surfaces as a typed 503 instead of
+ * crashing the process.
  *
- * Symbol property access (`Symbol.toPrimitive`, `Symbol.iterator`, the
- * generic NestJS `instanceof` chain, ...) returns `undefined` so the
- * proxy doesn't break introspection or structured logging on the
- * surrounding object.
+ * Framework introspection paths must NOT throw — Nest, the event
+ * emitter, the metadata scanner, and the await machinery all probe
+ * provider instances for the presence of well-known hook names and
+ * for inherited `Object.prototype` methods. Throwing during those
+ * probes crashes app bootstrap. Three categories of property access
+ * are silently passed through as `undefined`:
+ *
+ *   1. Symbol properties (`Symbol.toPrimitive`, `Symbol.iterator`,
+ *      Nest's `instanceof` chain).
+ *   2. NestJS lifecycle hooks + the promise-detection `then` probe
+ *      (`PASSTHROUGH_PROPERTIES` below).
+ *   3. Anything inherited from `Object.prototype` — `__defineGetter__`,
+ *      `constructor`, `hasOwnProperty`, `toString`, … — which the
+ *      `@nestjs/event-emitter` `EventSubscribersLoader` enumerates via
+ *      `Object.getOwnPropertyNames(Object.prototype)` on every provider
+ *      to discover decorated event listeners.
+ *
+ * Real method invocations still surface as a typed 503.
  */
 import { FeatureDisabledError } from '@dankdash/types';
 
 /**
- * Property names that the framework probes via `typeof obj.hook === 'function'`
- * to decide whether to invoke a lifecycle hook. These MUST resolve to
- * `undefined` rather than throwing — otherwise the proxy crashes Nest's
- * `OnModuleInit` iterator at app bootstrap.
+ * Property names that framework code probes via `typeof obj.hook === 'function'`
+ * to decide whether to invoke a hook. These MUST resolve to `undefined`
+ * rather than throwing — otherwise the proxy crashes Nest at bootstrap.
  *
  *   - `then`: promise detection in await chains
  *   - `onModuleInit`, `onApplicationBootstrap`,
@@ -44,6 +58,7 @@ export function createDisabledFeatureProxy<T extends object>(featureName: string
     get(_target, prop) {
       if (typeof prop === 'symbol') return undefined;
       if (PASSTHROUGH_PROPERTIES.has(prop)) return undefined;
+      if (Reflect.has(Object.prototype, prop)) return undefined;
       throw new FeatureDisabledError(featureName, { invokedProperty: prop });
     },
   };
