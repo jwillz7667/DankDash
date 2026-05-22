@@ -40,7 +40,7 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+RUN --mount=type=cache,id=s/dankdash-pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter "@dankdash/api..."
 RUN pnpm --filter "@dankdash/api^..." build \
  && pnpm --filter "@dankdash/api" build
@@ -57,7 +57,7 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
 COPY --from=build /repo/apps/api/dist ./apps/api/dist
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+RUN --mount=type=cache,id=s/dankdash-pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --prod --filter "@dankdash/api..."
 USER node
 EXPOSE 3000
