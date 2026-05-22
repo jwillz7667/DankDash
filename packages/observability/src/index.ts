@@ -48,6 +48,8 @@ export { createRedisMetrics } from './metrics/redis-gauges.js';
 export type { RedisMetrics, RedisSnapshot } from './metrics/redis-gauges.js';
 export { createDomainCounters } from './metrics/domain-counters.js';
 export type { DomainCounters } from './metrics/domain-counters.js';
+export { createExceptionCounters } from './metrics/exception-counters.js';
+export type { ExceptionCounters, ExceptionKind } from './metrics/exception-counters.js';
 
 export { initOtel } from './otel/sdk.js';
 export type { OtelHandle, OtelInitConfig } from './otel/sdk.js';

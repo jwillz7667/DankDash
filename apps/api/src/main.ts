@@ -39,10 +39,14 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
 import { ZodValidationPipe } from './common/pipes/zod-validation.pipe.js';
 import { RATE_LIMIT_STORE, type RateLimitStore } from './common/rate-limit/rate-limit-store.js';
 import { resolveLogger } from './infrastructure/logger.js';
-import { HTTP_HISTOGRAMS, SENTRY_HANDLE } from './infrastructure/observability.module.js';
+import {
+  EXCEPTION_COUNTERS,
+  HTTP_HISTOGRAMS,
+  SENTRY_HANDLE,
+} from './infrastructure/observability.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
 import { JwtService } from './modules/auth/jwt/jwt.service.js';
-import type { HttpHistograms, SentryHandle } from '@dankdash/observability';
+import type { ExceptionCounters, HttpHistograms, SentryHandle } from '@dankdash/observability';
 /* eslint-enable import/order */
 
 async function bootstrap(): Promise<void> {
@@ -88,9 +92,10 @@ async function bootstrap(): Promise<void> {
   const rateLimitStore = app.get<RateLimitStore>(RATE_LIMIT_STORE);
   const httpHistograms = app.get<HttpHistograms>(HTTP_HISTOGRAMS);
   const sentryHandle = app.get<SentryHandle>(SENTRY_HANDLE);
+  const exceptionCounters = app.get<ExceptionCounters>(EXCEPTION_COUNTERS);
 
   app.useGlobalPipes(new ZodValidationPipe());
-  app.useGlobalFilters(new GlobalExceptionFilter(logger));
+  app.useGlobalFilters(new GlobalExceptionFilter(logger, sentryHandle, exceptionCounters));
   app.useGlobalInterceptors(
     new RequestIdInterceptor(),
     new LoggingInterceptor(logger, httpHistograms),

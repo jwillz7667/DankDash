@@ -19,12 +19,14 @@ import {
   configureRegistry,
   createDbMetrics,
   createDomainCounters,
+  createExceptionCounters,
   createHttpHistograms,
   createRedisMetrics,
   initSentry,
   resetRegistry,
   type DbMetrics,
   type DomainCounters,
+  type ExceptionCounters,
   type HttpHistograms,
   type RedisMetrics,
   type SentryHandle,
@@ -37,6 +39,7 @@ export const HTTP_HISTOGRAMS = Symbol.for('HTTP_HISTOGRAMS');
 export const DB_METRICS = Symbol.for('DB_METRICS');
 export const REDIS_METRICS = Symbol.for('REDIS_METRICS');
 export const DOMAIN_COUNTERS = Symbol.for('DOMAIN_COUNTERS');
+export const EXCEPTION_COUNTERS = Symbol.for('EXCEPTION_COUNTERS');
 export const SENTRY_HANDLE = Symbol.for('SENTRY_HANDLE');
 
 interface ApiObservability {
@@ -45,6 +48,7 @@ interface ApiObservability {
   readonly db: DbMetrics;
   readonly redis: RedisMetrics;
   readonly domain: DomainCounters;
+  readonly exceptions: ExceptionCounters;
   readonly sentry: SentryHandle;
 }
 
@@ -67,13 +71,14 @@ function buildObservability(): ApiObservability {
   const db = createDbMetrics(registry);
   const redis = createRedisMetrics(registry);
   const domain = createDomainCounters(registry);
+  const exceptions = createExceptionCounters(registry);
   const sentry = initSentry({
     ...(env.SENTRY_DSN !== undefined ? { dsn: env.SENTRY_DSN } : {}),
     serviceName: 'api',
     serviceVersion,
     environment: env.NODE_ENV,
   });
-  return { registry, http, db, redis, domain, sentry };
+  return { registry, http, db, redis, domain, exceptions, sentry };
 }
 
 const SHARED: ApiObservability = buildObservability();
@@ -98,6 +103,7 @@ class ObservabilityShutdown implements OnApplicationShutdown {
     { provide: DB_METRICS, useValue: SHARED.db },
     { provide: REDIS_METRICS, useValue: SHARED.redis },
     { provide: DOMAIN_COUNTERS, useValue: SHARED.domain },
+    { provide: EXCEPTION_COUNTERS, useValue: SHARED.exceptions },
     { provide: SENTRY_HANDLE, useValue: SHARED.sentry },
     ObservabilityShutdown,
   ],
@@ -107,6 +113,7 @@ class ObservabilityShutdown implements OnApplicationShutdown {
     DB_METRICS,
     REDIS_METRICS,
     DOMAIN_COUNTERS,
+    EXCEPTION_COUNTERS,
     SENTRY_HANDLE,
   ],
 })

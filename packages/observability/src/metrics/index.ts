@@ -13,3 +13,5 @@ export { createRedisMetrics } from './redis-gauges.js';
 export type { RedisMetrics, RedisSnapshot } from './redis-gauges.js';
 export { createDomainCounters } from './domain-counters.js';
 export type { DomainCounters } from './domain-counters.js';
+export { createExceptionCounters } from './exception-counters.js';
+export type { ExceptionCounters, ExceptionKind } from './exception-counters.js';
