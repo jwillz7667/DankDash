@@ -24,8 +24,7 @@ RUN apk add --no-cache libc6-compat tini \
 WORKDIR /repo
 
 FROM base AS build
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
-COPY tsconfig.base.json ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/realtime ./apps/realtime
 RUN pnpm install --frozen-lockfile --filter "@dankdash/realtime..."
