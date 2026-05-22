@@ -28,8 +28,7 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/realtime ./apps/realtime
-RUN --mount=type=cache,id=s/dankdash-pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter "@dankdash/realtime..."
+RUN pnpm install --frozen-lockfile --filter "@dankdash/realtime..."
 RUN pnpm --filter "@dankdash/realtime^..." build \
  && pnpm --filter "@dankdash/realtime" build
 
@@ -39,8 +38,7 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/realtime/package.json ./apps/realtime/package.json
 COPY --from=build /repo/apps/realtime/dist ./apps/realtime/dist
-RUN --mount=type=cache,id=s/dankdash-pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --prod --filter "@dankdash/realtime..."
+RUN pnpm install --frozen-lockfile --prod --filter "@dankdash/realtime..."
 USER node
 EXPOSE 4000
 ENTRYPOINT ["/sbin/tini", "--"]
