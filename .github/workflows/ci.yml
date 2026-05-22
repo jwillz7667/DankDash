@@ -123,6 +123,37 @@ jobs:
           flags: unit
           slug: jwillz7667/DankDash
 
+  security-audit:
+    name: dependency audit (high + critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        # Policy lives in audit-ci.json at the repo root. The gate fails the
+        # job on any high or critical advisory; moderate and low are reported
+        # but do not block. Allowlist entries belong in audit-ci.json with an
+        # `expiry` date so we cannot silently accumulate untriaged debt.
+        run: pnpm run security:audit
+
   compliance-gate:
     name: compliance suite (blocks deploy)
     runs-on: ubuntu-latest
