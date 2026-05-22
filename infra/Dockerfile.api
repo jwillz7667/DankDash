@@ -36,8 +36,7 @@ WORKDIR /repo
 # build in the right order.
 # ----------------------------------------------------------------------------
 FROM base AS build
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
-COPY tsconfig.base.json ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 RUN pnpm install --frozen-lockfile --filter "@dankdash/api..."
