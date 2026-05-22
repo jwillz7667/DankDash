@@ -14,6 +14,7 @@
  * paths from @dankdash/config/logger are inherited automatically because
  * we use createLogger from there.
  */
+import { partialKeepingDefaults } from '@dankdash/config';
 import { z } from 'zod';
 
 const positiveInt = z.coerce.number().int().positive();
@@ -85,8 +86,12 @@ export function loadRealtimeEnv(options: LoadEnvOptions = {}): RealtimeEnv {
   const source = options.source ?? process.env;
   // Mirror @dankdash/config's loadEnv: if the caller didn't pass an
   // explicit allowPartial, fall back to the ALLOW_PARTIAL_ENV=1 opt-in.
+  // Use the shared partial helper so `.default(...)` values survive — plain
+  // `.partial()` lets the ZodOptional wrapper short-circuit before the
+  // default applies and SOCKET_CORS_ORIGINS / PORT / SOCKET_PING_* would
+  // land on the runtime as undefined.
   const allowPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
-  const schema = allowPartial ? RealtimeEnvSchema.partial() : RealtimeEnvSchema;
+  const schema = allowPartial ? partialKeepingDefaults(RealtimeEnvSchema) : RealtimeEnvSchema;
   const result = schema.safeParse(source);
   if (!result.success) {
     const issues = result.error.issues.map((issue) => ({

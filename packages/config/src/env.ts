@@ -133,10 +133,43 @@ export class EnvValidationError extends Error {
   }
 }
 
+/**
+ * Like `schema.partial()` but preserves `.default(...)` semantics.
+ *
+ * `ZodObject.partial()` wraps every field in `ZodOptional`, which causes
+ * Zod to short-circuit on `undefined` *before* the inner `ZodDefault`
+ * has a chance to apply. The net effect is that env keys with sensible
+ * defaults silently become `undefined` whenever the partial path is taken
+ * — for example `SOCKET_CORS_ORIGINS` (defaults to `''`) crashed the
+ * realtime bootstrap with "Cannot read properties of undefined (reading
+ * 'trim')" when ALLOW_PARTIAL_ENV=1 was set.
+ *
+ * This helper only relaxes fields that are not already tolerant of
+ * `undefined` (`ZodDefault`, `ZodOptional`, `ZodNullable`). Required
+ * secrets become optional; defaulted/optional fields keep their existing
+ * shape so the default value is honored.
+ *
+ * Exported so per-app slim schemas (e.g. `apps/realtime/src/env.ts`)
+ * can use the same partial semantics as the shared loader.
+ */
+export function partialKeepingDefaults<T extends z.ZodRawShape>(
+  schema: z.ZodObject<T>,
+): z.ZodObject<z.ZodRawShape> {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, field] of Object.entries(schema.shape)) {
+    const f = field;
+    const typeName = (f._def as { typeName?: string }).typeName;
+    const tolerantOfUndefined =
+      typeName === 'ZodDefault' || typeName === 'ZodOptional' || typeName === 'ZodNullable';
+    shape[key] = tolerantOfUndefined ? f : f.optional();
+  }
+  return z.object(shape).passthrough();
+}
+
 export function loadEnv(options: LoadEnvOptions = {}): Env {
   const source = options.source ?? process.env;
   const allowPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
-  const schema = allowPartial ? EnvSchema.partial() : EnvSchema;
+  const schema = allowPartial ? partialKeepingDefaults(EnvSchema) : EnvSchema;
   const result = schema.safeParse(source);
 
   if (!result.success) {
