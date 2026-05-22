@@ -107,9 +107,17 @@ export type Env = z.infer<typeof EnvSchema>;
 export interface LoadEnvOptions {
   readonly source?: NodeJS.ProcessEnv;
   /**
-   * When true, missing optional secrets are tolerated even in production.
-   * Only safe for the typecheck/lint/test entrypoints in CI — production
-   * boot must always fail fast.
+   * When `true`, missing optional secrets are tolerated. Used in CI lint /
+   * typecheck / test entrypoints that don't actually call third-party APIs.
+   *
+   * When omitted, the loader falls back to `source.ALLOW_PARTIAL_ENV === '1'`
+   * so a single env-var opt-in works uniformly for every call site —
+   * including module factories (drizzle, redis, rate-limit) that invoke
+   * `loadEnv()` with no arguments and the NestJS `ConfigModule.validate`
+   * bootstrap callback that receives `raw` but never explicit options.
+   *
+   * Set to `false` explicitly to force strict mode even when the env var
+   * is present.
    */
   readonly allowPartial?: boolean;
 }
@@ -127,7 +135,8 @@ export class EnvValidationError extends Error {
 
 export function loadEnv(options: LoadEnvOptions = {}): Env {
   const source = options.source ?? process.env;
-  const schema = options.allowPartial === true ? EnvSchema.partial() : EnvSchema;
+  const allowPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
+  const schema = allowPartial ? EnvSchema.partial() : EnvSchema;
   const result = schema.safeParse(source);
 
   if (!result.success) {
