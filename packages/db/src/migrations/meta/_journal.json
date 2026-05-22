@@ -71,6 +71,13 @@
       "when": 1748275200000,
       "tag": "0009_phase20_id_scan_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1748016000000,
+      "tag": "0006_phase21_indexes_and_timeouts",
+      "breakpoints": true
     }
   ]
 }

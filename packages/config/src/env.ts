@@ -18,6 +18,13 @@ export const EnvSchema = z
     DATABASE_URL_TEST: z.string().url().optional(),
     DATABASE_POOL_SIZE: positiveInt.default(10),
     DATABASE_SLOW_QUERY_MS: positiveInt.default(500),
+    // Per-statement runtime cap (ms). 0 disables. Workers override to a
+    // higher value (e.g. 300000 = 5 minutes) for legitimate batch jobs;
+    // the API + realtime keep the 30s default. See migration 0006.
+    DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
+    // Idle-in-transaction abort (ms). 0 disables. Workers can raise this
+    // too — long pickup-then-commit cycles are normal in nightly reconciliation.
+    DATABASE_IDLE_IN_TXN_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60_000),
 
     REDIS_URL: z.string().url(),
 
