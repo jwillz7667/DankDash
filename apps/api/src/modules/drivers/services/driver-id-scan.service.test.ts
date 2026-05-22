@@ -38,14 +38,14 @@
  *     - `resubmission` decision → ageVerifications row recorded but the
  *       order stays in id_scan_pending (no transition).
  *
- * VeriffClient, OrderEventsService, and the three repositories are hand-
+ * VeriffClient, OrderTransitionService, and the three repositories are hand-
  * rolled fakes. No HTTP, no DB.
  */
 import { ConflictError, NotFoundError } from '@dankdash/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DriverIdScanService, type DriverIdScanScopedRepos } from './driver-id-scan.service.js';
 import type { VeriffClient, VeriffDecision } from '../../identity-verification/veriff.client.js';
-import type { OrderEventsService } from '../../orders/order-events.service.js';
+import type { OrderTransitionService } from '../../orders/order-transition.service.js';
 import type {
   AgeVerification,
   AgeVerificationsRepository,
@@ -102,13 +102,25 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     complianceCheckPayload: {},
     deliveryAddressSnapshot: SAMPLE_SNAPSHOT,
     placedAt: new Date('2026-05-15T18:00:00.000Z'),
+    paymentFailedAt: null,
     acceptedAt: new Date('2026-05-15T18:05:00.000Z'),
+    rejectedAt: null,
+    preppingAt: new Date('2026-05-15T18:10:00.000Z'),
     preparedAt: new Date('2026-05-15T18:30:00.000Z'),
+    awaitingDriverAt: new Date('2026-05-15T18:31:00.000Z'),
+    dispatchFailedAt: null,
+    driverAssignedAt: new Date('2026-05-15T18:35:00.000Z'),
+    enRoutePickupAt: new Date('2026-05-15T19:00:00.000Z'),
     pickedUpAt: new Date('2026-05-15T19:30:00.000Z'),
+    enRouteDropoffAt: new Date('2026-05-15T19:45:00.000Z'),
+    arrivedAtDropoffAt: new Date('2026-05-15T20:30:00.000Z'),
+    idScanPendingAt: null,
     deliveredAt: null,
+    returnedToStoreAt: null,
     canceledAt: null,
     canceledBy: null,
     cancelReason: null,
+    disputedAt: null,
     deliveryIdScanRef: null,
     deliveryIdScanPassed: null,
     deliveryIdScanAt: null,
@@ -116,6 +128,7 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     customerReview: null,
     dispensaryRating: null,
     driverRating: null,
+    ratedAt: null,
     createdAt: new Date('2026-05-15T18:00:00.000Z'),
     updatedAt: new Date('2026-05-15T20:30:00.000Z'),
     ...overrides,
@@ -242,7 +255,7 @@ class FakeVeriffClient {
   };
 }
 
-class FakeOrderEventsService {
+class FakeOrderTransitionService {
   public calls: OrderStatusTransitionInput[] = [];
   public throwError: Error | null = null;
 
@@ -275,7 +288,7 @@ interface Rig {
   readonly users: FakeUsersRepo;
   readonly ageVerifications: FakeAgeVerificationsRepo;
   readonly veriff: FakeVeriffClient;
-  readonly events: FakeOrderEventsService;
+  readonly events: FakeOrderTransitionService;
 }
 
 function makeRig(): Rig {
@@ -283,7 +296,7 @@ function makeRig(): Rig {
   const users = new FakeUsersRepo();
   const ageVerifications = new FakeAgeVerificationsRepo();
   const veriff = new FakeVeriffClient();
-  const events = new FakeOrderEventsService(orders);
+  const events = new FakeOrderTransitionService(orders);
   const scoped: DriverIdScanScopedRepos = {
     orders: orders as unknown as OrdersRepository,
     users: users as unknown as UsersRepository,
@@ -293,7 +306,7 @@ function makeRig(): Rig {
     FAKE_DB,
     () => scoped,
     veriff as unknown as VeriffClient,
-    events as unknown as OrderEventsService,
+    events as unknown as OrderTransitionService,
     { webhookBaseUrl: WEBHOOK_BASE_URL },
   );
   return { service, orders, users, ageVerifications, veriff, events };

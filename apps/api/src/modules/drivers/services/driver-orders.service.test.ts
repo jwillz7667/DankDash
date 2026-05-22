@@ -96,13 +96,25 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     complianceCheckPayload: {},
     deliveryAddressSnapshot: SAMPLE_SNAPSHOT,
     placedAt: new Date('2026-05-15T18:00:00.000Z'),
+    paymentFailedAt: null,
     acceptedAt: new Date('2026-05-15T18:05:00.000Z'),
+    rejectedAt: null,
+    preppingAt: new Date('2026-05-15T18:10:00.000Z'),
     preparedAt: new Date('2026-05-15T18:30:00.000Z'),
+    awaitingDriverAt: new Date('2026-05-15T18:31:00.000Z'),
+    dispatchFailedAt: null,
+    driverAssignedAt: PIN_NOW,
+    enRoutePickupAt: null,
     pickedUpAt: null,
+    enRouteDropoffAt: null,
+    arrivedAtDropoffAt: null,
+    idScanPendingAt: null,
     deliveredAt: null,
+    returnedToStoreAt: null,
     canceledAt: null,
     canceledBy: null,
     cancelReason: null,
+    disputedAt: null,
     deliveryIdScanRef: null,
     deliveryIdScanPassed: null,
     deliveryIdScanAt: null,
@@ -110,6 +122,7 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     customerReview: null,
     dispensaryRating: null,
     driverRating: null,
+    ratedAt: null,
     createdAt: new Date('2026-05-15T18:00:00.000Z'),
     updatedAt: PIN_NOW,
     ...overrides,
@@ -211,9 +224,9 @@ class FakeOrderItemsRepo implements Pick<OrderItemsRepository, 'listForOrder'> {
   }
 }
 
-class FakeOrderEventsRepo implements Pick<OrderEventsRepository, 'listTimelineForOrder'> {
+class FakeOrderEventsRepo implements Pick<OrderEventsRepository, 'listForOrder'> {
   public rows: OrderEvent[] = [];
-  listTimelineForOrder(orderId: string): Promise<readonly OrderEvent[]> {
+  listForOrder(orderId: string): Promise<readonly OrderEvent[]> {
     return Promise.resolve(this.rows.filter((r) => r.orderId === orderId));
   }
 }
