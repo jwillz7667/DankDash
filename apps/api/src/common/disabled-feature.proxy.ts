@@ -13,6 +13,26 @@
  */
 import { FeatureDisabledError } from '@dankdash/types';
 
+/**
+ * Property names that the framework probes via `typeof obj.hook === 'function'`
+ * to decide whether to invoke a lifecycle hook. These MUST resolve to
+ * `undefined` rather than throwing — otherwise the proxy crashes Nest's
+ * `OnModuleInit` iterator at app bootstrap.
+ *
+ *   - `then`: promise detection in await chains
+ *   - `onModuleInit`, `onApplicationBootstrap`,
+ *     `onModuleDestroy`, `beforeApplicationShutdown`,
+ *     `onApplicationShutdown`: the full NestJS lifecycle-hook set
+ */
+const PASSTHROUGH_PROPERTIES = new Set<string>([
+  'then',
+  'onModuleInit',
+  'onApplicationBootstrap',
+  'onModuleDestroy',
+  'beforeApplicationShutdown',
+  'onApplicationShutdown',
+]);
+
 // The type parameter `T` is only used in the return type. That is the point
 // of this utility — it lets callers specify the service type the proxy
 // stands in for without an inline cast at every call site. eslint's
@@ -23,10 +43,7 @@ export function createDisabledFeatureProxy<T extends object>(featureName: string
   const handler: ProxyHandler<object> = {
     get(_target, prop) {
       if (typeof prop === 'symbol') return undefined;
-      // `then` is accessed by promise-detection in await chains; returning
-      // undefined keeps the value awaitable as a plain object instead of
-      // tripping the proxy on routine framework introspection.
-      if (prop === 'then') return undefined;
+      if (PASSTHROUGH_PROPERTIES.has(prop)) return undefined;
       throw new FeatureDisabledError(featureName, { invokedProperty: prop });
     },
   };

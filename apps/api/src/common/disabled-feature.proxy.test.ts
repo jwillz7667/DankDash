@@ -45,4 +45,16 @@ describe('createDisabledFeatureProxy', () => {
     // method invocations as it sees fit.
     await expect(Promise.resolve(proxy)).resolves.toBe(proxy);
   });
+
+  it('returns undefined for NestJS lifecycle hooks so module bootstrap can skip them', () => {
+    const proxy = createDisabledFeatureProxy<FakeService>('persona') as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(proxy['onModuleInit']).toBeUndefined();
+    expect(proxy['onApplicationBootstrap']).toBeUndefined();
+    expect(proxy['onModuleDestroy']).toBeUndefined();
+    expect(proxy['beforeApplicationShutdown']).toBeUndefined();
+    expect(proxy['onApplicationShutdown']).toBeUndefined();
+  });
 });
