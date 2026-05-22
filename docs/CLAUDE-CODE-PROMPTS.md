@@ -63,9 +63,9 @@ At the end, verify the Definition of Done checklist completely before declaring 
 ```
 [paste universal preamble above]
 
-We are now starting PHASE 19 — iOS Driver: Foundation & Shift
+We are now starting PHASE 20 — iOS Driver: Offers, Navigation, ID Scan
 
-Read `docs/CLAUDE-CODE-PHASES.md` section "PHASE 19" carefully. Also re-read `PROGRESS.md` to see what was accomplished in prior phases. Pay particular attention to any conventions established earlier — your code must match the patterns already in the codebase, not invent new ones.
+Read `docs/CLAUDE-CODE-PHASES.md` section "PHASE 20" carefully. Also re-read `PROGRESS.md` to see what was accomplished in prior phases. Pay particular attention to any conventions established earlier — your code must match the patterns already in the codebase, not invent new ones.
 
 Work through every task listed for this phase, in order. Do not skip tasks. Do not stop short of the Definition of Done.
 
