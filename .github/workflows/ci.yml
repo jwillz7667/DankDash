@@ -194,6 +194,75 @@ jobs:
             --verbose \
             --exit-code=1
 
+  semgrep:
+    name: semgrep SAST (owasp + typescript + nodejs + repo-local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Skip Dependabot's auto-PRs — semgrep registry pulls take ~30s of network
+    # the bot doesn't need (its diff is package metadata, not source code).
+    if: github.actor != 'dependabot[bot]'
+
+    container:
+      # Pin a specific tag so a malicious registry tag can't slip a different
+      # binary in. Bump intentionally in a dedicated commit.
+      image: returntocorp/semgrep:1.92.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run semgrep
+        # Hosted rulesets cover the OWASP Top 10 + TypeScript/Node patterns;
+        # repo-local rules in `.semgrep/` enforce the project-specific bans
+        # (`console.log`, silent `catch`, `as any`, `// TODO`). The `--error`
+        # flag converts findings into a non-zero exit, blocking the merge.
+        run: |
+          semgrep \
+            --config=p/owasp-top-ten \
+            --config=p/typescript \
+            --config=p/nodejs \
+            --config=.semgrep \
+            --error \
+            --metrics=off \
+            --exclude='**/node_modules/**' \
+            --exclude='**/dist/**' \
+            --exclude='**/build/**' \
+            --exclude='**/.next/**'
+
+  codeql:
+    name: codeql analysis (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript-typescript"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-and-quality` is broader than `security-extended` — we want
+          # the quality checks too because they catch latent issues (unused
+          # exceptions, dead error paths) that complement semgrep.
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
   compliance-gate:
     name: compliance suite (blocks deploy)
     runs-on: ubuntu-latest

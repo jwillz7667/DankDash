@@ -20,6 +20,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\" --ignore-path .gitignore",
     "security:audit": "audit-ci --config audit-ci.json",
     "security:secrets": "bash ./scripts/verify-no-secrets.sh",
+    "security:semgrep": "bash ./scripts/run-semgrep.sh",
     "prepare": "bash ./scripts/install-git-hooks.sh"
   },
   "devDependencies": {
