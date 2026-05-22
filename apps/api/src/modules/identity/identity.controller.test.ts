@@ -15,7 +15,12 @@ import { KycError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
 import { IdentityController } from './identity.controller.js';
 import { KycWebhookController } from './kyc-webhook.controller.js';
-import type { KycStartResponse, MeResponse, UpdateMeRequestDto } from './dto/index.js';
+import type {
+  DispensaryMembershipsResponse,
+  KycStartResponse,
+  MeResponse,
+  UpdateMeRequestDto,
+} from './dto/index.js';
 import type { IdentityService } from './identity.service.js';
 import type { PersonaService, WebhookOutcome } from './persona/persona.service.js';
 import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
@@ -49,6 +54,19 @@ class FakeIdentityService {
     updateMe: [] as Array<{ userId: string; patch: UpdateMeRequestDto }>,
     startKyc: [] as string[],
     applyKycOutcome: [] as WebhookOutcome[],
+    listDispensaries: [] as string[],
+  };
+
+  nextDispensaries: DispensaryMembershipsResponse = {
+    memberships: [
+      {
+        id: '01935f3d-0000-7000-8000-0000000000d1',
+        displayName: 'North Loop',
+        staffRole: 'manager',
+        acceptedAt: '2026-04-02T00:00:00.000+00:00',
+        joinedAt: '2026-04-02T00:00:00.000+00:00',
+      },
+    ],
   };
 
   getMe = (userId: string): Promise<MeResponse> => {
@@ -79,6 +97,11 @@ class FakeIdentityService {
   applyKycOutcome = (outcome: WebhookOutcome): Promise<void> => {
     this.calls.applyKycOutcome.push(outcome);
     return Promise.resolve();
+  };
+
+  listDispensaries = (userId: string): Promise<DispensaryMembershipsResponse> => {
+    this.calls.listDispensaries.push(userId);
+    return Promise.resolve(this.nextDispensaries);
   };
 }
 
@@ -137,6 +160,17 @@ describe('IdentityController', () => {
 
     expect(res.inquiryUrl).toContain('withpersona.com');
     expect(svc.calls.startKyc).toEqual([USER.userId]);
+  });
+
+  it('listDispensaries forwards the authenticated userId to the service', async () => {
+    const svc = new FakeIdentityService();
+    const controller = new IdentityController(svc as unknown as never);
+
+    const res = await controller.listDispensaries(USER);
+
+    expect(res.memberships).toHaveLength(1);
+    expect(res.memberships[0]?.displayName).toBe('North Loop');
+    expect(svc.calls.listDispensaries).toEqual([USER.userId]);
   });
 });
 

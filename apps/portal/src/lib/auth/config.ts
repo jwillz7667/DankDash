@@ -36,7 +36,14 @@ import { CredentialsSignin } from '@auth/core/errors';
 import { type NextAuthConfig } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { ApiClient, ApiError } from '../api/client.js';
-import { isPortalRole, requiresMfa, type LoginResponse, type UserRole } from '../api/types.js';
+import {
+  isPortalRole,
+  requiresMfa,
+  type DispensaryMembership,
+  type LoginResponse,
+  type StaffRole,
+  type UserRole,
+} from '../api/types.js';
 import { loadPublicEnv, loadServerEnv, resolveApiBaseUrl } from '../env.js';
 
 /**
@@ -70,6 +77,9 @@ interface AuthorizedPortalUser {
   readonly accessTokenExpiresAt: string;
   readonly refreshTokenExpiresAt: string;
   readonly mfaRequired: boolean;
+  readonly dispensaryId: string | null;
+  readonly dispensaryName: string | null;
+  readonly staffRole: StaffRole | null;
 }
 
 // 60-second window before access-token expiry where we proactively
@@ -161,6 +171,16 @@ export function buildAuthConfig(options: BuildAuthConfigOptions): NextAuthConfig
           }
 
           const fullName = composeName(user.firstName, user.lastName);
+          const mfaRequired = requiresMfa(user.role) && !user.mfaEnabled;
+          // Only resolve dispensary context once the user is past MFA
+          // gating — fetching memberships before the second factor would
+          // burn an access token that the middleware is about to gate
+          // behind /two-factor anyway. The fetch is fail-open: a network
+          // failure leaves dispensaryId null and the dashboard renders a
+          // "context unavailable" affordance rather than blocking sign-in.
+          const membership = mfaRequired
+            ? null
+            : await resolveActiveDispensary(apiBaseUrl, tokens.accessToken, fetchImpl);
           const authorized: AuthorizedPortalUser = {
             id: user.id,
             email: user.email,
@@ -172,7 +192,10 @@ export function buildAuthConfig(options: BuildAuthConfigOptions): NextAuthConfig
             refreshToken: tokens.refreshToken,
             accessTokenExpiresAt: tokens.accessTokenExpiresAt,
             refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
-            mfaRequired: requiresMfa(user.role) && !user.mfaEnabled,
+            mfaRequired,
+            dispensaryId: membership?.id ?? null,
+            dispensaryName: membership?.displayName ?? null,
+            staffRole: membership?.staffRole ?? null,
           };
           // Cast to the framework's `User` — our extras ride along
           // into the jwt callback's `user` parameter, where we narrow
@@ -200,6 +223,9 @@ export function buildAuthConfig(options: BuildAuthConfigOptions): NextAuthConfig
           token.accessTokenExpiresAt = portalUser.accessTokenExpiresAt;
           token.refreshTokenExpiresAt = portalUser.refreshTokenExpiresAt;
           token.mfaRequired = portalUser.mfaRequired;
+          token.dispensaryId = portalUser.dispensaryId;
+          token.dispensaryName = portalUser.dispensaryName;
+          token.staffRole = portalUser.staffRole;
           delete token.error;
           return token;
         }
@@ -251,6 +277,9 @@ export function buildAuthConfig(options: BuildAuthConfigOptions): NextAuthConfig
         session.accessTokenExpiresAt = token.accessTokenExpiresAt;
         session.refreshTokenExpiresAt = token.refreshTokenExpiresAt;
         session.mfaRequired = token.mfaRequired;
+        session.dispensaryId = token.dispensaryId;
+        session.dispensaryName = token.dispensaryName;
+        session.staffRole = token.staffRole;
         if (token.error !== undefined) {
           session.error = token.error;
         }
@@ -298,6 +327,39 @@ interface RefreshedTokens {
   readonly refreshToken: string;
   readonly accessTokenExpiresAt: string;
   readonly refreshTokenExpiresAt: string;
+}
+
+/**
+ * Pick the active dispensary context for a freshly signed-in user.
+ *
+ * Calls `GET /v1/me/dispensaries` with the bearer token from the login
+ * response. The portal does not request `X-Dispensary-Id` for this call
+ * (the endpoint is user-scoped, not vendor-scoped). The first accepted
+ * membership wins — the API already orders by `joinedAt` ascending so
+ * the most-tenured store floats first; pending invites (acceptedAt =
+ * null) are skipped so the dashboard never silently lands on an
+ * unaccepted store.
+ *
+ * Fail-open: any error (network, 5xx, parse) returns null. The dashboard
+ * surfaces a "no dispensary context" state and vendor endpoints 403
+ * until the user retries or accepts an invite.
+ */
+async function resolveActiveDispensary(
+  apiBaseUrl: string,
+  accessToken: string,
+  fetchImpl?: typeof fetch,
+): Promise<DispensaryMembership | null> {
+  const client = new ApiClient({
+    baseUrl: apiBaseUrl,
+    accessToken,
+    ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+  });
+  try {
+    const { memberships } = await client.listMyDispensaries();
+    return memberships.find((m) => m.acceptedAt !== null) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function refreshAccessToken(

@@ -27,6 +27,15 @@ export type UserRole =
 
 export type UserStatus = 'pending_kyc' | 'active' | 'suspended' | 'banned';
 
+/**
+ * Per-dispensary role from the `dispensary_staff` table. Distinct from
+ * the global `UserRole` on the JWT — a single user may hold `manager`
+ * at one store and `budtender` at another. The portal gates store-level
+ * affordances (e.g. settings, payouts) on this rather than the global
+ * role.
+ */
+export type StaffRole = 'budtender' | 'manager' | 'owner';
+
 export interface UserSummary {
   readonly id: string;
   readonly email: string;
@@ -64,6 +73,30 @@ export type LoginResponse = LoginSuccessResponse | LoginMfaRequiredResponse;
 
 export interface RefreshResponse {
   readonly tokens: TokenPair;
+}
+
+/**
+ * One row from `GET /v1/me/dispensaries`. The portal fetches the list
+ * once at sign-in (Auth.js jwt callback `signIn` trigger), picks the
+ * first accepted membership, and threads its `id` as `X-Dispensary-Id`
+ * on every subsequent vendor-scoped request.
+ *
+ *   - `acceptedAt: null` indicates a pending invite — the portal hides
+ *     these from the picker and never auto-selects them.
+ *   - `displayName` is the dispensary's `dba ?? legalName`, never null.
+ *   - The list is ordered by `joinedAt` ascending (most-tenured first)
+ *     so the first accepted row is also the primary store.
+ */
+export interface DispensaryMembership {
+  readonly id: string;
+  readonly displayName: string;
+  readonly staffRole: StaffRole;
+  readonly acceptedAt: string | null;
+  readonly joinedAt: string;
+}
+
+export interface DispensaryMembershipsResponse {
+  readonly memberships: readonly DispensaryMembership[];
 }
 
 /**

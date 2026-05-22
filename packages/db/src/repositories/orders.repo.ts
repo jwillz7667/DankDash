@@ -1,6 +1,7 @@
 import { NotFoundError, RepositoryError } from '@dankdash/types';
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { type OrderStatus } from '../schema/enums.js';
+import { users } from '../schema/identity.js';
 import {
   orderEvents,
   orderItems,
@@ -16,6 +17,19 @@ import {
   type OrderStatusHistoryRow,
 } from '../schema/orders.js';
 import { BaseRepository, newId } from './base.js';
+
+/**
+ * Vendor-portal queue projection — an order row enriched with the
+ * customer's display name (joined off `users`) and a `COUNT(*)` of
+ * `order_items` rows. Used by the portal's kanban-style queue view;
+ * not authoritative state — every status flip still goes through
+ * `applyTransition` against the unjoined `orders` row.
+ */
+export interface VendorQueueOrderRow extends Order {
+  readonly customerFirstName: string | null;
+  readonly customerLastName: string | null;
+  readonly itemCount: number;
+}
 
 /**
  * Inputs for an order-status transition. The service layer constructs this
@@ -179,6 +193,55 @@ export class OrdersRepository extends BaseRepository {
         ? eq(orders.dispensaryId, dispensaryId)
         : and(eq(orders.dispensaryId, dispensaryId), eq(orders.status, status));
     return this.db.select().from(orders).where(where).orderBy(desc(orders.placedAt)).limit(limit);
+  }
+
+  /**
+   * Vendor-portal queue list. The portal renders a 4-column kanban
+   * (placed → accepted → prepping → ready_for_pickup et al), so the
+   * caller filters by an explicit `statuses` set rather than the single
+   * status of `listForDispensary`. Empty statuses → return nothing
+   * (degenerate `IN ()` would error otherwise).
+   *
+   * Returns each order joined with:
+   *   - the customer's first/last name so cards show "Jane D." without
+   *     a second roundtrip per row (users are read-only here, no auth
+   *     decisions made off this join);
+   *   - the `order_items` row count so the card can render "5 items"
+   *     at a glance.
+   *
+   * Item count uses a correlated subquery rather than a GROUP BY join.
+   * Queue size is bounded (≤200 per the limit) and `order_items_order_idx`
+   * makes each subquery a single index scan; this avoids fanning the
+   * outer rowset by item count and preserves the "one row per order"
+   * shape the projection expects without a DISTINCT.
+   *
+   * Oldest-first ordering — the longest-waiting order needs the most
+   * attention, which is what the column header pin should highlight.
+   */
+  async listForDispensaryQueue(
+    dispensaryId: string,
+    statuses: readonly OrderStatus[],
+    limit = 200,
+  ): Promise<readonly VendorQueueOrderRow[]> {
+    if (statuses.length === 0) return [];
+    const rows = await this.db
+      .select({
+        order: orders,
+        customerFirstName: users.firstName,
+        customerLastName: users.lastName,
+        itemCount: sql<number>`(SELECT COUNT(*)::int FROM ${orderItems} WHERE ${orderItems.orderId} = ${orders.id})`,
+      })
+      .from(orders)
+      .leftJoin(users, eq(users.id, orders.userId))
+      .where(and(eq(orders.dispensaryId, dispensaryId), inArray(orders.status, [...statuses])))
+      .orderBy(asc(orders.placedAt))
+      .limit(limit);
+    return rows.map((r) => ({
+      ...r.order,
+      customerFirstName: r.customerFirstName,
+      customerLastName: r.customerLastName,
+      itemCount: r.itemCount,
+    }));
   }
 
   async listForDriver(driverId: string, limit = 100): Promise<readonly Order[]> {

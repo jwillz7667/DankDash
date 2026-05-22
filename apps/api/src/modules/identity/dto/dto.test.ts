@@ -5,6 +5,10 @@
  * accepts the envelope shape and lets unknown fields through.
  */
 import { describe, expect, it } from 'vitest';
+import {
+  DispensaryMembershipSchema,
+  DispensaryMembershipsResponseSchema,
+} from './dispensaries.dto.js';
 import { KycStartResponseSchema, KycWebhookEnvelopeSchema } from './kyc.dto.js';
 import { MeResponseSchema, UpdateMeRequestSchema } from './me.dto.js';
 
@@ -83,6 +87,68 @@ describe('MeResponseSchema', () => {
 
   it('rejects unknown fields', () => {
     expect(() => MeResponseSchema.parse({ ...sample, ssn: '123' })).toThrow();
+  });
+});
+
+describe('DispensaryMembershipSchema', () => {
+  const sample = {
+    id: '01906c93-7ad0-7c5e-be19-9a8e0f37c4f8',
+    displayName: 'North Loop',
+    staffRole: 'manager' as const,
+    acceptedAt: '2026-04-02T00:00:00.000Z',
+    joinedAt: '2026-04-02T00:00:00.000Z',
+  };
+
+  it('accepts a fully-populated membership', () => {
+    expect(() => DispensaryMembershipSchema.parse(sample)).not.toThrow();
+  });
+
+  it('accepts a pending-invite membership with null acceptedAt', () => {
+    expect(() => DispensaryMembershipSchema.parse({ ...sample, acceptedAt: null })).not.toThrow();
+  });
+
+  it('rejects a non-UUID dispensary id', () => {
+    expect(() => DispensaryMembershipSchema.parse({ ...sample, id: 'not-a-uuid' })).toThrow();
+  });
+
+  it('rejects an unknown staff role', () => {
+    expect(() => DispensaryMembershipSchema.parse({ ...sample, staffRole: 'janitor' })).toThrow();
+  });
+
+  it('rejects an empty displayName', () => {
+    expect(() => DispensaryMembershipSchema.parse({ ...sample, displayName: '' })).toThrow();
+  });
+
+  it('rejects unknown fields', () => {
+    expect(() => DispensaryMembershipSchema.parse({ ...sample, secret: 'x' })).toThrow();
+  });
+});
+
+describe('DispensaryMembershipsResponseSchema', () => {
+  it('accepts an empty memberships array', () => {
+    expect(() => DispensaryMembershipsResponseSchema.parse({ memberships: [] })).not.toThrow();
+  });
+
+  it('accepts multiple memberships', () => {
+    const sample = {
+      memberships: [
+        {
+          id: '01906c93-7ad0-7c5e-be19-9a8e0f37c4f8',
+          displayName: 'A',
+          staffRole: 'owner' as const,
+          acceptedAt: '2026-04-02T00:00:00.000Z',
+          joinedAt: '2026-04-02T00:00:00.000Z',
+        },
+        {
+          id: '01906c93-7ad0-7c5e-be19-9a8e0f37c4f9',
+          displayName: 'B',
+          staffRole: 'budtender' as const,
+          acceptedAt: null,
+          joinedAt: '2026-04-15T00:00:00.000Z',
+        },
+      ],
+    };
+    expect(() => DispensaryMembershipsResponseSchema.parse(sample)).not.toThrow();
   });
 });
 

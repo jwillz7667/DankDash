@@ -11,7 +11,7 @@
 import { auth } from '../../auth.js';
 import { loadPublicEnv, loadServerEnv, resolveApiBaseUrl } from '../env.js';
 import { ApiClient } from './client.js';
-import { type UserRole } from './types.js';
+import { type StaffRole, type UserRole } from './types.js';
 
 export interface ServerApiContext {
   readonly client: ApiClient;
@@ -20,6 +20,23 @@ export interface ServerApiContext {
     readonly email: string;
     readonly role: UserRole;
   };
+  /**
+   * Active dispensary the client is scoped to. Null when the user has
+   * no accepted memberships — vendor-scoped pages should redirect to a
+   * picker (or render an empty state) rather than calling the API.
+   */
+  readonly dispensary: {
+    readonly id: string;
+    readonly name: string;
+    readonly staffRole: StaffRole;
+  } | null;
+  /**
+   * Raw access token, surfaced so the page can hand it to the realtime
+   * Socket.io handshake. The token is encapsulated inside `client` for
+   * REST calls; it has to leak here for the client component, which
+   * cannot call `auth()` itself.
+   */
+  readonly accessToken: string;
 }
 
 /**
@@ -42,7 +59,17 @@ export async function buildServerApiClient(): Promise<ServerApiContext | null> {
     baseUrl,
     accessToken: session.accessToken,
     refreshToken: session.refreshToken,
+    ...(session.dispensaryId !== null ? { dispensaryId: session.dispensaryId } : {}),
   });
+
+  const dispensary =
+    session.dispensaryId !== null && session.dispensaryName !== null && session.staffRole !== null
+      ? {
+          id: session.dispensaryId,
+          name: session.dispensaryName,
+          staffRole: session.staffRole,
+        }
+      : null;
 
   return {
     client,
@@ -51,5 +78,7 @@ export async function buildServerApiClient(): Promise<ServerApiContext | null> {
       email: session.user.email,
       role: session.user.role,
     },
+    dispensary,
+    accessToken: session.accessToken,
   };
 }

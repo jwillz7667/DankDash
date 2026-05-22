@@ -11,10 +11,42 @@
  * controller's return type a plain JSON shape, which is easier to
  * snapshot in tests.
  */
-import type { OrderResponse } from './dto/index.js';
-import type { Order } from '@dankdash/db';
+import type { OrderResponse, VendorQueueOrderResponse } from './dto/index.js';
+import type { Order, VendorQueueOrderRow } from '@dankdash/db';
 
 const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString());
+
+/**
+ * Builds the lean "queue card" projection for the vendor portal.
+ * Concatenates the customer's first/last name into a single
+ * `customerName` string; emits `null` when both fields are absent
+ * (soft-deleted user). Trims away whitespace from the join.
+ */
+function joinCustomerName(first: string | null, last: string | null): string | null {
+  const combined = [first, last]
+    .map((part) => (part ?? '').trim())
+    .filter((part) => part.length > 0)
+    .join(' ');
+  return combined.length > 0 ? combined : null;
+}
+
+export function projectVendorQueueOrder(row: VendorQueueOrderRow): VendorQueueOrderResponse {
+  return {
+    id: row.id,
+    shortCode: row.shortCode,
+    userId: row.userId,
+    customerName: joinCustomerName(row.customerFirstName, row.customerLastName),
+    status: row.status,
+    itemCount: row.itemCount,
+    subtotalCents: row.subtotalCents,
+    totalCents: row.totalCents,
+    placedAt: row.placedAt.toISOString(),
+    statusChangedAt: row.statusChangedAt.toISOString(),
+    acceptedAt: iso(row.acceptedAt),
+    preppingAt: iso(row.preppingAt),
+    preparedAt: iso(row.preparedAt),
+  };
+}
 
 export function projectOrder(o: Order): OrderResponse {
   return {

@@ -38,6 +38,12 @@
  *                         that fans out through the
  *                         @dankdash/notifications APNs/Twilio/Resend
  *                         providers. Tokens are APNs-only in v1.)
+ *   - RealtimeModule     (Phase 14: event-bus only — subscribes to
+ *                         OrderTransitionedEvent and republishes
+ *                         `order:status_changed` envelopes onto the
+ *                         `dankdash:realtime` Redis Stream so the
+ *                         realtime service can fan to the /customer,
+ *                         /vendor, and /driver Socket.io namespaces.)
  *
  * Cross-cutting concerns (filters, interceptors, pipes, the global
  * JwtAuthGuard, the global RateLimitGuard) are bound in main.ts so any
@@ -66,6 +72,7 @@ import { ListingsModule } from './modules/listings/listings.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { RealtimeModule } from './modules/realtime/realtime.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 
 @Module({
@@ -105,6 +112,7 @@ import { SearchModule } from './modules/search/search.module.js';
     DriversModule,
     ComplianceModule,
     NotificationsModule,
+    RealtimeModule,
   ],
 })
 export class AppModule {}

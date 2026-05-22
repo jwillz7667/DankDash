@@ -5,7 +5,14 @@
  * `delivered`/`disputed` guard on recordRating, and the rating field patch
  * thread-through.
  */
-import { type Database, type NewOrder, type Order, type OrdersRepository } from '@dankdash/db';
+import {
+  type Database,
+  type NewOrder,
+  type Order,
+  type OrdersRepository,
+  type OrderStatus,
+  type VendorQueueOrderRow,
+} from '@dankdash/db';
 import { OrderError } from '@dankdash/orders';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -77,7 +84,7 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
 
 class FakeOrdersRepo implements Pick<
   OrdersRepository,
-  'findById' | 'listForUser' | 'listForDispensary' | 'update'
+  'findById' | 'listForUser' | 'listForDispensary' | 'listForDispensaryQueue' | 'update'
 > {
   public readonly rows = new Map<string, Order>();
   /** Last patch the service passed to `update` — assertions sample this
@@ -86,6 +93,19 @@ class FakeOrdersRepo implements Pick<
   /** When set, `update` returns null instead of mutating the row — lets
    *  us exercise the invariant-violation branch in recordRating. */
   public updateReturnsNull = false;
+  /** Synthetic name + item-count enrichment keyed by order id; service
+   *  tests sample the join via `listForDispensaryQueue`. */
+  public readonly enrichment = new Map<
+    string,
+    { firstName: string | null; lastName: string | null; itemCount: number }
+  >();
+  /** Records every call's arguments so tests can assert the service
+   *  passes the filter set through unchanged. */
+  public lastQueueCall: {
+    dispensaryId: string;
+    statuses: readonly OrderStatus[];
+    limit: number;
+  } | null = null;
 
   constructor(initial: Order[] = []) {
     for (const r of initial) this.rows.set(r.id, r);
@@ -101,6 +121,35 @@ class FakeOrdersRepo implements Pick<
 
   listForDispensary(dispensaryId: string): Promise<readonly Order[]> {
     return Promise.resolve([...this.rows.values()].filter((r) => r.dispensaryId === dispensaryId));
+  }
+
+  listForDispensaryQueue(
+    dispensaryId: string,
+    statuses: readonly OrderStatus[],
+    limit: number,
+  ): Promise<readonly VendorQueueOrderRow[]> {
+    this.lastQueueCall = { dispensaryId, statuses, limit };
+    if (statuses.length === 0) return Promise.resolve([]);
+    const statusSet = new Set<OrderStatus>(statuses);
+    const matches = [...this.rows.values()]
+      .filter((r) => r.dispensaryId === dispensaryId && statusSet.has(r.status))
+      .sort((a, b) => a.placedAt.getTime() - b.placedAt.getTime())
+      .slice(0, limit);
+    return Promise.resolve(
+      matches.map((row) => {
+        const enrich = this.enrichment.get(row.id) ?? {
+          firstName: null,
+          lastName: null,
+          itemCount: 0,
+        };
+        return {
+          ...row,
+          customerFirstName: enrich.firstName,
+          customerLastName: enrich.lastName,
+          itemCount: enrich.itemCount,
+        };
+      }),
+    );
   }
 
   update(id: string, patch: Partial<NewOrder>): Promise<Order | null> {
@@ -207,6 +256,66 @@ describe('OrdersService', () => {
         code: 'ORDER_NOT_FOUND',
         statusCode: 404,
       });
+    });
+  });
+
+  describe('listForDispensaryQueue', () => {
+    it('returns the enriched rows for the dispensary, oldest-first', async () => {
+      const newer = makeOrder({
+        id: '01935f3d-0000-7000-8000-000000001a01',
+        placedAt: new Date('2026-05-18T20:00:00.000Z'),
+        status: 'placed',
+      });
+      const older = makeOrder({
+        id: '01935f3d-0000-7000-8000-000000001a02',
+        placedAt: new Date('2026-05-18T18:00:00.000Z'),
+        status: 'accepted',
+      });
+      const { service, repo } = makeService([newer, older]);
+      repo.enrichment.set(newer.id, { firstName: 'Ada', lastName: 'Lovelace', itemCount: 2 });
+      repo.enrichment.set(older.id, { firstName: 'Linus', lastName: 'Torvalds', itemCount: 4 });
+
+      const rows = await service.listForDispensaryQueue(DISPENSARY_ID, ['placed', 'accepted'], 100);
+
+      expect(rows.map((r) => r.id)).toEqual([older.id, newer.id]);
+      expect(rows[0]!.customerFirstName).toBe('Linus');
+      expect(rows[0]!.itemCount).toBe(4);
+    });
+
+    it('forwards the filter set + limit to the repo', async () => {
+      const { service, repo } = makeService([]);
+
+      await service.listForDispensaryQueue(DISPENSARY_ID, ['prepping'], 50);
+
+      expect(repo.lastQueueCall).toEqual({
+        dispensaryId: DISPENSARY_ID,
+        statuses: ['prepping'],
+        limit: 50,
+      });
+    });
+
+    it('filters out orders belonging to other dispensaries', async () => {
+      const mine = makeOrder({
+        id: '01935f3d-0000-7000-8000-000000001a03',
+        status: 'placed',
+      });
+      const theirs = makeOrder({
+        id: '01935f3d-0000-7000-8000-000000001a04',
+        dispensaryId: OTHER_DISPENSARY_ID,
+        status: 'placed',
+      });
+      const { service } = makeService([mine, theirs]);
+
+      const rows = await service.listForDispensaryQueue(DISPENSARY_ID, ['placed'], 100);
+
+      expect(rows.map((r) => r.id)).toEqual([mine.id]);
+    });
+
+    it('returns an empty list when statuses is empty (degenerate IN ())', async () => {
+      const { service } = makeService([makeOrder({ status: 'placed' })]);
+
+      const rows = await service.listForDispensaryQueue(DISPENSARY_ID, [], 100);
+      expect(rows).toEqual([]);
     });
   });
 

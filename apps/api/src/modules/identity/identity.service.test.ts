@@ -19,7 +19,15 @@
  * inquiry shape or reject. We do not exercise its signature-verification path
  * here — that lives in persona.service.test.ts.
  */
-import { type NewUser, type User, type UsersRepository } from '@dankdash/db';
+import {
+  type Dispensary,
+  type DispensariesRepository,
+  type DispensaryStaffMember,
+  type DispensaryStaffRepository,
+  type NewUser,
+  type User,
+  type UsersRepository,
+} from '@dankdash/db';
 import { NotFoundError } from '@dankdash/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { IdentityService } from './identity.service.js';
@@ -108,20 +116,50 @@ class FakePersona implements Pick<PersonaService, 'createInquiry'> {
   }
 }
 
+class FakeStaff implements Pick<DispensaryStaffRepository, 'listActiveForUser'> {
+  public readonly byUser = new Map<string, DispensaryStaffMember[]>();
+
+  seed(userId: string, ...rows: DispensaryStaffMember[]): void {
+    this.byUser.set(userId, [...(this.byUser.get(userId) ?? []), ...rows]);
+  }
+
+  listActiveForUser(userId: string): Promise<readonly DispensaryStaffMember[]> {
+    return Promise.resolve(this.byUser.get(userId) ?? []);
+  }
+}
+
+class FakeDispensaries implements Pick<DispensariesRepository, 'findById'> {
+  public readonly rows = new Map<string, Dispensary>();
+
+  seed(row: Dispensary): void {
+    this.rows.set(row.id, row);
+  }
+
+  findById(id: string): Promise<Dispensary | null> {
+    return Promise.resolve(this.rows.get(id) ?? null);
+  }
+}
+
 interface TestRig {
   readonly service: IdentityService;
   readonly users: FakeUsers;
   readonly persona: FakePersona;
+  readonly staff: FakeStaff;
+  readonly dispensaries: FakeDispensaries;
 }
 
 function makeRig(): TestRig {
   const users = new FakeUsers();
   const persona = new FakePersona();
+  const staff = new FakeStaff();
+  const dispensaries = new FakeDispensaries();
   const service = new IdentityService(
     users as unknown as UsersRepository,
     persona as unknown as PersonaService,
+    staff as unknown as DispensaryStaffRepository,
+    dispensaries as unknown as DispensariesRepository,
   );
-  return { service, users, persona };
+  return { service, users, persona, staff, dispensaries };
 }
 
 describe('IdentityService.getMe', () => {
@@ -329,5 +367,204 @@ describe('IdentityService.applyKycOutcome', () => {
 
     const after = rig.users.rows.get('u1');
     expect(after?.updatedAt).toEqual(before.updatedAt);
+  });
+});
+
+function makeStaff(overrides: Partial<DispensaryStaffMember> = {}): DispensaryStaffMember {
+  return {
+    id: 'staff_test_id',
+    dispensaryId: 'disp_test_id',
+    userId: 'user_test_id',
+    role: 'manager',
+    permissions: {},
+    invitedAt: new Date('2026-04-01T00:00:00.000Z'),
+    invitedBy: null,
+    acceptedAt: new Date('2026-04-02T00:00:00.000Z'),
+    removedAt: null,
+    ...overrides,
+  };
+}
+
+function makeDispensary(overrides: Partial<Dispensary> = {}): Dispensary {
+  return {
+    id: 'disp_test_id',
+    legalName: 'North Loop Cannabis LLC',
+    dba: 'North Loop',
+    licenseNumber: 'MN-CCB-0001',
+    licenseType: 'retailer',
+    licenseIssuedAt: '2025-12-01',
+    licenseExpiresAt: '2027-12-01',
+    metrcFacilityId: null,
+    metrcApiKeyEnc: null,
+    posProvider: 'manual',
+    posCredentialsEnc: null,
+    posLastSyncedAt: null,
+    addressLine1: '100 N 1st St',
+    addressLine2: null,
+    city: 'Minneapolis',
+    region: 'MN',
+    postalCode: '55401',
+    location: { type: 'Point', coordinates: [-93.2683, 44.9842] },
+    deliveryPolygon: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [-93.28, 44.97],
+          [-93.25, 44.97],
+          [-93.25, 45.0],
+          [-93.28, 45.0],
+          [-93.28, 44.97],
+        ],
+      ],
+    },
+    hoursJson: {},
+    phone: null,
+    email: null,
+    logoImageKey: null,
+    heroImageKey: null,
+    brandColorHex: null,
+    aeropayAccountRef: null,
+    isAcceptingOrders: true,
+    ratingAvg: null,
+    ratingCount: 0,
+    status: 'active',
+    createdAt: new Date('2025-12-01T00:00:00.000Z'),
+    updatedAt: new Date('2025-12-01T00:00:00.000Z'),
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+describe('IdentityService.listDispensaries', () => {
+  it('projects an active accepted membership with dba as displayName', async () => {
+    const rig = makeRig();
+    const accepted = new Date('2026-04-02T00:00:00.000Z');
+    rig.dispensaries.seed(makeDispensary({ id: 'd1', dba: 'North Loop', legalName: 'NL LLC' }));
+    rig.staff.seed(
+      'u1',
+      makeStaff({
+        id: 's1',
+        dispensaryId: 'd1',
+        userId: 'u1',
+        role: 'manager',
+        acceptedAt: accepted,
+      }),
+    );
+
+    const res = await rig.service.listDispensaries('u1');
+
+    expect(res).toEqual({
+      memberships: [
+        {
+          id: 'd1',
+          displayName: 'North Loop',
+          staffRole: 'manager',
+          acceptedAt: accepted.toISOString(),
+          joinedAt: accepted.toISOString(),
+        },
+      ],
+    });
+  });
+
+  it('falls back to legalName when dba is null and exposes a pending invite with null acceptedAt', async () => {
+    const rig = makeRig();
+    const invited = new Date('2026-04-15T00:00:00.000Z');
+    rig.dispensaries.seed(makeDispensary({ id: 'd1', dba: null, legalName: 'Greenway Co' }));
+    rig.staff.seed(
+      'u1',
+      makeStaff({
+        id: 's1',
+        dispensaryId: 'd1',
+        userId: 'u1',
+        role: 'budtender',
+        invitedAt: invited,
+        acceptedAt: null,
+      }),
+    );
+
+    const res = await rig.service.listDispensaries('u1');
+
+    expect(res.memberships).toHaveLength(1);
+    expect(res.memberships[0]?.displayName).toBe('Greenway Co');
+    expect(res.memberships[0]?.acceptedAt).toBeNull();
+    expect(res.memberships[0]?.joinedAt).toBe(invited.toISOString());
+  });
+
+  it('orders memberships by joinedAt ascending so the most tenured floats first', async () => {
+    const rig = makeRig();
+    rig.dispensaries.seed(makeDispensary({ id: 'd_new', dba: 'New Store' }));
+    rig.dispensaries.seed(makeDispensary({ id: 'd_old', dba: 'Old Store' }));
+    rig.staff.seed(
+      'u1',
+      makeStaff({
+        id: 's_new',
+        dispensaryId: 'd_new',
+        userId: 'u1',
+        acceptedAt: new Date('2026-05-10T00:00:00.000Z'),
+      }),
+      makeStaff({
+        id: 's_old',
+        dispensaryId: 'd_old',
+        userId: 'u1',
+        acceptedAt: new Date('2024-01-05T00:00:00.000Z'),
+      }),
+    );
+
+    const res = await rig.service.listDispensaries('u1');
+
+    expect(res.memberships.map((m) => m.id)).toEqual(['d_old', 'd_new']);
+  });
+
+  it('filters out memberships pointing at soft-deleted dispensaries', async () => {
+    const rig = makeRig();
+    rig.dispensaries.seed(
+      makeDispensary({
+        id: 'd_gone',
+        dba: 'Gone',
+        deletedAt: new Date('2026-05-01T00:00:00.000Z'),
+      }),
+    );
+    rig.dispensaries.seed(makeDispensary({ id: 'd_live', dba: 'Live' }));
+    rig.staff.seed(
+      'u1',
+      makeStaff({ id: 's1', dispensaryId: 'd_gone', userId: 'u1' }),
+      makeStaff({ id: 's2', dispensaryId: 'd_live', userId: 'u1' }),
+    );
+
+    const res = await rig.service.listDispensaries('u1');
+
+    expect(res.memberships.map((m) => m.id)).toEqual(['d_live']);
+  });
+
+  it('filters out memberships whose dispensary is not in status=active', async () => {
+    const rig = makeRig();
+    rig.dispensaries.seed(makeDispensary({ id: 'd_onb', dba: 'Onboarding', status: 'onboarding' }));
+    rig.dispensaries.seed(makeDispensary({ id: 'd_live', dba: 'Live', status: 'active' }));
+    rig.staff.seed(
+      'u1',
+      makeStaff({ id: 's1', dispensaryId: 'd_onb', userId: 'u1' }),
+      makeStaff({ id: 's2', dispensaryId: 'd_live', userId: 'u1' }),
+    );
+
+    const res = await rig.service.listDispensaries('u1');
+
+    expect(res.memberships.map((m) => m.id)).toEqual(['d_live']);
+  });
+
+  it('returns an empty list when the user has no memberships at all', async () => {
+    const rig = makeRig();
+    const res = await rig.service.listDispensaries('ghost');
+    expect(res).toEqual({ memberships: [] });
+  });
+
+  it('skips memberships that reference a dispensary the lookup cannot resolve', async () => {
+    const rig = makeRig();
+    // No findById row seeded for d_orphan — simulates a foreign-key
+    // race the staff repo's filter (removedAt IS NULL) wouldn't catch.
+    rig.staff.seed('u1', makeStaff({ id: 's1', dispensaryId: 'd_orphan', userId: 'u1' }));
+
+    const res = await rig.service.listDispensaries('u1');
+
+    expect(res.memberships).toEqual([]);
   });
 });
