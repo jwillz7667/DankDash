@@ -154,6 +154,46 @@ jobs:
         # `expiry` date so we cannot silently accumulate untriaged debt.
         run: pnpm run security:audit
 
+  secrets-scan:
+    name: secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need the base branch tip so we can scope the scan to the PR
+          # diff. `fetch-depth: 0` would also work but is heavier than
+          # the targeted fetch below.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        # Pin a release so a malicious upstream tag cannot bypass the
+        # scan. Upgrade intentionally in a separate commit when bumping.
+        run: |
+          curl -sSL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan PR / push for secrets
+        # On a PR, scope to the commit range between base and head.
+        # On a push to main, scope to the single pushed commit.
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            LOG_OPTS="origin/${GITHUB_BASE_REF}..HEAD"
+          else
+            LOG_OPTS="${GITHUB_SHA}~1..${GITHUB_SHA}"
+          fi
+          gitleaks detect \
+            --config=.gitleaks.toml \
+            --log-opts="${LOG_OPTS}" \
+            --redact \
+            --no-banner \
+            --verbose \
+            --exit-code=1
+
   compliance-gate:
     name: compliance suite (blocks deploy)
     runs-on: ubuntu-latest
