@@ -37,6 +37,7 @@ WORKDIR /repo
 # ----------------------------------------------------------------------------
 FROM base AS build
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json ./
+COPY scripts ./scripts
 COPY packages ./packages
 COPY apps/api ./apps/api
 RUN pnpm install --frozen-lockfile --filter "@dankdash/api..."
@@ -52,6 +53,7 @@ RUN pnpm --filter "@dankdash/api^..." build \
 FROM base AS runtime
 ENV NODE_ENV=production
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY scripts ./scripts
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
 COPY --from=build /repo/apps/api/dist ./apps/api/dist

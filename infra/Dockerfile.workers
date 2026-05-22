@@ -22,6 +22,7 @@ WORKDIR /repo
 
 FROM base AS build
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json ./
+COPY scripts ./scripts
 COPY packages ./packages
 COPY apps/workers ./apps/workers
 RUN pnpm install --frozen-lockfile --filter "@dankdash/workers..."
@@ -31,6 +32,7 @@ RUN pnpm --filter "@dankdash/workers^..." build \
 FROM base AS runtime
 ENV NODE_ENV=production
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY scripts ./scripts
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/workers/package.json ./apps/workers/package.json
 COPY --from=build /repo/apps/workers/dist ./apps/workers/dist
