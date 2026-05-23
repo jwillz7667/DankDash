@@ -1,5 +1,5 @@
 /**
- * Phase 21 — verifies migration `0006_phase21_indexes_and_timeouts` produced
+ * Phase 21 — verifies migration `0010_phase21_indexes_and_timeouts` produced
  * what we said it would. These are schema-introspection tests: they ask
  * Postgres whether the expected indexes exist with the expected predicates,
  * not "does an end-user query use them" (that's the EXPLAIN appendix work

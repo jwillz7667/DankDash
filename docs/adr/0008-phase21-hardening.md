@@ -91,11 +91,11 @@ Rationale:
 - **The deterministic artifact is what audit cares about.** When the compliance auditor asks "show me your load test", we hand them `loadtest/scenarios/checkout-burst.js`. When they ask "show me your DR drill", we hand them `scripts/dr-restore.sh` + the runbook + the `PROGRESS.md` log of the last drill. The committed artifact is the evidence; the execution is the verification of the artifact.
 - **Execution lives in `PROGRESS.md` as recorded actuals.** Each drill or load-test run appends a dated entry with the measured numbers (RTO actual, p95 actual, indexes added, etc.). The numbers drift across runs; the artifact doesn't. Splitting the two keeps the artifact stable and the actuals fresh.
 
-### Decision 5 — `0006_phase21_indexes_and_timeouts` is **additive only**; OWASP ZAP is **manual-dispatch only**; gitleaks is **PR-diff in CI, full-history one-time**
+### Decision 5 — `0010_phase21_indexes_and_timeouts` is **additive only**; OWASP ZAP is **manual-dispatch only**; gitleaks is **PR-diff in CI, full-history one-time**
 
 Three knobs on the "how aggressive should the gates be" axis:
 
-- **Migration 0006** adds new indexes the EXPLAIN audit flagged as missing and sets per-database `statement_timeout = '30s'` + `idle_in_transaction_session_timeout = '60s'`. It does **not** drop or alter any existing index. Pre-launch regression risk is asymmetric — adding a redundant index costs a few MB of disk; dropping an in-use index by mistake brings the site down. Additive-only buys safety at near-zero cost.
+- **Migration 0010** adds new indexes the EXPLAIN audit flagged as missing and sets per-database `statement_timeout = '30s'` + `idle_in_transaction_session_timeout = '60s'`. It does **not** drop or alter any existing index. Pre-launch regression risk is asymmetric — adding a redundant index costs a few MB of disk; dropping an in-use index by mistake brings the site down. Additive-only buys safety at near-zero cost.
 
 - **OWASP ZAP** is wired as `.github/workflows/security-scan.yml` (workflow_dispatch only), not as a per-PR gate. A full ZAP run takes 20–40 minutes against staging — making it block every PR would crater dev velocity. The per-PR layer is SAST + dependency scan (cheap, fast, runs in seconds). ZAP is a release gate, fired manually before each TestFlight cut, with SARIF uploaded as a workflow artifact.
 

@@ -1,5 +1,5 @@
 -- ============================================================================
--- DankDash — 0006_phase21_indexes_and_timeouts
+-- DankDash — 0010_phase21_indexes_and_timeouts
 --
 -- Phase 21 hardening. This migration is additive only — it adds new
 -- indexes the pre-launch EXPLAIN walkthrough surfaced as gaps, tightens

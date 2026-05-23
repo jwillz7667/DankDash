@@ -1,4 +1,4 @@
--- Reverse of 0006_phase21_indexes_and_timeouts.
+-- Reverse of 0010_phase21_indexes_and_timeouts.
 
 DROP INDEX IF EXISTS "orders_driver_status_placed_idx";
 --> statement-breakpoint
