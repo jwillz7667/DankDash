@@ -53,5 +53,10 @@
     "*.{json,md,yaml,yml,css}": [
       "prettier --write"
     ]
+  },
+  "pnpm": {
+    "overrides": {
+      "thrift": ">=0.23.0"
+    }
   }
 }

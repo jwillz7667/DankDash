@@ -20,13 +20,20 @@
  */
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { type Instrumentation } from '@opentelemetry/instrumentation';
+// `@opentelemetry/instrumentation-fastify` is deprecated upstream in favor of
+// `@fastify/otel`, but the replacement requires `await app.register(plugin())`
+// *before* any route is registered. NestJS's FastifyAdapter mounts routes
+// during `NestFactory.create(...)` before the plugin lifecycle can interpose,
+// so the official replacement does not capture per-route spans under Nest.
+// Until a dedicated Nest adapter shim lands, the deprecated package continues
+// to ship working hook spans.
 import { FastifyInstrumentation } from '@opentelemetry/instrumentation-fastify';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
 import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';
 import { SocketIoInstrumentation } from '@opentelemetry/instrumentation-socket.io';
-import { Resource } from '@opentelemetry/resources';
+import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
@@ -58,7 +65,7 @@ export interface OtelHandle {
  * buffered spans before resolving — safe to await on process exit.
  */
 export function initOtel(config: OtelInitConfig): OtelHandle {
-  const resource = new Resource({
+  const resource = resourceFromAttributes({
     [ATTR_SERVICE_NAME]: `dankdash-${config.serviceName}`,
     [ATTR_SERVICE_VERSION]: config.serviceVersion,
     [ATTR_DEPLOYMENT_ENVIRONMENT_NAME]: config.environment,
@@ -72,6 +79,7 @@ export function initOtel(config: OtelInitConfig): OtelHandle {
 
   const instrumentations: Instrumentation[] = [
     new HttpInstrumentation(),
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- see module-level note on @fastify/otel
     new FastifyInstrumentation(),
     new PgInstrumentation(),
     new IORedisInstrumentation(),
