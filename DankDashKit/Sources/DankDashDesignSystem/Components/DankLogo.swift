@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// Renders the canonical DankDash brand mark — the cart-with-leaf glyph
+/// shipped at `BrandLogo.imageset` in each app target's Assets catalog.
+/// The image asset lives in the **app bundle** (consumer and driver each
+/// embed their own copy so the design-system Swift package can stay
+/// asset-free); we resolve it via `bundle: .main`, which is the consuming
+/// app's main bundle at runtime.
+///
+/// Variants control the surrounding chrome, not the mark itself:
+///   - ``Variant/mark`` — image alone, square-bounded.
+///   - ``Variant/wordmark`` — "DankDash" rendered as a rounded display
+///     font (no separate wordmark asset on iOS yet).
+///   - ``Variant/full`` — mark + wordmark on one horizontal row.
+///
+/// `size` is interpreted as the **height** of the rendered logo; width
+/// derives from the image's intrinsic aspect ratio so the brand never
+/// squishes regardless of the caller's frame.
 public struct DankLogo: View {
   public enum Variant: Sendable, CaseIterable {
     case mark, wordmark, full
@@ -15,40 +31,41 @@ public struct DankLogo: View {
 
   public var body: some View {
     switch variant {
-    case .mark: markView
-    case .wordmark: wordmarkView
+    case .mark:
+      markImage
+        .accessibilityLabel("DankDash logo")
+    case .wordmark:
+      wordmarkText
+        .accessibilityLabel("DankDash")
     case .full:
       HStack(spacing: DankSpacing.sm) {
-        markView
-        wordmarkView
+        markImage
+        wordmarkText
       }
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("DankDash")
     }
   }
 
-  private var markView: some View {
-    ZStack {
-      RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
-        .fill(DankColor.primary)
-      Text("D")
-        .font(.system(size: size * 0.6, weight: .bold, design: .rounded))
-        .foregroundStyle(DankColor.cream)
-    }
-    .frame(width: size, height: size)
-    .accessibilityLabel("DankDash mark")
+  private var markImage: some View {
+    Image("BrandLogo", bundle: .main)
+      .resizable()
+      .renderingMode(.original)
+      .aspectRatio(contentMode: .fit)
+      .frame(height: size)
   }
 
-  private var wordmarkView: some View {
+  private var wordmarkText: some View {
     Text("DankDash")
-      .font(.system(size: size * 0.45, weight: .bold, design: .rounded))
+      .font(.system(size: size * 0.5, weight: .bold, design: .rounded))
       .foregroundStyle(DankColor.primary)
-      .accessibilityLabel("DankDash wordmark")
   }
 }
 
 #Preview {
   VStack(spacing: DankSpacing.lg) {
     DankLogo(.mark, size: 48)
-    DankLogo(.wordmark, size: 64)
+    DankLogo(.wordmark, size: 32)
     DankLogo(.full, size: 56)
   }
   .padding()
