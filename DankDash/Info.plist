@@ -21,5 +21,9 @@
 			</array>
 		</dict>
 	</array>
+	<key>DANKDASH_API_BASE_URL</key>
+	<string>https://dankdashapi-production.up.railway.app</string>
+	<key>DANKDASH_REALTIME_BASE_URL</key>
+	<string>https://dankdashrealtime-production.up.railway.app</string>
 </dict>
 </plist>
