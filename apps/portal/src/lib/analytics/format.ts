@@ -79,10 +79,10 @@ export function deltaForBigger(current: number, previous: number): DeltaSummary 
 }
 
 /**
- * Heatmap intensity classes. Five steps of moss with a slate fallback
- * for empty cells — matches the moss palette used elsewhere in the
- * portal so it sits within the brand. `null` means "no orders" and
- * renders flat slate.
+ * Heatmap intensity classes. Five steps of moss with a neutral surface
+ * fallback for empty cells — matches the moss palette used elsewhere in
+ * the portal so it sits within the brand. `null` means "no orders" and
+ * renders flat `bg-surface-subtle`.
  */
 const HEAT_STEPS = [
   'bg-surface-subtle text-muted',

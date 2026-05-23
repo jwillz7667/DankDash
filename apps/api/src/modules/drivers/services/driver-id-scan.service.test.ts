@@ -1,58 +1,37 @@
 /**
  * Unit tests for DriverIdScanService — the Veriff handoff orchestration.
  *
- * Coverage:
+ * Production code under test routes every order-state mutation through
+ * OrderTransitionService.transition() (XState event names + actor +
+ * patch). Veriff session creation is unconditional once the driver
+ * owns the order; subsequent transitions are conditional on the
+ * order's current status:
  *
- *   startSession
- *     - Happy path: finds the order, looks up the customer, calls
- *       VeriffClient.createSession, transitions the order to
- *       `id_scan_pending` with `patch.deliveryIdScanRef` and
- *       `expectedFromStatus` covering the legitimate predecessor set,
- *       returns the session payload.
- *     - NotFoundError when the driver does not own the order (the
- *       repo seam returns null for both unknown ids and cross-driver
- *       ids — the service must not distinguish).
- *     - NotFoundError when the customer row is missing.
+ *   arrived_at_dropoff → DRIVER_ID_SCAN_STARTED → id_scan_pending
+ *   id_scan_failed     → DRIVER_ID_SCAN_RETRY   → id_scan_pending
+ *   id_scan_pending    → idempotent re-tap (orders.update, no transition)
  *
- *   submitResult
- *     - Happy path: calls veriff.getDecision, records an ageVerifications
- *       row, transitions to id_scan_passed with the patch + correct
- *       actorRole.
- *     - NotFoundError when the driver does not own the order.
- *     - ConflictError('ID_SCAN_VERIFICATION_MISMATCH') when the body
- *       verificationId does not match the row's `deliveryIdScanRef`.
- *
- *   applyWebhookDecision
- *     - Approved path: prefers `decision.orderId`, validates that the
- *       row's `deliveryIdScanRef` matches, transitions to
- *       id_scan_passed with `actorRole='system'` and NO actorUserId.
- *     - Declined path: transitions to id_scan_failed; same actor shape.
- *     - Idempotency: approved + order already in id_scan_passed →
- *       ageVerifications row is still recorded (audit trail) but the
- *       transition is skipped.
- *     - Mismatched verificationId on order → logs + drops (no transition,
- *       no ageVerifications insert).
- *     - Missing order → logs + drops (Veriff retries drain on 2xx).
- *     - `pending` decision → no-op (webhook should never fire on pending,
- *       but the guard exists).
- *     - `resubmission` decision → ageVerifications row recorded but the
- *       order stays in id_scan_pending (no transition).
- *
- * VeriffClient, OrderEventsService, and the three repositories are hand-
- * rolled fakes. No HTTP, no DB.
+ * Submit-result and webhook-delivery converge on `applyDecision`, which
+ * is purely idempotent at the ageVerifications row (unique on
+ * provider+session_id) and short-circuits the transition when the order
+ * already reflects the decision.
  */
 import { ConflictError, NotFoundError } from '@dankdash/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DriverIdScanService, type DriverIdScanScopedRepos } from './driver-id-scan.service.js';
+import type {
+  OrderTransitionService,
+  TransitionRequest,
+  TransitionResult,
+} from '../../orders/order-transition.service.js';
 import type { VeriffClient, VeriffDecision } from '../../identity-verification/veriff.client.js';
-import type { OrderEventsService } from '../../orders/order-events.service.js';
 import type {
   AgeVerification,
   AgeVerificationsRepository,
   Database,
   NewAgeVerification,
+  NewOrder,
   Order,
-  OrderStatusTransitionInput,
   OrdersRepository,
   User,
   UsersRepository,
@@ -102,13 +81,25 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     complianceCheckPayload: {},
     deliveryAddressSnapshot: SAMPLE_SNAPSHOT,
     placedAt: new Date('2026-05-15T18:00:00.000Z'),
+    paymentFailedAt: null,
     acceptedAt: new Date('2026-05-15T18:05:00.000Z'),
+    rejectedAt: null,
+    preppingAt: null,
     preparedAt: new Date('2026-05-15T18:30:00.000Z'),
+    awaitingDriverAt: null,
+    dispatchFailedAt: null,
+    driverAssignedAt: null,
+    enRoutePickupAt: null,
     pickedUpAt: new Date('2026-05-15T19:30:00.000Z'),
+    enRouteDropoffAt: null,
+    arrivedAtDropoffAt: new Date('2026-05-15T20:30:00.000Z'),
+    idScanPendingAt: null,
     deliveredAt: null,
+    returnedToStoreAt: null,
     canceledAt: null,
     canceledBy: null,
     cancelReason: null,
+    disputedAt: null,
     deliveryIdScanRef: null,
     deliveryIdScanPassed: null,
     deliveryIdScanAt: null,
@@ -116,6 +107,7 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     customerReview: null,
     dispensaryRating: null,
     driverRating: null,
+    ratedAt: null,
     createdAt: new Date('2026-05-15T18:00:00.000Z'),
     updatedAt: new Date('2026-05-15T20:30:00.000Z'),
     ...overrides,
@@ -148,13 +140,14 @@ function makeCustomer(overrides: Partial<User> = {}): User {
 
 class FakeOrdersRepo implements Pick<
   OrdersRepository,
-  'findByIdForDriver' | 'findById' | 'findByDeliveryIdScanRef'
+  'findByIdForDriver' | 'findById' | 'findByDeliveryIdScanRef' | 'update'
 > {
   public rows = new Map<string, Order>();
   public rowsByRef = new Map<string, Order>();
   public findByIdForDriverCalls: { orderId: string; driverUserId: string }[] = [];
   public findByIdCalls: string[] = [];
   public findByRefCalls: string[] = [];
+  public updateCalls: { id: string; patch: Partial<Omit<NewOrder, 'id' | 'createdAt'>> }[] = [];
 
   seedForDriver(row: Order): void {
     this.rows.set(`${row.id}:${row.driverId ?? ''}`, row);
@@ -176,6 +169,16 @@ class FakeOrdersRepo implements Pick<
     this.findByRefCalls.push(ref);
     return Promise.resolve(this.rowsByRef.get(ref) ?? null);
   }
+
+  update(id: string, patch: Partial<Omit<NewOrder, 'id' | 'createdAt'>>): Promise<Order | null> {
+    this.updateCalls.push({ id, patch });
+    const existing = this.rows.get(id);
+    if (existing === undefined) return Promise.resolve(null);
+    const next: Order = { ...existing, ...patch, updatedAt: new Date() } as Order;
+    this.rows.set(id, next);
+    if (existing.driverId !== null) this.rows.set(`${id}:${existing.driverId}`, next);
+    return Promise.resolve(next);
+  }
 }
 
 class FakeUsersRepo implements Pick<UsersRepository, 'findById'> {
@@ -196,7 +199,7 @@ class FakeAgeVerificationsRepo implements Pick<AgeVerificationsRepository, 'reco
   ): Promise<AgeVerification> {
     this.records.push(input);
     const row: AgeVerification = {
-      id: input.id ?? `av_${this.records.length}`,
+      id: input.id ?? `av_${this.records.length.toString()}`,
       userId: input.userId,
       context: input.context,
       orderId: input.orderId ?? null,
@@ -242,31 +245,50 @@ class FakeVeriffClient {
   };
 }
 
-class FakeOrderEventsService {
-  public calls: OrderStatusTransitionInput[] = [];
+class FakeOrderTransitionService {
+  public calls: TransitionRequest[] = [];
   public throwError: Error | null = null;
 
   constructor(private readonly orders: FakeOrdersRepo) {}
 
-  transition = (input: OrderStatusTransitionInput): Promise<Order> => {
-    this.calls.push(input);
+  transition = (req: TransitionRequest): Promise<TransitionResult> => {
+    this.calls.push(req);
     if (this.throwError !== null) return Promise.reject(this.throwError);
-    const existing =
-      this.orders.rows.get(`${input.orderId}:${DRIVER_USER_ID}`) ??
-      this.orders.rows.get(input.orderId);
+
+    const driverKey = `${req.orderId}:${DRIVER_USER_ID}`;
+    const existing = this.orders.rows.get(driverKey) ?? this.orders.rows.get(req.orderId);
     if (existing === undefined) {
-      return Promise.reject(new Error(`fake transition: order ${input.orderId} not seeded`));
+      return Promise.reject(new Error(`fake transition: order ${req.orderId} not seeded`));
     }
-    const next = {
+    const toStatus = nextStatusForEvent(req.event);
+    const next: Order = {
       ...existing,
-      status: input.toStatus,
+      status: toStatus,
       statusChangedAt: new Date('2026-05-15T21:00:00.000Z'),
-      ...input.patch,
+      ...(req.patch as Partial<Order> | undefined),
     } as Order;
-    this.orders.rows.set(`${input.orderId}:${DRIVER_USER_ID}`, next);
-    this.orders.rows.set(input.orderId, next);
-    return Promise.resolve(next);
+    this.orders.rows.set(req.orderId, next);
+    if (existing.driverId !== null) this.orders.rows.set(driverKey, next);
+    return Promise.resolve({
+      orderId: req.orderId,
+      fromStatus: existing.status,
+      toStatus,
+    });
   };
+}
+
+function nextStatusForEvent(event: TransitionRequest['event']): Order['status'] {
+  switch (event) {
+    case 'DRIVER_ID_SCAN_STARTED':
+    case 'DRIVER_ID_SCAN_RETRY':
+      return 'id_scan_pending';
+    case 'ID_SCAN_PASSED':
+      return 'id_scan_passed';
+    case 'ID_SCAN_FAILED':
+      return 'id_scan_failed';
+    default:
+      throw new Error(`FakeOrderTransitionService: unexpected event ${event}`);
+  }
 }
 
 interface Rig {
@@ -275,7 +297,7 @@ interface Rig {
   readonly users: FakeUsersRepo;
   readonly ageVerifications: FakeAgeVerificationsRepo;
   readonly veriff: FakeVeriffClient;
-  readonly events: FakeOrderEventsService;
+  readonly transitions: FakeOrderTransitionService;
 }
 
 function makeRig(): Rig {
@@ -283,7 +305,7 @@ function makeRig(): Rig {
   const users = new FakeUsersRepo();
   const ageVerifications = new FakeAgeVerificationsRepo();
   const veriff = new FakeVeriffClient();
-  const events = new FakeOrderEventsService(orders);
+  const transitions = new FakeOrderTransitionService(orders);
   const scoped: DriverIdScanScopedRepos = {
     orders: orders as unknown as OrdersRepository,
     users: users as unknown as UsersRepository,
@@ -293,10 +315,10 @@ function makeRig(): Rig {
     FAKE_DB,
     () => scoped,
     veriff as unknown as VeriffClient,
-    events as unknown as OrderEventsService,
+    transitions as unknown as OrderTransitionService,
     { webhookBaseUrl: WEBHOOK_BASE_URL },
   );
-  return { service, orders, users, ageVerifications, veriff, events };
+  return { service, orders, users, ageVerifications, veriff, transitions };
 }
 
 describe('DriverIdScanService.startSession', () => {
@@ -305,7 +327,7 @@ describe('DriverIdScanService.startSession', () => {
     rig = makeRig();
   });
 
-  it('creates a Veriff session, transitions to id_scan_pending with the verification id patch, returns the payload', async () => {
+  it('creates a Veriff session, transitions arrived_at_dropoff → id_scan_pending via DRIVER_ID_SCAN_STARTED, returns the session payload', async () => {
     rig.orders.seedForDriver(makeOrder());
     rig.users.seed(makeCustomer());
 
@@ -317,27 +339,48 @@ describe('DriverIdScanService.startSession', () => {
     expect(veriffCall.callback).toBe(`${WEBHOOK_BASE_URL}/v1/webhooks/veriff`);
     expect(veriffCall.person).toEqual({ firstName: 'Sam', lastName: 'Jenkins' });
 
-    expect(rig.events.calls).toHaveLength(1);
-    const transition = rig.events.calls[0]!;
+    expect(rig.transitions.calls).toHaveLength(1);
+    const transition = rig.transitions.calls[0]!;
     expect(transition.orderId).toBe(ORDER_ID);
-    expect(transition.toStatus).toBe('id_scan_pending');
-    expect(transition.eventType).toBe('order_id_scan_session_started');
-    expect(transition.actorUserId).toBe(DRIVER_USER_ID);
-    expect(transition.actorRole).toBe('driver');
+    expect(transition.event).toBe('DRIVER_ID_SCAN_STARTED');
+    expect(transition.actor).toEqual({ userId: DRIVER_USER_ID, role: 'driver' });
     expect(transition.payload).toEqual({ verificationId: VERIFICATION_ID });
     expect(transition.patch).toEqual({ deliveryIdScanRef: VERIFICATION_ID });
-    expect(transition.expectedFromStatus).toEqual([
-      'arrived_at_dropoff',
-      'en_route_dropoff',
-      'id_scan_pending',
-      'id_scan_failed',
-    ]);
 
     expect(out).toEqual({
       verificationId: VERIFICATION_ID,
       sessionUrl: SESSION_URL,
       sessionToken: SESSION_TOKEN,
     });
+  });
+
+  it('emits DRIVER_ID_SCAN_RETRY when the order is in id_scan_failed (re-arming after a failed pass)', async () => {
+    rig.orders.seedForDriver(makeOrder({ status: 'id_scan_failed' }));
+    rig.users.seed(makeCustomer());
+
+    await rig.service.startSession(DRIVER_USER_ID, ORDER_ID);
+
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]!.event).toBe('DRIVER_ID_SCAN_RETRY');
+    expect(rig.transitions.calls[0]!.patch).toEqual({ deliveryIdScanRef: VERIFICATION_ID });
+  });
+
+  it('idempotent re-tap from id_scan_pending: patches deliveryIdScanRef directly with no transition', async () => {
+    rig.orders.seedForDriver(
+      makeOrder({ status: 'id_scan_pending', deliveryIdScanRef: 'older-ref' }),
+    );
+    rig.users.seed(makeCustomer());
+
+    await rig.service.startSession(DRIVER_USER_ID, ORDER_ID);
+
+    // Veriff session creation still happens — the driver gets a fresh token.
+    expect(rig.veriff.createSessionCalls).toHaveLength(1);
+    // But no transition fires — the order is already in id_scan_pending.
+    expect(rig.transitions.calls).toHaveLength(0);
+    // Instead, the new verification id is patched onto the row.
+    expect(rig.orders.updateCalls).toEqual([
+      { id: ORDER_ID, patch: { deliveryIdScanRef: VERIFICATION_ID } },
+    ]);
   });
 
   it('throws NotFoundError without calling Veriff when the driver does not own the order', async () => {
@@ -347,7 +390,7 @@ describe('DriverIdScanService.startSession', () => {
       NotFoundError,
     );
     expect(rig.veriff.createSessionCalls).toHaveLength(0);
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('throws NotFoundError when the customer row is missing', async () => {
@@ -360,7 +403,7 @@ describe('DriverIdScanService.startSession', () => {
     expect(rig.veriff.createSessionCalls).toHaveLength(0);
   });
 
-  it('omits the firstName/lastName when the customer has null name fields', async () => {
+  it('omits firstName/lastName when the customer has null name fields', async () => {
     rig.orders.seedForDriver(makeOrder());
     rig.users.seed(makeCustomer({ firstName: null, lastName: null }));
 
@@ -376,7 +419,7 @@ describe('DriverIdScanService.submitResult', () => {
     rig = makeRig();
   });
 
-  it('approved happy path: records ageVerifications + transitions to id_scan_passed', async () => {
+  it('approved happy path: records ageVerifications and transitions to id_scan_passed with the system actor', async () => {
     rig.orders.seedForDriver(
       makeOrder({ status: 'id_scan_pending', deliveryIdScanRef: VERIFICATION_ID }),
     );
@@ -404,12 +447,19 @@ describe('DriverIdScanService.submitResult', () => {
     expect(av.passedAt).toEqual(new Date('2026-05-15T21:00:00.000Z'));
     expect(av.failureReason).toBeNull();
 
-    expect(rig.events.calls).toHaveLength(1);
-    const transition = rig.events.calls[0]!;
-    expect(transition.toStatus).toBe('id_scan_passed');
-    expect(transition.eventType).toBe('order_id_scan_passed');
-    expect(transition.actorUserId).toBe(DRIVER_USER_ID);
-    expect(transition.actorRole).toBe('driver');
+    expect(rig.transitions.calls).toHaveLength(1);
+    const transition = rig.transitions.calls[0]!;
+    expect(transition.event).toBe('ID_SCAN_PASSED');
+    // The driver is the relay — the canonical actor is system because the
+    // decision is from Veriff, not the driver themselves.
+    expect(transition.actor).toEqual({ role: 'system' });
+    expect(transition.payload).toMatchObject({
+      verificationId: VERIFICATION_ID,
+      decisionAt: '2026-05-15T21:00:00.000Z',
+      code: 9001,
+      relayActorUserId: DRIVER_USER_ID,
+      relayActorRole: 'driver',
+    });
     expect(transition.patch).toEqual({
       deliveryIdScanPassed: true,
       deliveryIdScanAt: new Date('2026-05-15T21:00:00.000Z'),
@@ -438,7 +488,7 @@ describe('DriverIdScanService.submitResult', () => {
       statusCode: 409,
     });
     expect(rig.veriff.getDecisionCalls).toHaveLength(0);
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('declined decision transitions to id_scan_failed and records failureReason', async () => {
@@ -463,9 +513,10 @@ describe('DriverIdScanService.submitResult', () => {
       passedAt: null,
       failureReason: 'face_mismatch',
     });
-    expect(rig.events.calls[0]!.toStatus).toBe('id_scan_failed');
-    expect(rig.events.calls[0]!.eventType).toBe('order_id_scan_failed');
-    expect(rig.events.calls[0]!.patch).toEqual({ deliveryIdScanPassed: false });
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]!.event).toBe('ID_SCAN_FAILED');
+    expect(rig.transitions.calls[0]!.actor).toEqual({ role: 'system' });
+    expect(rig.transitions.calls[0]!.patch).toEqual({ deliveryIdScanPassed: false });
   });
 });
 
@@ -475,7 +526,7 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
     rig = makeRig();
   });
 
-  it('approved webhook: finds via decision.orderId, transitions with actorRole=system and no actorUserId', async () => {
+  it('approved webhook: finds via decision.orderId, transitions with system actor and no relayActorUserId', async () => {
     rig.orders.seedForDriver(
       makeOrder({ status: 'id_scan_pending', deliveryIdScanRef: VERIFICATION_ID }),
     );
@@ -489,10 +540,13 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
     });
 
     expect(rig.ageVerifications.records).toHaveLength(1);
-    expect(rig.events.calls).toHaveLength(1);
-    expect(rig.events.calls[0]!.toStatus).toBe('id_scan_passed');
-    expect(rig.events.calls[0]!.actorRole).toBe('system');
-    expect(rig.events.calls[0]!.actorUserId).toBeUndefined();
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]!.event).toBe('ID_SCAN_PASSED');
+    expect(rig.transitions.calls[0]!.actor).toEqual({ role: 'system' });
+    expect(rig.transitions.calls[0]!.payload).toMatchObject({
+      relayActorUserId: null,
+      relayActorRole: 'system',
+    });
   });
 
   it('approved webhook + order already in id_scan_passed: records the audit row but skips the transition', async () => {
@@ -508,10 +562,26 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
       code: 9001,
     });
 
-    // The idempotent ageVerifications insert still runs (audit trail);
-    // but the transition is suppressed.
     expect(rig.ageVerifications.records).toHaveLength(1);
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
+  });
+
+  it('declined webhook + order already in id_scan_failed: records the audit row but skips the transition', async () => {
+    rig.orders.seedForDriver(
+      makeOrder({ status: 'id_scan_failed', deliveryIdScanRef: VERIFICATION_ID }),
+    );
+
+    await rig.service.applyWebhookDecision({
+      type: 'declined',
+      verificationId: VERIFICATION_ID,
+      orderId: ORDER_ID,
+      decisionAt: '2026-05-15T21:00:00.000Z',
+      reason: 'face_mismatch',
+      code: 9102,
+    });
+
+    expect(rig.ageVerifications.records).toHaveLength(1);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('webhook with verification id mismatching the order is dropped without writes', async () => {
@@ -528,7 +598,7 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
     });
 
     expect(rig.ageVerifications.records).toHaveLength(0);
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('webhook with no matching order is logged + dropped', async () => {
@@ -541,7 +611,7 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
     });
 
     expect(rig.ageVerifications.records).toHaveLength(0);
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('pending decision is a no-op (webhooks should not fire on pending, but the guard exists)', async () => {
@@ -555,7 +625,7 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
     });
 
     expect(rig.ageVerifications.records).toHaveLength(0);
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('resubmission decision records the audit row but does not transition the order', async () => {
@@ -577,10 +647,10 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
       passed: false,
       failureReason: 'blurry_document',
     });
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
-  it('webhook for an already-delivered order is a no-op', async () => {
+  it('webhook for an already-delivered order records audit but skips transition', async () => {
     rig.orders.seedForDriver(
       makeOrder({ status: 'delivered', deliveryIdScanRef: VERIFICATION_ID }),
     );
@@ -593,10 +663,8 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
       code: 9001,
     });
 
-    // The audit row IS recorded for idempotency / completeness.
     expect(rig.ageVerifications.records).toHaveLength(1);
-    // But no transition.
-    expect(rig.events.calls).toHaveLength(0);
+    expect(rig.transitions.calls).toHaveLength(0);
   });
 
   it('webhook with null decision.orderId falls back to the deliveryIdScanRef lookup', async () => {
@@ -613,11 +681,11 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
     });
 
     expect(rig.orders.findByRefCalls).toEqual([VERIFICATION_ID]);
-    expect(rig.events.calls).toHaveLength(1);
-    expect(rig.events.calls[0]!.toStatus).toBe('id_scan_passed');
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]!.event).toBe('ID_SCAN_PASSED');
   });
 
-  it('declined webhook transitions to id_scan_failed', async () => {
+  it('declined webhook transitions to id_scan_failed with system actor', async () => {
     rig.orders.seedForDriver(
       makeOrder({ status: 'id_scan_pending', deliveryIdScanRef: VERIFICATION_ID }),
     );
@@ -631,9 +699,13 @@ describe('DriverIdScanService.applyWebhookDecision', () => {
       code: 9102,
     });
 
-    expect(rig.events.calls).toHaveLength(1);
-    expect(rig.events.calls[0]!.toStatus).toBe('id_scan_failed');
-    expect(rig.events.calls[0]!.actorRole).toBe('system');
-    expect(rig.events.calls[0]!.actorUserId).toBeUndefined();
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]!.event).toBe('ID_SCAN_FAILED');
+    expect(rig.transitions.calls[0]!.actor).toEqual({ role: 'system' });
+    expect(rig.transitions.calls[0]!.payload).toMatchObject({
+      relayActorUserId: null,
+      relayActorRole: 'system',
+      reason: 'face_mismatch',
+    });
   });
 });
