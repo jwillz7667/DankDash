@@ -60,8 +60,12 @@ jobs:
 
       - name: Resolve target URLs
         id: target
+        # Untrusted inputs go through env, not direct ${{...}} interpolation
+        # (semgrep: yaml.github-actions.security.run-shell-injection).
+        env:
+          TARGET: ${{ inputs.target }}
         run: |
-          if [ "${{ inputs.target }}" = "staging" ]; then
+          if [ "${TARGET}" = "staging" ]; then
             echo "api_base_url=https://api.staging.dankdash.com" >> "$GITHUB_OUTPUT"
             echo "realtime_url=https://realtime.staging.dankdash.com" >> "$GITHUB_OUTPUT"
           else
@@ -84,6 +88,10 @@ jobs:
             "${{ steps.target.outputs.api_base_url }}/health"
 
       - name: Run k6 scenario
+        # SCENARIO comes from the workflow-level env (top of jobs.k6.env);
+        # k6 reads it as $SCENARIO so the operator-supplied choice cannot
+        # be smuggled into the shell as a metacharacter
+        # (semgrep: yaml.github-actions.security.run-shell-injection).
         env:
           API_BASE_URL: ${{ steps.target.outputs.api_base_url }}
           REALTIME_URL: ${{ steps.target.outputs.realtime_url }}
@@ -92,9 +100,9 @@ jobs:
           mkdir -p loadtest/reports
           cd loadtest
           k6 run \
-            --out json=reports/${{ inputs.scenario }}.json \
-            --summary-export reports/${{ inputs.scenario }}-summary.json \
-            scenarios/${{ inputs.scenario }}.js
+            --out "json=reports/${SCENARIO}.json" \
+            --summary-export "reports/${SCENARIO}-summary.json" \
+            "scenarios/${SCENARIO}.js"
 
       - name: Upload k6 report
         if: always()
@@ -106,10 +114,15 @@ jobs:
 
       - name: Render summary to job log
         if: always()
+        # See note on the k6 step above — operator-supplied inputs are
+        # passed through env, never spliced into the run: body directly
+        # (semgrep: yaml.github-actions.security.run-shell-injection).
+        env:
+          TARGET: ${{ inputs.target }}
         run: |
-          if [ -f "loadtest/reports/${{ inputs.scenario }}-summary.json" ]; then
-            echo "## k6 summary — ${{ inputs.scenario }} → ${{ inputs.target }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "loadtest/reports/${SCENARIO}-summary.json" ]; then
+            echo "## k6 summary — ${SCENARIO} → ${TARGET}" >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat "loadtest/reports/${{ inputs.scenario }}-summary.json" >> "$GITHUB_STEP_SUMMARY"
+            cat "loadtest/reports/${SCENARIO}-summary.json" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi

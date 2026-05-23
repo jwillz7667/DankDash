@@ -32,9 +32,14 @@ jobs:
           fetch-depth: 0
 
       - name: Assert SHA exists on main
+        # github.event.inputs are untrusted operator-supplied data — feed
+        # them through an `env:` mapping so they cannot escape the shell
+        # context (semgrep: yaml.github-actions.security.run-shell-injection).
+        env:
+          GIT_SHA: ${{ inputs.git_sha }}
         run: |
-          if ! git merge-base --is-ancestor "${{ inputs.git_sha }}" origin/main; then
-            echo "SHA ${{ inputs.git_sha }} is not reachable from origin/main" >&2
+          if ! git merge-base --is-ancestor "${GIT_SHA}" origin/main; then
+            echo "SHA ${GIT_SHA} is not reachable from origin/main" >&2
             exit 1
           fi
 
@@ -108,9 +113,14 @@ jobs:
           exit 1
 
       - name: Tag release
+        # Pipe untrusted inputs through env (semgrep: yaml.github-actions
+        # .security.run-shell-injection) so a malicious release_note like
+        # `$(curl evil)` cannot escape into the shell.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_SHA: ${{ inputs.git_sha }}
+          RELEASE_NOTE: ${{ inputs.release_note }}
         run: |
           tag="prod-$(date -u +%Y%m%d-%H%M%S)"
-          git tag -a "${tag}" "${{ inputs.git_sha }}" -m "${{ inputs.release_note }}"
+          git tag -a "${tag}" "${GIT_SHA}" -m "${RELEASE_NOTE}"
           git push origin "${tag}"
