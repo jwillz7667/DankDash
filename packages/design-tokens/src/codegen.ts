@@ -40,6 +40,12 @@ export function emitSwift(): string {
   }
   lines.push(`    internal static let background = ${swiftColorFromHex(tokens.color.background)}`);
   lines.push(`    internal static let glass = ${swiftColorFromCss(tokens.color.glass)}`);
+  for (const [name, hex] of Object.entries(tokens.color.surface)) {
+    lines.push(`    internal static let surface${capitalize(name)} = ${swiftColorFromHex(hex)}`);
+  }
+  for (const [name, hex] of Object.entries(tokens.color.border)) {
+    lines.push(`    internal static let border${capitalize(name)} = ${swiftColorFromHex(hex)}`);
+  }
   for (const [name, hex] of Object.entries(tokens.color.semantic)) {
     lines.push(`    internal static let semantic${capitalize(name)} = ${swiftColorFromHex(hex)}`);
   }

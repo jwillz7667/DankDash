@@ -40,4 +40,21 @@ describe('emitSwift', () => {
     expect(output).toContain('internal enum Sm {');
     expect(output).toContain('internal enum Ring {');
   });
+
+  it('emits semantic-state soft tints alongside their base colors', () => {
+    expect(output).toContain('internal static let semanticDanger = Color(.sRGB, red:');
+    expect(output).toContain('internal static let semanticDangerSoft = Color(.sRGB, red:');
+    expect(output).toContain('internal static let semanticWarningSoft = Color(.sRGB, red:');
+    expect(output).toContain('internal static let semanticSuccessSoft = Color(.sRGB, red:');
+    expect(output).toContain('internal static let semanticInfoSoft = Color(.sRGB, red:');
+  });
+
+  it('emits surface and border tones used by the portal token aliases', () => {
+    expect(output).toContain('internal static let surfaceDefault = Color(.sRGB, red: 1, green: 1');
+    expect(output).toContain('internal static let surfaceMuted = Color(.sRGB, red:');
+    expect(output).toContain('internal static let surfaceInverse = Color(.sRGB, red:');
+    expect(output).toContain('internal static let borderDefault = Color(.sRGB, red:');
+    expect(output).toContain('internal static let borderSubtle = Color(.sRGB, red:');
+    expect(output).toContain('internal static let borderStrong = Color(.sRGB, red:');
+  });
 });

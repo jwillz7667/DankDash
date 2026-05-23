@@ -31,11 +31,44 @@ export const tokens = {
     },
     background: '#FFFFFF',
     glass: 'rgba(255, 255, 255, 0.08)',
+    /**
+     * Surface tones for layered backgrounds — replaces the slate-50/100/200/900
+     * habits in the portal. The "muted" tint is intentionally green-shifted
+     * (warm gray) rather than slate-cool so the portal feels in the same
+     * brand family as the iOS apps, where the cream / off-white backgrounds
+     * lean warm.
+     */
+    surface: {
+      default: '#FFFFFF',
+      muted: '#F7FAF6',
+      subtle: '#EEF3EC',
+      inverse: '#0F1A0D',
+    },
+    /**
+     * Border tones. `default` is the everyday divider line (replaces
+     * slate-200), `subtle` is the inner card-header rule (replaces
+     * slate-100), `strong` is the focused/hovered border (replaces
+     * slate-300).
+     */
+    border: {
+      subtle: '#EEF1EC',
+      default: '#DBE1D7',
+      strong: '#B2BCAF',
+    },
+    /**
+     * Semantic intent palette. Each role exposes a base color (used for
+     * text + icon strokes against a white surface) and a soft variant
+     * (used as a tinted background — pills, banners, alert rows).
+     */
     semantic: {
       success: '#2E7D32',
+      successSoft: '#E6F2E6',
       warning: '#B07A12',
+      warningSoft: '#FBF1DA',
       danger: '#B3261E',
+      dangerSoft: '#FBE6E5',
       info: '#1F4E8C',
+      infoSoft: '#E2ECF8',
     },
     status: {
       ember: '#C75D2C',
