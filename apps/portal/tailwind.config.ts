@@ -34,11 +34,39 @@ const config: Config = {
           ...tokens.color.primary,
           DEFAULT: tokens.color.primary[500],
         },
+        foreground: tokens.color.text.primary,
+        secondary: tokens.color.text.secondary,
+        muted: tokens.color.text.muted,
+        'on-primary': tokens.color.text.onPrimary,
+        surface: {
+          DEFAULT: tokens.color.surface.default,
+          muted: tokens.color.surface.muted,
+          subtle: tokens.color.surface.subtle,
+          inverse: tokens.color.surface.inverse,
+        },
+        outline: {
+          DEFAULT: tokens.color.border.default,
+          subtle: tokens.color.border.subtle,
+          strong: tokens.color.border.strong,
+        },
+        success: {
+          DEFAULT: tokens.color.semantic.success,
+          soft: tokens.color.semantic.successSoft,
+        },
+        warning: {
+          DEFAULT: tokens.color.semantic.warning,
+          soft: tokens.color.semantic.warningSoft,
+        },
+        danger: {
+          DEFAULT: tokens.color.semantic.danger,
+          soft: tokens.color.semantic.dangerSoft,
+        },
+        info: {
+          DEFAULT: tokens.color.semantic.info,
+          soft: tokens.color.semantic.infoSoft,
+        },
         ember: tokens.color.status.ember,
-        warning: tokens.color.status.attention,
-        success: tokens.color.semantic.success,
-        danger: tokens.color.semantic.danger,
-        info: tokens.color.semantic.info,
+        attention: tokens.color.status.attention,
         time: {
           green: 'var(--time-green)',
           yellow: 'var(--time-yellow)',
