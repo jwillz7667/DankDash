@@ -1,15 +1,17 @@
 import CoreGraphics
 
-/// 4-pt spacing scale. Every padding / gap in the app should pull from
-/// this ladder; ad-hoc `padding(12)` reads as a smell during code review.
+/// 4-pt spacing scale. Values come from
+/// `packages/design-tokens/src/tokens.ts` via codegen — to change a
+/// step, edit the TypeScript source and run
+/// `pnpm --filter @dankdash/design-tokens build`.
 public enum DankSpacing {
-  public static let xxs: CGFloat = 4
-  public static let xs: CGFloat = 8
-  public static let sm: CGFloat = 12
-  public static let md: CGFloat = 16
-  public static let lg: CGFloat = 24
-  public static let xl: CGFloat = 32
-  public static let xxl: CGFloat = 48
+  public static let xxs = GeneratedTokens.Spacing.xxs
+  public static let xs = GeneratedTokens.Spacing.xs
+  public static let sm = GeneratedTokens.Spacing.sm
+  public static let md = GeneratedTokens.Spacing.md
+  public static let lg = GeneratedTokens.Spacing.lg
+  public static let xl = GeneratedTokens.Spacing.xl
+  public static let xxl = GeneratedTokens.Spacing.xxl
 
   public static let allTokens: [(name: String, value: CGFloat)] = [
     ("xxs", xxs), ("xs", xs), ("sm", sm), ("md", md), ("lg", lg), ("xl", xl), ("xxl", xxl),
