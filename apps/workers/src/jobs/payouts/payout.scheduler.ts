@@ -17,16 +17,35 @@
  * extra runs still cost Aeropay API calls and ops noise.
  */
 import { type ScheduledTask, schedule } from 'node-cron';
+import { runWithCronSpan, type CronMetrics } from '../../instrumentation/cron-spans.js';
 import { type PayoutJobDeps, runPayoutJob } from './payout.job.js';
 
 export const PAYOUT_CRON_EXPRESSION = '0 3 * * *';
 export const PAYOUT_CRON_TIMEZONE = 'America/Chicago';
 
-export function schedulePayoutJob(deps: PayoutJobDeps): ScheduledTask {
+export interface SchedulePayoutJobOptions {
+  /**
+   * Optional cron metrics. When provided, every invocation is
+   * wrapped in an OTel span + duration histogram + outcome counter.
+   * Production callers always pass this; tests opt out so the suite
+   * doesn't have to wire a registry.
+   */
+  readonly cronMetrics?: CronMetrics;
+}
+
+export function schedulePayoutJob(
+  deps: PayoutJobDeps,
+  options: SchedulePayoutJobOptions = {},
+): ScheduledTask {
   return schedule(
     PAYOUT_CRON_EXPRESSION,
     () => {
-      void runPayoutJob({ now: new Date(), deps }).catch((err: unknown) => {
+      const run = (): Promise<unknown> => runPayoutJob({ now: new Date(), deps });
+      const wrapped: Promise<unknown> =
+        options.cronMetrics === undefined
+          ? run()
+          : runWithCronSpan({ name: 'payouts', metrics: options.cronMetrics }, run);
+      void wrapped.catch((err: unknown) => {
         // runPayoutJob never throws on a single recipient — it logs and
         // moves on. If we land here something at the orchestration level
         // (ledger query, dispensary list) blew up; log and let the next

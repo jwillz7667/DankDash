@@ -1,0 +1,36 @@
+# Forbid `as any` casts in shipped code. CLAUDE.md: "Zero `any` in
+# TypeScript. `unknown` and narrow, or define the real type." A cast
+# to `any` reaches around the type checker and tends to mask bugs
+# that surface in production.
+#
+# Tests + fixtures are exempt because mocking sometimes requires
+# bypassing strict typing of a third-party SDK whose surface we don't
+# control.
+
+rules:
+  - id: dankdash-no-any-cast
+    languages: [typescript]
+    severity: ERROR
+    message: >-
+      `as any` defeats the type system. Use `unknown` and narrow, or
+      declare the real type. See CLAUDE.md "Zero `any` in TypeScript."
+    paths:
+      include:
+        - apps/
+        - packages/
+      exclude:
+        - "**/test/**"
+        - "**/tests/**"
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        - "**/*.spec.ts"
+        - "**/*.spec.tsx"
+        - "**/fixtures/**"
+        - "**/__fixtures__/**"
+        - "**/dist/**"
+        - "**/build/**"
+        - "**/node_modules/**"
+    pattern-either:
+      - pattern: $E as any
+      - pattern: <any>$E

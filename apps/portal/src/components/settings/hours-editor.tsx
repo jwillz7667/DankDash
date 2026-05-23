@@ -148,7 +148,7 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
               <th>Closed</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-outline-subtle">
             {DAYS.map((def) => {
               const d = draft[def.key];
               const openId = `${baseId}-${def.key}-open`;
@@ -156,7 +156,7 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
               const closedId = `${baseId}-${def.key}-closed`;
               return (
                 <tr key={def.key} data-day={def.key}>
-                  <td className="w-32 py-2 text-sm font-medium text-slate-700">{def.label}</td>
+                  <td className="w-32 py-2 text-sm font-medium text-secondary">{def.label}</td>
                   <td className="px-2 py-2">
                     <label htmlFor={openId} className="sr-only">
                       {def.label} open time
@@ -171,7 +171,7 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
                         updateDay(def.key, { open: e.target.value });
                       }}
                       disabled={d.closed || busy}
-                      className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900 focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-500/20 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                      className="h-9 w-24 rounded-md border border-outline bg-surface px-2 text-sm text-foreground focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-500/20 disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-muted"
                     />
                   </td>
                   <td className="px-2 py-2">
@@ -188,13 +188,13 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
                         updateDay(def.key, { close: e.target.value });
                       }}
                       disabled={d.closed || busy}
-                      className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900 focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-500/20 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                      className="h-9 w-24 rounded-md border border-outline bg-surface px-2 text-sm text-foreground focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-500/20 disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-muted"
                     />
                   </td>
                   <td className="px-2 py-2">
                     <label
                       htmlFor={closedId}
-                      className="inline-flex items-center gap-2 text-sm text-slate-600"
+                      className="inline-flex items-center gap-2 text-sm text-secondary"
                     >
                       <input
                         id={closedId}
@@ -204,7 +204,7 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
                           updateDay(def.key, { closed: e.target.checked });
                         }}
                         disabled={busy}
-                        className="h-4 w-4 rounded border-slate-300 text-moss-500 focus:ring-moss-500"
+                        className="h-4 w-4 rounded border-outline-strong text-moss-500 focus:ring-moss-500"
                       />
                       Closed
                     </label>
@@ -215,10 +215,10 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
           </tbody>
         </table>
 
-        <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+        <div className="flex items-center justify-between gap-3 border-t border-outline-subtle pt-4">
           <div>
             {error !== null ? (
-              <p role="alert" className="text-sm font-medium text-rose-700">
+              <p role="alert" className="text-sm font-medium text-danger">
                 {error}
               </p>
             ) : success !== null ? (
@@ -226,7 +226,7 @@ export function HoursEditor({ hours, onPatch, onPatched }: HoursEditorProps): Re
                 {success}
               </p>
             ) : (
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-muted">
                 {dirty ? 'You have unsaved changes.' : "Hours match what's saved."}
               </p>
             )}

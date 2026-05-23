@@ -150,11 +150,11 @@ export function MenuTable({ initialListings, actions, nowFactory }: MenuTablePro
         now={now}
       />
 
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="rounded-2xl border border-outline bg-surface shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-outline-subtle px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-base font-semibold tracking-tight text-slate-900">Listings</h2>
-            <p className="text-sm text-slate-500">
+            <h2 className="text-base font-semibold tracking-tight text-foreground">Listings</h2>
+            <p className="text-sm text-muted">
               Every SKU your store offers. Click a price or quantity to edit; toggle the switch to
               show or hide a listing on the public menu.
             </p>
@@ -163,7 +163,7 @@ export function MenuTable({ initialListings, actions, nowFactory }: MenuTablePro
             <span className="sr-only">Filter listings</span>
             <Search
               aria-hidden="true"
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
             />
             <Input
               value={query}
@@ -188,7 +188,7 @@ export function MenuTable({ initialListings, actions, nowFactory }: MenuTablePro
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm" data-testid="menu-table">
-              <thead className="border-b border-slate-100 bg-slate-50/50 text-2xs font-medium uppercase tracking-wider text-slate-500">
+              <thead className="border-b border-outline-subtle bg-surface-muted/50 text-2xs font-medium uppercase tracking-wider text-muted">
                 <tr>
                   <th scope="col" className="py-3 pl-5 pr-3">
                     Product
@@ -236,8 +236,8 @@ function EmptyState(): ReactNode {
         <PackageOpen aria-hidden="true" className="h-5 w-5" />
       </div>
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold tracking-tight text-slate-900">No listings yet</h3>
-        <p className="max-w-sm text-sm text-slate-500">
+        <h3 className="text-sm font-semibold tracking-tight text-foreground">No listings yet</h3>
+        <p className="max-w-sm text-sm text-muted">
           Once your products are in the global catalog, list them here with a price and inventory to
           start selling.
         </p>
@@ -255,8 +255,8 @@ function NoMatchesState({
 }): ReactNode {
   return (
     <div className="flex flex-col items-center gap-3 px-5 py-12 text-center">
-      <p className="text-sm text-slate-500">
-        No listings matched <span className="font-medium text-slate-700">"{query}"</span>.
+      <p className="text-sm text-muted">
+        No listings matched <span className="font-medium text-secondary">"{query}"</span>.
       </p>
       <button
         type="button"

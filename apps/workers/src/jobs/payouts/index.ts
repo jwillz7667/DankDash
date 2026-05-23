@@ -9,4 +9,5 @@ export {
   PAYOUT_CRON_EXPRESSION,
   PAYOUT_CRON_TIMEZONE,
   schedulePayoutJob,
+  type SchedulePayoutJobOptions,
 } from './payout.scheduler.js';

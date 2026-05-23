@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook: runs lint-staged against the staged files only.
+# Pre-commit hook: runs lint-staged + gitleaks against the staged files.
 # Installed by `pnpm install` via the root `prepare` script, which calls
 # `git config core.hooksPath .githooks`.
 set -euo pipefail
@@ -12,3 +12,8 @@ if [[ -f "$(git rev-parse --git-path MERGE_MSG)" ]] || \
 fi
 
 pnpm exec lint-staged --concurrent false
+
+# Block secrets from landing in any commit. The wrapper is permissive
+# when gitleaks is not installed locally (CI is the authoritative
+# gate), so this is fast feedback for developers who have it.
+bash "$(git rev-parse --show-toplevel)/scripts/verify-no-secrets.sh"

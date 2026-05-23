@@ -27,7 +27,7 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-white">
+    <div className="flex h-screen overflow-hidden bg-surface">
       <Sidebar role={session.user.role} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar
@@ -35,7 +35,7 @@ export default async function DashboardLayout({
           displayName={session.user.name ?? null}
           role={session.user.role}
         />
-        <main className="scrollbar-slim flex-1 overflow-auto bg-slate-50/40 px-8 py-8">
+        <main className="scrollbar-slim flex-1 overflow-auto bg-surface-muted/40 px-8 py-8">
           {children}
         </main>
       </div>

@@ -7,6 +7,13 @@ export interface LoggerOptions {
   readonly level?: PinoOptions['level'];
   readonly environment?: 'development' | 'test' | 'staging' | 'production';
   readonly extraRedactPaths?: readonly string[];
+  /**
+   * Optional pino mixin. The api/realtime/workers pass
+   * `requestContextMixin` from `@dankdash/observability` so every log
+   * record carries the ALS-bound request_id/trace_id/span_id without
+   * threading the request through every call site.
+   */
+  readonly mixin?: PinoOptions['mixin'];
 }
 
 /**
@@ -83,6 +90,7 @@ export function createLogger(options: LoggerOptions): Logger {
       service: options.name,
       env,
     },
+    ...(options.mixin !== undefined ? { mixin: options.mixin } : {}),
   };
 
   if (isProduction) {

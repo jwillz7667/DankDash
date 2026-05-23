@@ -1,0 +1,95 @@
+# Compliance / cart-validation failure-spike alerts.
+#
+# A small steady rate of cart_validation_failed_total is normal
+# (consumer hits the limit, drops an item, re-validates — expected).
+# A 5x baseline spike is either:
+#   - A real compliance change someone shipped that's blocking valid
+#     carts (bug — page immediately).
+#   - A user-facing UX bug forcing every cart through the limit
+#     branch (bug — page immediately).
+#   - Coordinated abuse (rare but possible — escalate to security).
+#
+# Either way it's a "look now" signal, not a "monitor". The 5x is
+# vs the previous hour's average — generous enough that nightly /
+# weekly variation doesn't trip it.
+
+groups:
+  - name: dankdash-compliance-failure-spike
+    interval: 30s
+    rules:
+      - alert: CartValidationFailureSpike
+        expr: |
+          sum(rate(cart_validation_failed_total[5m]))
+          > 5 * sum(avg_over_time(cart_validation_failed_total[1h] offset 1h))
+          /
+          3600
+          and
+          sum(rate(cart_validation_failed_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: api
+          domain: compliance
+        annotations:
+          summary: "Cart validation failures at 5x baseline"
+          description: |
+            Cart validation is failing at >5x the previous hour's
+            baseline. Reason label on the metric carries the rule
+            code that fired most. Most common cause: a recent change
+            to compliance limits or weight-aggregation logic. Check
+            the business-kpis dashboard's "cart validation failures
+            by reason" panel and roll back the most recent compliance
+            deploy if the dominant reason matches a known limit.
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/grafana-alert-triage.md#compliance-spike"
+
+      - alert: ComplianceBlocksSpike
+        # Distinct from cart_validation_failed — compliance blocks
+        # fire at the checkout boundary too. A burst there with
+        # cart-validation flat means consumers are bypassing the
+        # cart preview UI somehow (deep link, stale cache, mobile
+        # offline-mode replay).
+        expr: |
+          sum(rate(compliance_check_blocked_total[5m]))
+          > 5 * sum(avg_over_time(compliance_check_blocked_total[1h] offset 1h))
+          /
+          3600
+          and
+          sum(rate(compliance_check_blocked_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: api
+          domain: compliance
+        annotations:
+          summary: "Compliance engine blocks at 5x baseline"
+          description: |
+            The compliance engine is blocking checkouts at >5x
+            baseline. If `cart_validation_failed_total` is flat,
+            consumers are reaching checkout with carts the cart
+            preview should have rejected — investigate cart-preview
+            staleness or the mobile offline-cart replay path.
+
+      - alert: IDScanDeclinedSpike
+        # ID-scan declined ratio above 30% sustained suggests either
+        # a Veriff outage misclassifying valid scans, or a UX flow
+        # change that's collecting bad scans.
+        expr: |
+          sum(rate(id_scan_completed_total{outcome="declined"}[15m]))
+          /
+          clamp_min(sum(rate(id_scan_completed_total[15m])), 0.0001)
+          > 0.3
+        for: 15m
+        labels:
+          severity: warning
+          team: dankdash-backend
+          service: api
+          domain: compliance
+        annotations:
+          summary: "ID-scan declined ratio above 30% for 15m"
+          description: |
+            Drivers are getting >30% declined ID-scan results
+            sustained for 15 minutes. Open Veriff's status page
+            first; if green, check whether the driver app shipped a
+            change to the scan capture flow.

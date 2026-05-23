@@ -22,6 +22,26 @@ export interface CreateUserAddressInput extends Omit<NewUserAddress, 'location'>
   readonly location: GeoPoint;
 }
 
+/**
+ * Fields that PATCH /v1/addresses/:id is permitted to mutate. `isDefault` is
+ * intentionally excluded — flipping the singleton requires the atomic
+ * `setDefault` transaction so two rows can never race to both be default.
+ * System-managed fields (`isValidated`, `validatedAt`, `deletedAt`, `userId`,
+ * `id`, timestamps) are excluded so callers cannot forge them through the
+ * patch surface.
+ */
+export type UpdateUserAddressPatch = Partial<{
+  readonly label: NewUserAddress['label'];
+  readonly line1: NewUserAddress['line1'];
+  readonly line2: NewUserAddress['line2'];
+  readonly city: NewUserAddress['city'];
+  readonly region: NewUserAddress['region'];
+  readonly postalCode: NewUserAddress['postalCode'];
+  readonly country: NewUserAddress['country'];
+  readonly location: GeoPoint;
+  readonly deliveryInstructions: NewUserAddress['deliveryInstructions'];
+}>;
+
 interface UserAddressRow extends Omit<UserAddress, 'location'> {
   readonly location: string;
 }
@@ -161,6 +181,28 @@ export class UserAddressesRepository extends BaseRepository {
     if (row === null)
       throw new RepositoryError(`user_addresses ${inserted.id} disappeared after insert`);
     return row;
+  }
+
+  /**
+   * Partial update for the user-mutable address fields. Returns the inflated
+   * row (location parsed back into a GeoPoint), or `null` if no row matches —
+   * the caller decides whether that means 404 or cross-user RLS reject.
+   * `setDefault` is the only path for flipping `is_default`.
+   */
+  async update(id: string, patch: UpdateUserAddressPatch): Promise<UserAddress | null> {
+    const { location, ...rest } = patch;
+    const payload = {
+      ...rest,
+      ...(location !== undefined ? { location: pointToSql(location) } : {}),
+      updatedAt: new Date(),
+    };
+    const [updated] = await this.db
+      .update(userAddresses)
+      .set(payload)
+      .where(and(eq(userAddresses.id, id), isNull(userAddresses.deletedAt)))
+      .returning({ id: userAddresses.id });
+    if (updated === undefined) return null;
+    return this.findById(updated.id);
   }
 
   async setDefault(userId: string, addressId: string): Promise<void> {

@@ -84,7 +84,7 @@ export function DateRangePicker({ nowFactory }: DateRangePickerProps): ReactNode
     <div
       role="group"
       aria-label="Date range"
-      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm"
+      className="inline-flex items-center gap-1 rounded-xl border border-outline bg-surface p-1 shadow-sm"
     >
       {PRESETS.map((preset) => {
         const active = activeKey === preset.key;
@@ -101,7 +101,7 @@ export function DateRangePicker({ nowFactory }: DateRangePickerProps): ReactNode
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-1',
               active
                 ? 'bg-moss-50 text-moss-800'
-                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+                : 'text-secondary hover:bg-surface-muted hover:text-foreground',
             )}
           >
             {preset.label}

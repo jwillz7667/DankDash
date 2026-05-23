@@ -48,7 +48,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { readonly children: ReactNode }): ReactNode {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} h-full`}>
-      <body className="h-full bg-white font-sans text-slate-900">
+      <body className="h-full bg-surface font-sans text-foreground">
         <QueryClientProvider>{children}</QueryClientProvider>
       </body>
     </html>

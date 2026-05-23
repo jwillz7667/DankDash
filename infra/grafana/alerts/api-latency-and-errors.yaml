@@ -1,0 +1,99 @@
+# API latency + error-rate alerts.
+#
+# Severity routing in the operator's alertmanager / Grafana contact
+# points should map:
+#   severity: critical  → pagerduty-primary  (pages on-call now)
+#   severity: warning   → pagerduty-secondary (slack #ops-warnings; no page)
+#
+# The thresholds match spec §8.3 (read p95 < 500ms, write p95 < 1500ms)
+# and §8.4 (5xx rate sustained > 1% pages).
+
+groups:
+  - name: dankdash-api-latency-and-errors
+    interval: 30s
+    rules:
+      - alert: APIRequestLatencyP95
+        # All routes, no per-route slice — a sustained 500ms tail
+        # somewhere is enough to page; the on-call drills into the
+        # API overview dashboard's "top 10 slowest routes" panel to
+        # localize.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "API p95 latency above 500ms for 10m"
+          description: |
+            The API's p95 request latency has been above 500ms for the
+            past 10 minutes. Spec SLO floor is 500ms (§8.3). Check the
+            "DankDash — API Overview" dashboard for the slowest routes
+            and the db-pool dashboard for upstream saturation.
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/grafana-alert-triage.md#api-latency"
+
+      - alert: API5xxErrorRate
+        # 5xx rate over 1% sustained for 10m. Any single bad deploy
+        # will trip this — the on-call's first move is usually
+        # `gh run list -L 5` to see what just shipped.
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status_family="5xx"}[5m]))
+          /
+          clamp_min(sum(rate(http_request_duration_seconds_count[5m])), 0.0001)
+          > 0.01
+        for: 10m
+        labels:
+          severity: critical
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "API 5xx error rate above 1% for 10m"
+          description: |
+            More than 1% of requests are returning 5xx for the past
+            10 minutes. Open Sentry (the unhandled exception counter
+            on the API overview dashboard should also be lit) and
+            cross-reference with the latest deploy.
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/grafana-alert-triage.md#api-5xx"
+
+      - alert: APIUnhandledExceptionsBurst
+        # Even one unhandled exception is a code bug — the global
+        # filter routes domain + HTTP exceptions to their counters;
+        # `unhandled` should never tick under normal operation.
+        expr: |
+          increase(http_exceptions_total{kind="unhandled"}[5m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "More than 5 unhandled exceptions in 5m"
+          description: |
+            The global exception filter has emitted more than 5
+            unhandled exceptions in the last 5 minutes. These are
+            also captured in Sentry — pull the issue link from there
+            for the stack trace.
+          runbook_url: "https://github.com/jwillz7667/DankDash/blob/main/docs/runbooks/grafana-alert-triage.md#unhandled-exceptions"
+
+      - alert: APIRequestLatencyP95Warning
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 0.25
+        for: 15m
+        labels:
+          severity: warning
+          team: dankdash-backend
+          service: api
+        annotations:
+          summary: "API p95 latency above 250ms for 15m (heads-up)"
+          description: |
+            p95 latency has been above 250ms for 15 minutes — half the
+            crit threshold. This is the leading indicator; the
+            critical alert fires at 500ms. Worth a glance at the
+            db-pool dashboard to see if upstream is breathing.

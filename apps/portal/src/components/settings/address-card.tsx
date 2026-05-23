@@ -51,8 +51,8 @@ export function AddressCard({
         </div>
       </CardHeader>
       <CardBody className="space-y-4">
-        <address className="text-sm not-italic text-slate-700">
-          <div className="font-medium text-slate-900">{addressLine1}</div>
+        <address className="text-sm not-italic text-secondary">
+          <div className="font-medium text-foreground">{addressLine1}</div>
           {addressLine2 !== null ? <div>{addressLine2}</div> : null}
           <div>
             {city}, {region} {postalCode}
@@ -68,11 +68,11 @@ export function AddressCard({
           <Field
             label="Delivery polygon"
             value={`${polygonVertexCount} vertices`}
-            icon={<MapPinned aria-hidden="true" className="h-3.5 w-3.5 text-slate-400" />}
+            icon={<MapPinned aria-hidden="true" className="h-3.5 w-3.5 text-muted" />}
           />
         </dl>
 
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-muted">
           Interactive polygon editing ships in Phase 19. To request a change, contact your account
           manager with the new coverage boundary.
         </p>
@@ -94,12 +94,12 @@ function Field({
 }): ReactNode {
   return (
     <div className="space-y-0.5">
-      <dt className="text-2xs font-medium uppercase tracking-wider text-slate-500">{label}</dt>
+      <dt className="text-2xs font-medium uppercase tracking-wider text-muted">{label}</dt>
       <dd
         className={
           mono
-            ? 'inline-flex items-center gap-1.5 text-sm font-medium text-slate-900 font-mono tracking-tight'
-            : 'inline-flex items-center gap-1.5 text-sm font-medium text-slate-900'
+            ? 'inline-flex items-center gap-1.5 text-sm font-medium text-foreground font-mono tracking-tight'
+            : 'inline-flex items-center gap-1.5 text-sm font-medium text-foreground'
         }
       >
         {icon}

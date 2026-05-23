@@ -9,7 +9,7 @@ import { type ReactNode } from 'react';
  */
 export default function AuthLayout({ children }: { readonly children: ReactNode }): ReactNode {
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-white p-6">
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-surface p-6">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(60%_50%_at_50%_0%,_rgba(60,147,34,0.08)_0%,_rgba(255,255,255,0)_70%)]"

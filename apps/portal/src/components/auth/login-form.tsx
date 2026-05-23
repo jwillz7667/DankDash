@@ -193,16 +193,14 @@ export function LoginForm({ callbackUrl, initialError }: LoginFormProps): ReactN
               setMfaCode(event.target.value.replace(/\D/gu, ''));
             }}
           />
-          <p className="text-xs text-slate-500">
-            Enter the 6-digit code from your authenticator app.
-          </p>
+          <p className="text-xs text-muted">Enter the 6-digit code from your authenticator app.</p>
         </div>
       )}
 
       {error !== null && (
         <p
           role="alert"
-          className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
+          className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger"
         >
           {error}
         </p>
@@ -215,7 +213,7 @@ export function LoginForm({ callbackUrl, initialError }: LoginFormProps): ReactN
       {step === 'mfa' && (
         <button
           type="button"
-          className="block w-full text-center text-xs font-medium text-slate-500 hover:text-moss-700"
+          className="block w-full text-center text-xs font-medium text-muted hover:text-moss-700"
           onClick={(): void => {
             setStep('password');
             setMfaCode('');

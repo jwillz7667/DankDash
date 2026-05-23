@@ -64,8 +64,8 @@ export default async function StaffPage(): Promise<ReactNode> {
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       <header className="space-y-1.5">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Staff</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Staff</h1>
+        <p className="text-sm text-muted">
           Budtenders, managers, and owners attached to {ctx.dispensary.name}. Invite teammates by
           email and assign their access level here.
         </p>
@@ -85,13 +85,13 @@ function NoDispensaryContext(): ReactNode {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
       <Card>
         <CardBody className="space-y-3 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-warning-soft text-warning">
             <AlertTriangle aria-hidden="true" className="h-5 w-5" />
           </div>
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
             No dispensary context
           </h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             The staff roster is scoped to an active dispensary. Accept your invitation or contact
             your owner to grant access.
           </p>
@@ -113,13 +113,13 @@ function StaffFetchError({
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
       <Card>
         <CardBody className="space-y-3 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-700">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-danger-soft text-danger">
             <AlertTriangle aria-hidden="true" className="h-5 w-5" />
           </div>
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
             Couldn't load the staff roster
           </h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             We couldn't load staff for {storeName}. Refresh the page; if it keeps failing, ping
             DankDash support.
           </p>
