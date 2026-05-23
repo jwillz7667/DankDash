@@ -2,8 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Stale-order badge palette (Phase 14). These CSS variables mirror
+ * `tokens.color.primary[500]`, `tokens.color.status.attention`, and
+ * `tokens.color.status.ember` in `packages/design-tokens/src/tokens.ts`.
+ * When updating the canonical values there, update them here too — the
+ * Tailwind plugin layer doesn't inject CSS variables (yet).
+ */
 :root {
-  --time-green: #3c9322;
+  --time-green: #3b9322;
   --time-yellow: #c7a03c;
   --time-red: #c75d2c;
 }

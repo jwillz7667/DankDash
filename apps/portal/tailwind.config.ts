@@ -1,28 +1,24 @@
+import { tokens } from '@dankdash/design-tokens';
 import type { Config } from 'tailwindcss';
 
 /**
- * Visual system — modern white-canvas dashboard with DankDash green as
- * the single accent. The brand green is `moss.500 = #3C9322`. Surfaces
- * stay white; structure comes from hair-thin slate borders, not
- * coloured backgrounds.
+ * Portal visual system. Tokens come from `@dankdash/design-tokens` so
+ * portal CSS, the iOS consumer app, and the Dasher driver app all share
+ * the same source of truth — to change a brand value, edit
+ * `packages/design-tokens/src/tokens.ts` and run
+ * `pnpm --filter @dankdash/design-tokens build` (which also regenerates
+ * the iOS Swift constants).
  *
- *   moss.50   #F1F8ED   tinted backgrounds for active nav, success pills
- *   moss.100  #DDEFCF   hover wash, soft chip backgrounds
- *   moss.500  #3C9322   brand green — primary buttons, active state, links
- *   moss.600  #2F7619   hover on primary button
- *   moss.700  #1F5410   deep contrast — focused borders, brand wordmark
+ * Tailwind class names stay legible:
+ *   bg-moss-500  → brand green (#3B9322), same as `DankColor.primary`
+ *   bg-moss-50   → tinted background for active nav, success pills
+ *   bg-moss-600  → hover state on primary buttons, same as `DankColor.primaryDark`
+ *   text-ember   → past-SLA / payment failed
+ *   text-warning → slowing, needs attention
  *
- *   slate.*  (Tailwind defaults) used for everything else — bg, borders,
- *   secondary text. We do NOT redefine slate; we lean on Tailwind's
- *   shipped palette so future components compose without re-aliasing.
- *
- *   ember/warning/danger preserved for status badges:
- *     ember   #C75D2C   "behind" / past-SLA, payment failed
- *     warning #C7A03C   slowing, needs attention
- *
- * CSS variables for the time-since-placed stale-order badges (Phase 14)
- * are declared in globals.css; the Tailwind tokens just expose them so
- * `bg-time-green` etc. compile.
+ * The `moss` alias predates the token package; new components should
+ * prefer the `primary` alias (same scale) so future renames are
+ * mechanical.
  */
 const config: Config = {
   darkMode: 'class',
@@ -31,20 +27,18 @@ const config: Config = {
     extend: {
       colors: {
         moss: {
-          50: '#F1F8ED',
-          100: '#DDEFCF',
-          200: '#BFE0A7',
-          300: '#9AD081',
-          400: '#6FBC4F',
-          500: '#3C9322',
-          600: '#2F7619',
-          700: '#1F5410',
-          800: '#16400B',
-          900: '#0E2A07',
-          DEFAULT: '#3C9322',
+          ...tokens.color.primary,
+          DEFAULT: tokens.color.primary[500],
         },
-        ember: '#C75D2C',
-        warning: '#C7A03C',
+        primary: {
+          ...tokens.color.primary,
+          DEFAULT: tokens.color.primary[500],
+        },
+        ember: tokens.color.status.ember,
+        warning: tokens.color.status.attention,
+        success: tokens.color.semantic.success,
+        danger: tokens.color.semantic.danger,
+        info: tokens.color.semantic.info,
         time: {
           green: 'var(--time-green)',
           yellow: 'var(--time-yellow)',
@@ -82,16 +76,11 @@ const config: Config = {
         '2xl': '1.125rem',
       },
       boxShadow: {
-        // very light card; meant to hint at elevation, not announce it.
-        sm: '0 1px 2px rgb(15 23 42 / 0.04)',
-        // hover/focused card.
-        md: '0 4px 12px -2px rgb(15 23 42 / 0.06), 0 2px 4px -2px rgb(15 23 42 / 0.04)',
-        // dropdown / popover.
-        lg: '0 12px 32px -8px rgb(15 23 42 / 0.12), 0 4px 8px -4px rgb(15 23 42 / 0.06)',
-        // dialog / command palette.
-        xl: '0 24px 64px -12px rgb(15 23 42 / 0.18), 0 8px 16px -8px rgb(15 23 42 / 0.08)',
-        // inner focus ring on inputs (Tailwind's ring + custom soft outer).
-        ring: '0 0 0 4px rgb(60 147 34 / 0.12)',
+        sm: tokens.shadow.sm.css,
+        md: tokens.shadow.md.css,
+        lg: tokens.shadow.lg.css,
+        xl: tokens.shadow.xl.css,
+        ring: tokens.shadow.ring.css,
       },
       transitionTimingFunction: {
         'out-quint': 'cubic-bezier(0.22, 1, 0.36, 1)',
