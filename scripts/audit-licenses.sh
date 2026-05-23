@@ -31,31 +31,58 @@ if [[ -z "${output}" ]]; then
   exit 1
 fi
 
+# The pnpm licenses JSON is fed to node over stdin, not as argv. With
+# the full transitive graph (~hundreds of packages once OTel + ioredis
+# instrumentations are pulled in), the serialized JSON easily exceeds
+# the kernel ARG_MAX limit, which previously broke this script with
+# "Argument list too long". Stdin has no such cap.
 violations="$(
-  node --input-type=module -e "
-    const raw = process.argv[1];
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch (err) {
-      console.error('audit-licenses: pnpm licenses output was not JSON');
-      console.error(err.message);
-      process.exit(2);
-    }
-    // SPDX prefixes for licenses that either compel source disclosure
-    // (GPL/AGPL/LGPL family) or carry strong copyleft / commercial-use
-    // restrictions incompatible with a closed-source SaaS distribution.
-    const forbidden = /^(AGPL|GPL|LGPL|EPL|MS-PL|CDDL|EUPL|OSL|RPL|SSPL|BUSL|CC-BY-NC)/i;
-    const lines = [];
-    for (const [license, pkgs] of Object.entries(data)) {
-      if (!forbidden.test(license)) continue;
-      for (const pkg of pkgs) {
-        lines.push(\`\${license}: \${pkg.name}@\${pkg.version}\`);
+  printf '%s' "${output}" | node --input-type=module -e "
+    const chunks = [];
+    process.stdin.on('data', (c) => chunks.push(c));
+    process.stdin.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (err) {
+        console.error('audit-licenses: pnpm licenses output was not JSON');
+        console.error(err.message);
+        process.exit(2);
       }
-    }
-    process.stdout.write(lines.join('\n'));
-  " \
-  "${output}"
+      // SPDX prefixes for licenses that either compel source disclosure
+      // (GPL/AGPL/LGPL family) or carry strong copyleft / commercial-use
+      // restrictions incompatible with a closed-source SaaS distribution.
+      //
+      // LGPL is included in the forbidden set as the default policy, but
+      // dynamically-linked LGPL native binaries (libvips via sharp) are
+      // exempt — LGPL §4 permits proprietary linkage as long as the
+      // library can be replaced and is not modified. The allowlist below
+      // enumerates the specific packages covered by this exemption; any
+      // new LGPL dep falls through to the failure path and forces a
+      // legal review.
+      const forbidden = /^(AGPL|GPL|LGPL|EPL|MS-PL|CDDL|EUPL|OSL|RPL|SSPL|BUSL|CC-BY-NC)/i;
+      const allowedLgplPrefixes = ['@img/sharp-libvips-'];
+      const lines = [];
+      for (const [license, pkgs] of Object.entries(data)) {
+        if (!forbidden.test(license)) continue;
+        const isLgpl = /^LGPL/i.test(license);
+        for (const pkg of pkgs) {
+          if (
+            isLgpl &&
+            allowedLgplPrefixes.some((p) => pkg.name.startsWith(p))
+          ) {
+            continue;
+          }
+          const versions = Array.isArray(pkg.versions)
+            ? pkg.versions.join(',')
+            : (pkg.version ?? 'unknown');
+          lines.push(\`\${license}: \${pkg.name}@\${versions}\`);
+        }
+      }
+      process.stdout.write(lines.join('\n'));
+    });
+  "
 )"
 
 if [[ -n "${violations}" ]]; then
