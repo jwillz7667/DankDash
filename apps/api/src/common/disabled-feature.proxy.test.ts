@@ -1,0 +1,74 @@
+import { FeatureDisabledError } from '@dankdash/types';
+import { describe, expect, it } from 'vitest';
+import { createDisabledFeatureProxy } from './disabled-feature.proxy.js';
+
+interface FakeService {
+  createInquiry(userId: string): Promise<void>;
+  apiKey: string;
+}
+
+describe('createDisabledFeatureProxy', () => {
+  it('throws FeatureDisabledError on any method access', () => {
+    const proxy = createDisabledFeatureProxy<FakeService>('persona');
+    expect(() => proxy.createInquiry('u_1')).toThrowError(FeatureDisabledError);
+  });
+
+  it('encodes the feature name + invoked property into the error details', () => {
+    const proxy = createDisabledFeatureProxy<FakeService>('aeropay');
+    try {
+      void proxy.apiKey;
+      expect.fail('expected access to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(FeatureDisabledError);
+      const error = err as FeatureDisabledError;
+      expect(error.code).toBe('FEATURE_DISABLED');
+      expect(error.statusCode).toBe(503);
+      expect(error.details).toEqual({ feature: 'aeropay', invokedProperty: 'apiKey' });
+    }
+  });
+
+  it('returns undefined for symbol property access so framework introspection works', () => {
+    const proxy = createDisabledFeatureProxy<FakeService>('persona') as unknown as {
+      [Symbol.toPrimitive]?: () => string;
+      [Symbol.iterator]?: () => Iterator<unknown>;
+    };
+    expect(proxy[Symbol.toPrimitive]).toBeUndefined();
+    expect(proxy[Symbol.iterator]).toBeUndefined();
+  });
+
+  it('returns undefined for `then` so the proxy stays awaitable without tripping', async () => {
+    const proxy = createDisabledFeatureProxy<FakeService>('twilio');
+    // `Promise.resolve(value)` checks `value.then`; if `then` threw, the
+    // await chain itself would surface the feature-disabled error before
+    // user code had a chance to react. Returning undefined keeps the
+    // proxy resolvable to itself so the calling code can structure
+    // method invocations as it sees fit.
+    await expect(Promise.resolve(proxy)).resolves.toBe(proxy);
+  });
+
+  it('returns undefined for NestJS lifecycle hooks so module bootstrap can skip them', () => {
+    const proxy = createDisabledFeatureProxy<FakeService>('persona') as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(proxy['onModuleInit']).toBeUndefined();
+    expect(proxy['onApplicationBootstrap']).toBeUndefined();
+    expect(proxy['onModuleDestroy']).toBeUndefined();
+    expect(proxy['beforeApplicationShutdown']).toBeUndefined();
+    expect(proxy['onApplicationShutdown']).toBeUndefined();
+  });
+
+  it('returns undefined for Object.prototype names so framework provider scans do not crash', () => {
+    // @nestjs/event-emitter walks Object.getOwnPropertyNames(Object.prototype)
+    // on every provider instance to find decorated event listeners; if those
+    // accesses threw, the EventSubscribersLoader bootstrap hook crashes the
+    // app before HTTP starts. See: file:///repo/.../event-subscribers.loader.js
+    const proxy = createDisabledFeatureProxy<FakeService>('persona') as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const inherited of Object.getOwnPropertyNames(Object.prototype)) {
+      expect(proxy[inherited]).toBeUndefined();
+    }
+  });
+});

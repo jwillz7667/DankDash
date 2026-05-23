@@ -23,7 +23,7 @@ ARG PNPM_VERSION
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     CI=1
-RUN apk add --no-cache libc6-compat tini \
+RUN apk add --no-cache libc6-compat tini bash \
  && corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate
 WORKDIR /repo
@@ -36,12 +36,11 @@ WORKDIR /repo
 # build in the right order.
 # ----------------------------------------------------------------------------
 FROM base AS build
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
-COPY tsconfig.base.json ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json ./
+COPY scripts ./scripts
 COPY packages ./packages
 COPY apps/api ./apps/api
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter "@dankdash/api..."
+RUN pnpm install --frozen-lockfile --filter "@dankdash/api..."
 RUN pnpm --filter "@dankdash/api^..." build \
  && pnpm --filter "@dankdash/api" build
 
@@ -54,11 +53,11 @@ RUN pnpm --filter "@dankdash/api^..." build \
 FROM base AS runtime
 ENV NODE_ENV=production
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY scripts ./scripts
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
 COPY --from=build /repo/apps/api/dist ./apps/api/dist
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --prod --filter "@dankdash/api..."
+RUN pnpm install --frozen-lockfile --prod --filter "@dankdash/api..."
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]

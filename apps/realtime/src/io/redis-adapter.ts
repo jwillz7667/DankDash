@@ -38,7 +38,12 @@ export function createRedisAdapterClients(options: RedisAdapterOptions): RedisAd
     maxRetriesPerRequest: 3,
     enableReadyCheck: true,
     keyPrefix: `${prefix}:`,
+    // `family: 0` is required for Railway private networking — see the
+    // commentary on apps/api/src/infrastructure/redis.module.ts.
+    family: 0,
   });
+  // `.duplicate()` inherits the options above, so the subClient also
+  // gets `family: 0` without an explicit second arg here.
   const subClient = pubClient.duplicate();
   return { pubClient, subClient };
 }

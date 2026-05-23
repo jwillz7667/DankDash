@@ -212,13 +212,17 @@ async function main(): Promise<void> {
   // ioredis serialises commands per connection and the ingest connection
   // spends most of its time BLOCKed on XREADGROUP; any XADD/GET queued
   // behind it would wait up to `blockMs` for no reason.
+  // `family: 0` is required for Railway private networking — see the
+  // commentary on apps/api/src/infrastructure/redis.module.ts.
   const etaCacheRedis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
+    family: 0,
   });
   const etaPublishRedis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
+    family: 0,
   });
   for (const [name, client] of [
     ['eta-cache', etaCacheRedis],

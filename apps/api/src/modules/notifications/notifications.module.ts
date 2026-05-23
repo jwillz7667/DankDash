@@ -11,9 +11,14 @@
  *     `ORDER_TRANSITIONED_EVENT` and routes each transition to the right
  *     template + payload.
  *
- * Provider construction is gated by env. Twilio/Resend/APNs each
- * `getOrThrow` their required keys — production fails fast at boot if
- * any are missing. (See `packages/config/src/env.ts` for the schema.)
+ * Provider construction is gated by env. APNs is always-on (its creds
+ * are required at boot). Twilio and Resend are toggled by `ENABLE_TWILIO`
+ * and `ENABLE_RESEND` (default `true`): when the flag is `false` the
+ * factory installs a `NullNotificationProvider` that records every send
+ * as a non-retryable skip on the notification row, so the order
+ * lifecycle continues without crashing for a deployment that hasn't yet
+ * acquired Twilio/Resend credentials. When the flag is `true`, each
+ * `getOrThrow` enforces the credentials' presence — fail-fast at boot.
  *
  * Repository wiring follows the FactoryProvider pattern the rest of the
  * API uses (see compliance.module.ts, payments.module.ts).
@@ -54,6 +59,7 @@ import {
   type NotificationDedupeStore,
 } from './notification-dedupe.store.js';
 import { NotificationDispatcher } from './notification-dispatcher.service.js';
+import { NullNotificationProvider } from './null-notification.provider.js';
 import { OrderNotificationsListener } from './order-notifications.listener.js';
 import { PushTokensController } from './push-tokens.controller.js';
 import { PushTokensService } from './push-tokens.service.js';
@@ -131,6 +137,9 @@ const smsProviderFactory: FactoryProvider<NotificationProvider> = {
   provide: SMS_PROVIDER,
   inject: [ConfigService],
   useFactory: (config: ConfigService): NotificationProvider => {
+    if (!config.getOrThrow<boolean>('ENABLE_TWILIO')) {
+      return new NullNotificationProvider('sms', 'TWILIO');
+    }
     const accountSid = config.getOrThrow<string>('TWILIO_ACCOUNT_SID');
     const authToken = config.getOrThrow<string>('TWILIO_AUTH_TOKEN');
     const client = twilio(accountSid, authToken);
@@ -163,6 +172,9 @@ const emailProviderFactory: FactoryProvider<NotificationProvider> = {
   provide: EMAIL_PROVIDER,
   inject: [ConfigService],
   useFactory: (config: ConfigService): NotificationProvider => {
+    if (!config.getOrThrow<boolean>('ENABLE_RESEND')) {
+      return new NullNotificationProvider('email', 'RESEND');
+    }
     const apiKey = config.getOrThrow<string>('RESEND_API_KEY');
     const fromEmail = config.getOrThrow<string>('RESEND_FROM_EMAIL');
     const resend = new Resend(apiKey);

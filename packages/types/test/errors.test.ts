@@ -6,6 +6,7 @@ import {
   ConflictError,
   DomainError,
   ExternalServiceError,
+  FeatureDisabledError,
   ForbiddenError,
   InventoryError,
   KycError,
@@ -34,6 +35,7 @@ describe('DomainError hierarchy', () => {
       new RepositoryError('orders insert returned no row'),
       new ConfigError('CONFIG_INVALID', 'JWT_PRIVATE_KEY_BASE64 is not base64'),
       new KycError('KYC_AGE_UNDER_MINIMUM', 'applicant under 21'),
+      new FeatureDisabledError('persona'),
     ];
 
     for (const error of samples) {
@@ -133,6 +135,14 @@ describe('DomainError hierarchy', () => {
     const error = new KycError('KYC_AGE_UNDER_MINIMUM', 'too young', { age: 19, minimum: 21 });
     expect(error.details).toEqual({ age: 19, minimum: 21 });
     expect(error.statusCode).toBe(422);
+  });
+
+  it('FeatureDisabledError is a 503 with the feature name in details', () => {
+    const error = new FeatureDisabledError('aeropay', { invokedProperty: 'charge' });
+    expect(error.statusCode).toBe(503);
+    expect(error.code).toBe('FEATURE_DISABLED');
+    expect(error.details).toEqual({ feature: 'aeropay', invokedProperty: 'charge' });
+    expect(error.message).toBe("feature 'aeropay' is disabled");
   });
 
   it('preserves cause when provided (Node error chaining)', () => {

@@ -115,6 +115,13 @@ export const EnvSchema = z
     ENABLE_METRC: booleanFromString.default(false),
     ENABLE_PERSONA: booleanFromString.default(true),
     ENABLE_VERIFF: booleanFromString.default(true),
+    // Twilio (transactional SMS) and Resend (transactional email) are
+    // surfaced as feature flags so deployments without those creds can
+    // boot. When the flag is `false` the API installs a no-op provider
+    // that records a non-retryable skip on every send — the order
+    // lifecycle continues, the notification row carries the reason.
+    ENABLE_TWILIO: booleanFromString.default(true),
+    ENABLE_RESEND: booleanFromString.default(true),
 
     /**
      * Routes driver cashout requests to the real
@@ -138,9 +145,17 @@ export type Env = z.infer<typeof EnvSchema>;
 export interface LoadEnvOptions {
   readonly source?: NodeJS.ProcessEnv;
   /**
-   * When true, missing optional secrets are tolerated even in production.
-   * Only safe for the typecheck/lint/test entrypoints in CI — production
-   * boot must always fail fast.
+   * When `true`, missing optional secrets are tolerated. Used in CI lint /
+   * typecheck / test entrypoints that don't actually call third-party APIs.
+   *
+   * When omitted, the loader falls back to `source.ALLOW_PARTIAL_ENV === '1'`
+   * so a single env-var opt-in works uniformly for every call site —
+   * including module factories (drizzle, redis, rate-limit) that invoke
+   * `loadEnv()` with no arguments and the NestJS `ConfigModule.validate`
+   * bootstrap callback that receives `raw` but never explicit options.
+   *
+   * Set to `false` explicitly to force strict mode even when the env var
+   * is present.
    */
   readonly allowPartial?: boolean;
 }
@@ -156,9 +171,43 @@ export class EnvValidationError extends Error {
   }
 }
 
+/**
+ * Like `schema.partial()` but preserves `.default(...)` semantics.
+ *
+ * `ZodObject.partial()` wraps every field in `ZodOptional`, which causes
+ * Zod to short-circuit on `undefined` *before* the inner `ZodDefault`
+ * has a chance to apply. The net effect is that env keys with sensible
+ * defaults silently become `undefined` whenever the partial path is taken
+ * — for example `SOCKET_CORS_ORIGINS` (defaults to `''`) crashed the
+ * realtime bootstrap with "Cannot read properties of undefined (reading
+ * 'trim')" when ALLOW_PARTIAL_ENV=1 was set.
+ *
+ * This helper only relaxes fields that are not already tolerant of
+ * `undefined` (`ZodDefault`, `ZodOptional`, `ZodNullable`). Required
+ * secrets become optional; defaulted/optional fields keep their existing
+ * shape so the default value is honored.
+ *
+ * Exported so per-app slim schemas (e.g. `apps/realtime/src/env.ts`)
+ * can use the same partial semantics as the shared loader.
+ */
+export function partialKeepingDefaults<T extends z.ZodRawShape>(
+  schema: z.ZodObject<T>,
+): z.ZodObject<z.ZodRawShape> {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, field] of Object.entries(schema.shape)) {
+    const f = field;
+    const typeName = (f._def as { typeName?: string }).typeName;
+    const tolerantOfUndefined =
+      typeName === 'ZodDefault' || typeName === 'ZodOptional' || typeName === 'ZodNullable';
+    shape[key] = tolerantOfUndefined ? f : f.optional();
+  }
+  return z.object(shape).passthrough();
+}
+
 export function loadEnv(options: LoadEnvOptions = {}): Env {
   const source = options.source ?? process.env;
-  const schema = options.allowPartial === true ? EnvSchema.partial() : EnvSchema;
+  const allowPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
+  const schema = allowPartial ? partialKeepingDefaults(EnvSchema) : EnvSchema;
   const result = schema.safeParse(source);
 
   if (!result.success) {

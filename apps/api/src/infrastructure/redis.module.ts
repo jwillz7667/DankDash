@@ -51,6 +51,13 @@ const redisProvider: FactoryProvider<Redis> = {
       // against an unreachable Redis. The default is 20.
       maxRetriesPerRequest: isTest ? 0 : 3,
       enableReadyCheck: !isTest,
+      // Railway's private network (`*.railway.internal`) resolves to
+      // AAAA records only; Node's default dns.lookup prefers IPv4 and
+      // would hang the connect attempt with ETIMEDOUT. `family: 0`
+      // makes the resolver accept either family — IPv6 on Railway,
+      // IPv4 on docker-compose localhost — without per-environment
+      // branching.
+      family: 0,
     };
     return new Redis(env.REDIS_URL, options);
   },
