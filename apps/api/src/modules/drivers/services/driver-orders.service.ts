@@ -187,7 +187,7 @@ export class DriverOrdersService {
   ): Promise<DriverOrderDetailResponse> {
     const [items, events, customer, dispensary] = await Promise.all([
       scoped.orderItems.listForOrder(order.id),
-      scoped.orderEvents.listTimelineForOrder(order.id),
+      scoped.orderEvents.listForOrder(order.id),
       scoped.users.findById(order.userId),
       scoped.dispensaries.findById(order.dispensaryId),
     ]);
