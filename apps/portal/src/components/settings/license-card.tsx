@@ -77,8 +77,8 @@ export function LicenseCard({
             role="alert"
             className={
               status === 'warn'
-                ? 'flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800'
-                : 'flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800'
+                ? 'flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning'
+                : 'flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger'
             }
           >
             <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 flex-none" />
@@ -114,12 +114,12 @@ function Field({
 }): ReactNode {
   return (
     <div className="space-y-0.5">
-      <dt className="text-2xs font-medium uppercase tracking-wider text-slate-500">{label}</dt>
+      <dt className="text-2xs font-medium uppercase tracking-wider text-muted">{label}</dt>
       <dd
         className={
           mono
-            ? 'text-sm font-medium text-slate-900 font-mono tracking-tight'
-            : 'text-sm font-medium text-slate-900'
+            ? 'text-sm font-medium text-foreground font-mono tracking-tight'
+            : 'text-sm font-medium text-foreground'
         }
       >
         {value}

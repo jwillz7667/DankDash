@@ -23,8 +23,8 @@ export default function AnalyticsLayout({ children }: { readonly children: React
           <p className="text-2xs font-semibold uppercase tracking-wider text-moss-600">
             Performance
           </p>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Analytics</h1>
-          <p className="max-w-2xl text-sm text-slate-500">
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">Analytics</h1>
+          <p className="max-w-2xl text-sm text-muted">
             Revenue, top sellers, and the slow-movers that need attention. Numbers cover delivered
             orders only — pending and returned orders don't count.
           </p>

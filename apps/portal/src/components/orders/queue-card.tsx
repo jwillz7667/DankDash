@@ -88,9 +88,9 @@ export function QueueCard({
           onSelect(order.id);
         }}
         className={cn(
-          'group relative w-full rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm',
-          'transition-colors duration-150 hover:border-slate-300 hover:shadow-md',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50',
+          'group relative w-full rounded-xl border border-outline bg-surface p-3 text-left shadow-sm',
+          'transition-colors duration-150 hover:border-outline-strong hover:shadow-md',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-muted',
           isDraggable && 'cursor-grab touch-none active:cursor-grabbing',
           draggable.isDragging && 'shadow-lg',
         )}
@@ -106,7 +106,7 @@ export function QueueCard({
         {isDraggable && (
           <GripVertical
             aria-hidden="true"
-            className="absolute right-2 top-2 h-3.5 w-3.5 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100"
+            className="absolute right-2 top-2 h-3.5 w-3.5 text-muted opacity-0 transition-opacity group-hover:opacity-100"
           />
         )}
         <CardContent
@@ -122,7 +122,7 @@ export function QueueCard({
 
   return (
     <article
-      className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition-colors duration-150 hover:border-slate-300 hover:shadow-md"
+      className="rounded-xl border border-outline bg-surface p-3 shadow-sm transition-colors duration-150 hover:border-outline-strong hover:shadow-md"
       data-testid="queue-card"
       data-order-id={order.id}
       data-age-tone={tone}
@@ -157,16 +157,16 @@ function CardContent({
     <>
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
-          <p className="truncate text-sm font-semibold tracking-tight text-slate-900">
+          <p className="truncate text-sm font-semibold tracking-tight text-foreground">
             {customerLabel}
           </p>
-          <p className="font-tabular text-xs text-slate-500">{formatShortCode(order.shortCode)}</p>
+          <p className="font-tabular text-xs text-muted">{formatShortCode(order.shortCode)}</p>
         </div>
-        <span className="font-tabular text-sm font-medium text-slate-900">
+        <span className="font-tabular text-sm font-medium text-foreground">
           {formatMoney(order.totalCents)}
         </span>
       </header>
-      <dl className="mt-3 flex items-center gap-3 text-xs text-slate-500">
+      <dl className="mt-3 flex items-center gap-3 text-xs text-muted">
         <div className="flex items-center gap-1">
           <Package aria-hidden="true" className="h-3.5 w-3.5" />
           <dt className="sr-only">Item count</dt>
@@ -180,7 +180,7 @@ function CardContent({
           <dt className="sr-only">Time in current status</dt>
           <dd>{ageLabel}</dd>
         </div>
-        <div className="ml-auto flex items-center gap-1 text-slate-400">
+        <div className="ml-auto flex items-center gap-1 text-muted">
           <User aria-hidden="true" className="h-3.5 w-3.5" />
           <dt className="sr-only">Customer reference</dt>
           <dd className="font-tabular">{order.userId.slice(0, 6)}</dd>
@@ -193,12 +193,12 @@ function CardContent({
 /**
  * Tailwind classes for each escalation tone. Kept near the component
  * so a designer tweaking the palette doesn't have to chase the helper.
- * The "calm" tone leans on slate-500 (the default body text color)
+ * The "calm" tone leans on `text-muted` (the default body text color)
  * rather than green, since a card under five minutes old isn't trying
  * to draw attention — it just isn't behind.
  */
 const AGE_TONE_TEXT: Record<AgeTone, string> = {
-  success: 'text-slate-500',
-  warning: 'text-amber-700',
-  danger: 'text-rose-700',
+  success: 'text-muted',
+  warning: 'text-warning',
+  danger: 'text-danger',
 };

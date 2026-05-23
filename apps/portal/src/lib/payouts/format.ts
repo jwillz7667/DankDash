@@ -78,11 +78,11 @@ const STATUS_LABELS: Readonly<Record<VendorPayoutStatus, string>> = {
 };
 
 const STATUS_CLASSES: Readonly<Record<VendorPayoutStatus, string>> = {
-  pending: 'bg-slate-100 text-slate-700 ring-slate-200',
-  processing: 'bg-amber-50 text-amber-700 ring-amber-200',
+  pending: 'bg-surface-subtle text-secondary ring-outline',
+  processing: 'bg-warning-soft text-warning ring-warning/30',
   completed: 'bg-moss-100 text-moss-800 ring-moss-200',
-  failed: 'bg-rose-50 text-rose-700 ring-rose-200',
-  canceled: 'bg-slate-100 text-slate-500 ring-slate-200',
+  failed: 'bg-danger-soft text-danger ring-danger/30',
+  canceled: 'bg-surface-subtle text-muted ring-outline',
 };
 
 export function payoutStatusBadge(status: VendorPayoutStatus): StatusBadgeProps {

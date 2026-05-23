@@ -85,12 +85,12 @@ export function deltaForBigger(current: number, previous: number): DeltaSummary 
  * renders flat slate.
  */
 const HEAT_STEPS = [
-  'bg-slate-100 text-slate-400',
+  'bg-surface-subtle text-muted',
   'bg-moss-100 text-moss-800',
   'bg-moss-200 text-moss-900',
   'bg-moss-300 text-moss-900',
-  'bg-moss-400 text-white',
-  'bg-moss-500 text-white',
+  'bg-moss-400 text-on-primary',
+  'bg-moss-500 text-on-primary',
 ] as const;
 
 export function heatmapClass(normalized: number | null): string {

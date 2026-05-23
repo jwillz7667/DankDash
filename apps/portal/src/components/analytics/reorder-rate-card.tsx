@@ -18,17 +18,17 @@ export interface ReorderRateCardProps {
 export function ReorderRateCard({ reorderRate }: ReorderRateCardProps): ReactNode {
   const { customerCount, repeatCustomerCount, rate } = reorderRate;
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-outline bg-surface p-6 shadow-sm">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Reorder rate</p>
+        <p className="text-xs font-medium uppercase tracking-wider text-muted">Reorder rate</p>
         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-moss-50 text-moss-700">
           <Repeat aria-hidden="true" className="h-4 w-4" />
         </span>
       </div>
-      <p className="mt-4 font-tabular text-3xl font-semibold tracking-tight text-slate-900">
+      <p className="mt-4 font-tabular text-3xl font-semibold tracking-tight text-foreground">
         {customerCount === 0 ? '—' : formatPercent(rate)}
       </p>
-      <p className="mt-2 text-xs text-slate-500">
+      <p className="mt-2 text-xs text-muted">
         {customerCount === 0
           ? 'No delivered orders in this window yet.'
           : `${repeatCustomerCount.toString()} of ${customerCount.toString()} customers reordered`}

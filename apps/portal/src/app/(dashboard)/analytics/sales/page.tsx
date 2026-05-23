@@ -61,7 +61,7 @@ export default async function SalesPage({ searchParams }: SalesPageProps): Promi
 
   return (
     <div className="flex flex-col gap-6" data-testid="analytics-sales">
-      <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+      <p className="text-xs font-medium uppercase tracking-wider text-muted">
         {formatWindowLabel(analytics.from, analytics.to)}
       </p>
 
@@ -137,13 +137,13 @@ function NoDispensaryContext(): ReactNode {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
       <Card>
         <CardBody className="space-y-3 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-warning-soft text-warning">
             <AlertTriangle aria-hidden="true" className="h-5 w-5" />
           </div>
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
             No dispensary context
           </h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             Analytics are scoped to an active dispensary. Accept your invitation or contact your
             owner to grant access.
           </p>
@@ -165,13 +165,13 @@ function AnalyticsFetchError({
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
       <Card>
         <CardBody className="space-y-3 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-700">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-danger-soft text-danger">
             <AlertTriangle aria-hidden="true" className="h-5 w-5" />
           </div>
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
             Couldn't load analytics
           </h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             We couldn't load sales analytics for {storeName}. Refresh the page; if it keeps failing,
             ping DankDash support.
           </p>

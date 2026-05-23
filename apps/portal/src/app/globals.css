@@ -17,12 +17,12 @@
 
 @layer base {
   html {
-    @apply text-slate-900 antialiased;
+    @apply text-foreground antialiased;
     font-feature-settings: 'ss01', 'cv01', 'cv11';
   }
 
   body {
-    @apply bg-white;
+    @apply bg-surface;
   }
 
   .font-tabular {
@@ -43,7 +43,7 @@
 
 @layer components {
   .surface-muted {
-    @apply bg-slate-50;
+    @apply bg-surface-muted;
   }
 
   .scrollbar-slim {

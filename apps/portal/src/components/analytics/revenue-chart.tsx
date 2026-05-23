@@ -131,7 +131,7 @@ export function RevenueChart({ from, to, hourly, forcedWidth }: RevenueChartProp
       <div
         role="figure"
         aria-label="Revenue trend"
-        className="flex h-64 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500"
+        className="flex h-64 items-center justify-center rounded-xl border border-dashed border-outline bg-surface-muted text-sm text-muted"
       >
         No revenue in this window.
       </div>
@@ -187,10 +187,10 @@ function RevenueTooltip({ active, payload, label }: RevenueTooltipProps): ReactN
   const datum = payload[0]?.payload;
   if (!datum) return null;
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs shadow-md">
-      <p className="font-semibold text-slate-900">{String(label ?? '')}</p>
-      <p className="text-slate-600">{formatMoney(datum.revenueCents)} revenue</p>
-      <p className="text-slate-500">
+    <div className="rounded-lg border border-outline bg-surface px-3 py-2 text-xs shadow-md">
+      <p className="font-semibold text-foreground">{String(label ?? '')}</p>
+      <p className="text-secondary">{formatMoney(datum.revenueCents)} revenue</p>
+      <p className="text-muted">
         {datum.orderCount.toString()} order{datum.orderCount === 1 ? '' : 's'}
       </p>
     </div>

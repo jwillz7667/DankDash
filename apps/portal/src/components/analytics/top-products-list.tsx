@@ -19,7 +19,7 @@ export function TopProductsList({ products, limit }: TopProductsListProps): Reac
 
   if (rows.length === 0) {
     return (
-      <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+      <p className="rounded-xl border border-dashed border-outline bg-surface-muted px-4 py-8 text-center text-sm text-muted">
         No sales in this window yet.
       </p>
     );
@@ -35,23 +35,23 @@ export function TopProductsList({ products, limit }: TopProductsListProps): Reac
           <li key={product.productId} className="flex flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-slate-900">
-                  <span className="mr-2 inline-block w-4 text-2xs font-semibold text-slate-400">
+                <p className="truncate text-sm font-medium text-foreground">
+                  <span className="mr-2 inline-block w-4 text-2xs font-semibold text-muted">
                     {(index + 1).toString()}.
                   </span>
                   {product.brand} — {product.name}
                 </p>
-                <p className="ml-6 text-xs text-slate-500">
+                <p className="ml-6 text-xs text-muted">
                   {product.unitsSold.toString()} unit{product.unitsSold === 1 ? '' : 's'}
                 </p>
               </div>
-              <p className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+              <p className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
                 {formatMoney(product.revenueCents)}
               </p>
             </div>
             <div
               aria-hidden="true"
-              className="ml-6 h-1.5 overflow-hidden rounded-full bg-slate-100"
+              className="ml-6 h-1.5 overflow-hidden rounded-full bg-surface-subtle"
             >
               <div
                 className="h-full rounded-full bg-moss-500"
