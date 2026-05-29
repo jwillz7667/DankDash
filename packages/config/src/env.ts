@@ -175,7 +175,22 @@ export function partialKeepingDefaults<T extends z.ZodRawShape>(
 
 export function loadEnv(options: LoadEnvOptions = {}): Env {
   const source = options.source ?? process.env;
-  const allowPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
+  const requestedPartial = options.allowPartial ?? source['ALLOW_PARTIAL_ENV'] === '1';
+
+  // Partial mode relaxes every required secret (JWT keys, column-encryption
+  // key, payment/identity creds) to optional so CI lint/typecheck/test
+  // entrypoints can boot without real secrets. In production that same
+  // relaxation is a critical failure: the process would silently come up
+  // with no auth signing key or no encryption key and serve traffic. So the
+  // opt-in is refused whenever NODE_ENV resolves to production — regardless
+  // of the env var OR an explicit `allowPartial: true` — and production
+  // always validates strictly, failing loudly via EnvValidationError on any
+  // missing secret. NODE_ENV is read from the same source; a leftover
+  // ALLOW_PARTIAL_ENV=1 in prod is harmless when all secrets are present and
+  // produces a clear validation error when they are not.
+  const isProduction = source['NODE_ENV'] === 'production';
+  const allowPartial = requestedPartial && !isProduction;
+
   const schema = allowPartial ? partialKeepingDefaults(EnvSchema) : EnvSchema;
   const result = schema.safeParse(source);
 
