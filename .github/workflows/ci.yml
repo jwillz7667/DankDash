@@ -21,7 +21,9 @@ jobs:
   verify:
     name: typecheck / lint / test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Headroom for the API suite running twice (broad `Test` + payments
+    # coverage gate), each booting a Postgres testcontainer.
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
@@ -103,11 +105,25 @@ jobs:
         run: pnpm lint
 
       - name: Test
-        # Coverage is not a merge gate; the compliance-gate job below re-runs the
-        # @dankdash/compliance suite separately for the 100% requirement. Adding
-        # `--coverage` here would need @vitest/coverage-v8 in every package and a
-        # turbo pass-through dance — not worth the churn for a green/red signal.
+        # Broad green/red signal across every package. No `--coverage` here:
+        # 8 packages lack @vitest/coverage-v8 and would error, and turbo does
+        # not hash pass-through args (a cached run would skip coverage anyway).
+        # Per-gate coverage is enforced in the dedicated steps below. As a side
+        # effect this turbo run produces dist/ for every workspace package via
+        # the `^build` chain, so the filtered coverage run below resolves its
+        # workspace deps without a separate build.
         run: pnpm test
+        env:
+          NODE_ENV: test
+
+      - name: Coverage gate (API payments)
+        # Re-runs ONLY the API suite with coverage to enforce the payments
+        # module's mandated 100% lines/statements/functions threshold
+        # (apps/api/vitest.config.ts). Direct `pnpm --filter` rather than turbo
+        # so the `--coverage` flag is honoured (turbo would replay the cached,
+        # non-coverage `Test` result above). Workspace deps' dist already exist
+        # from that run.
+        run: pnpm --filter @dankdash/api test -- --coverage
         env:
           NODE_ENV: test
 
@@ -148,11 +164,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run compliance tests
+      - name: Run compliance tests with coverage
         # The @dankdash/compliance package is the existential gate — its tests
-        # must pass before any merge to main or any deploy. Implementation
-        # lives under packages/compliance and is scaffolded in Phase 3.
+        # must pass AND hit 100% (lines/statements/functions/branches, enforced
+        # by packages/compliance/vitest.config.ts) before any merge to main or
+        # any deploy.
+        #
         # Route through turbo (not pnpm --filter) so the `^build` dependency
         # chain produces dist/ for @dankdash/dispensaries and @dankdash/types
         # before vitest tries to resolve them.
-        run: pnpm turbo run test --filter @dankdash/compliance
+        #
+        # `--force` is REQUIRED: turbo's `test` task hashes src/test/config but
+        # NOT pass-through args, so a cached non-coverage result would otherwise
+        # be replayed and the `--coverage` thresholds silently skipped.
+        run: pnpm turbo run test --filter @dankdash/compliance --force -- --coverage
