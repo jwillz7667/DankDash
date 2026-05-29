@@ -24,6 +24,14 @@
  * singleton the listings vendor surface uses — symmetric with how
  * ListingsModule wires the guard.
  *
+ * OrdersModule is imported for its exported OrderTransitionService — the
+ * single chokepoint for orders.status changes. PaymentMethodsService routes
+ * the Aeropay `payment.failed` webhook through it (event `PAYMENT_FAILED`)
+ * rather than updating the row directly, so the post-commit
+ * OrderTransitionedEvent fires and customers/vendors see the failure surface.
+ * NestJS exports are not transitive, so this pulls in only OrdersService +
+ * OrderTransitionService, not OrdersModule's controllers or ListingsModule.
+ *
  * Why module-level FactoryProviders instead of @Injectable() classes:
  * the aeropay package is plain-TS (no Nest decorators) so each
  * dependency is a constructor call rather than a DI-managed class. A
@@ -56,6 +64,8 @@ import { REDIS_CLIENT } from '../../infrastructure/redis.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { DispensariesModule } from '../dispensaries/dispensaries.module.js';
 import { VendorContextGuard } from '../listings/vendor/vendor-context.guard.js';
+import { OrderTransitionService } from '../orders/order-transition.service.js';
+import { OrdersModule } from '../orders/orders.module.js';
 import { AdminRefundsController } from './admin-refunds.controller.js';
 import { AeropayWebhookController } from './aeropay-webhook.controller.js';
 import { PaymentMethodsController } from './payment-methods.controller.js';
@@ -191,6 +201,7 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     PaymentMethodsRepository,
     PaymentTransactionsRepository,
     OrdersRepository,
+    OrderTransitionService,
     DRIZZLE_DB,
     AEROPAY_CLIENT,
   ],
@@ -198,10 +209,19 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     repo: PaymentMethodsRepository,
     paymentTransactions: PaymentTransactionsRepository,
     orders: OrdersRepository,
+    orderTransitions: OrderTransitionService,
     db: Database,
     client: AeropayClient,
   ): PaymentMethodsService =>
-    new PaymentMethodsService(repo, paymentTransactions, orders, db, settlementReposFor, client),
+    new PaymentMethodsService(
+      repo,
+      paymentTransactions,
+      orders,
+      orderTransitions,
+      db,
+      settlementReposFor,
+      client,
+    ),
 };
 
 const refundsRepoProvider: FactoryProvider<RefundsRepository> = {
@@ -253,7 +273,7 @@ const providers: Provider[] = [
 ];
 
 @Module({
-  imports: [AuthModule, DispensariesModule],
+  imports: [AuthModule, DispensariesModule, OrdersModule],
   controllers: [
     PaymentMethodsController,
     AeropayWebhookController,

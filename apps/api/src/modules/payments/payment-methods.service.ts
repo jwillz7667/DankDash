@@ -42,9 +42,11 @@ import {
   type PaymentTransaction,
   type PaymentTransactionsRepository,
 } from '@dankdash/db';
+import { OrderError } from '@dankdash/orders';
 import { computePlatformFeeCents } from '@dankdash/pricing';
 import { ConflictError, NotFoundError, PaymentError, RepositoryError } from '@dankdash/types';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { OrderTransitionService } from '../orders/order-transition.service.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
 import type {
   LinkAeropayResponse,
@@ -67,10 +69,13 @@ export type SettlementScopedReposFactory = (db: Database) => SettlementScopedRep
 
 @Injectable()
 export class PaymentMethodsService {
+  private readonly logger = new Logger(PaymentMethodsService.name);
+
   constructor(
     private readonly repo: PaymentMethodsRepository,
     private readonly paymentTransactions: PaymentTransactionsRepository,
     private readonly orders: OrdersRepository,
+    private readonly orderTransitions: OrderTransitionService,
     private readonly db: Database,
     private readonly settlementReposFor: SettlementScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
@@ -388,24 +393,49 @@ export class PaymentMethodsService {
       failureCode,
       failureReason,
     });
-    // Transition the order so the vendor/customer surfaces reflect the
-    // failure. `applyTransition` wraps the order UPDATE and the
-    // `payment_failed` event in one transaction so the audit trail
-    // cannot disagree with current state. The resolver here is a no-op
-    // state-machine bypass — the system actor has already established the
-    // failure is authoritative; full machine validation is intentionally
-    // skipped because the order may already be in a terminal-ish state
-    // and the spec requires we still record the payment failure event.
-    await this.orders.applyTransition(tx.orderId, () => ({
-      toStatus: 'payment_failed',
-      eventType: 'payment_failed',
-      payload: {
-        paymentTransactionId: tx.id,
-        aeropayPaymentId,
-        failureCode,
-        failureReason,
-      },
-    }));
+    // Transition the order through the single chokepoint so the authz
+    // matrix, the state-machine guard, the immutable order_events /
+    // order_status_history rows, AND the post-commit OrderTransitionedEvent
+    // (notifications + realtime) all fire — the previous direct
+    // `applyTransition` call skipped the event emit, so customers and
+    // vendors never saw the payment_failed surface update.
+    //
+    // PAYMENT_FAILED is only a legal edge from `placed` — i.e. before the
+    // vendor accepts, since vendor-accept is gated on `payment.authorized`.
+    // An authorization failure (the common case) leaves the order in
+    // `placed`, so it transitions cleanly. A settlement-stage failure can
+    // arrive after the vendor has accepted; the machine refuses to slam a
+    // mid-fulfillment order into a terminal state, so we log it for the
+    // refund/dispute flow rather than 5xx the webhook (the
+    // payment_transactions row already records the failure, and Aeropay
+    // short-circuits on replay via the `tx.status === 'failed'` guard above
+    // so a 5xx would not even re-attempt the transition).
+    try {
+      await this.orderTransitions.transition({
+        orderId: tx.orderId,
+        event: 'PAYMENT_FAILED',
+        actor: { role: 'system' },
+        payload: {
+          paymentTransactionId: tx.id,
+          aeropayPaymentId,
+          failureCode,
+          failureReason,
+        },
+      });
+    } catch (err) {
+      if (
+        err instanceof OrderError &&
+        (err.code === 'ORDER_INVALID_TRANSITION' || err.code === 'ORDER_TERMINAL_STATE')
+      ) {
+        this.logger.warn(
+          `payment.failed for order ${tx.orderId} could not transition to payment_failed ` +
+            `(${err.code}): the order has advanced past 'placed'. Payment marked failed; ` +
+            `refund/dispute flow must reconcile. payment_tx=${tx.id} aeropay_payment=${aeropayPaymentId}`,
+        );
+        return;
+      }
+      throw err;
+    }
   }
 
   private async handlePaymentCanceled(aeropayPaymentId: string, occurredAt: Date): Promise<void> {

@@ -35,9 +35,8 @@ import {
   type PaymentStatus,
   type PaymentTransaction,
   type PaymentTransactionsRepository,
-  type TransitionDecision,
-  type TransitionResolver,
 } from '@dankdash/db';
+import { OrderError } from '@dankdash/orders';
 import { ConflictError, NotFoundError, PaymentError, RepositoryError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
 import {
@@ -46,6 +45,11 @@ import {
   type SettlementScopedReposFactory,
 } from './payment-methods.service.js';
 import type { AeropayClientLike } from './tokens.js';
+import type {
+  OrderTransitionService,
+  TransitionRequest,
+  TransitionResult,
+} from '../orders/order-transition.service.js';
 
 type UpsertPatch = Pick<PaymentMethod, 'aeropayPaymentMethodRef' | 'bankName' | 'last4' | 'status'>;
 type TxStatusPatch = Partial<
@@ -354,32 +358,33 @@ class FakePaymentTransactionsRepo {
 
 class FakeOrdersRepo {
   rows: Order[] = [];
-  // Preserves the historical `{ orderId, ...decision }` shape that the
-  // assertions below check, even though the production code now calls
-  // `applyTransition(orderId, resolver)` — running the resolver against a
-  // stub locked snapshot lets us record the same fields without forcing
-  // every test to read a TransitionResolver back out.
-  transitionStatusCalls: Array<{ orderId: string } & TransitionDecision> = [];
   findByIdCalls: string[] = [];
 
   findById = (id: string): Promise<Order | null> => {
     this.findByIdCalls.push(id);
     return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
   };
+}
 
-  applyTransition = (orderId: string, resolve: TransitionResolver): Promise<Order> => {
-    const row = this.rows.find((r) => r.id === orderId);
-    const decision = resolve({
-      id: orderId,
-      status: row?.status ?? 'placed',
-      userId: row?.userId ?? '',
-      dispensaryId: row?.dispensaryId ?? '',
-      driverId: row?.driverId ?? null,
+/**
+ * Records every `transition()` request the service routes through the
+ * single chokepoint. `nextError` lets a test simulate the state machine
+ * rejecting the PAYMENT_FAILED edge (order advanced past `placed`) so we
+ * can pin both catch branches. The real result is discarded by the
+ * payment-failed path, so the resolved value only needs to type-check.
+ */
+class FakeOrderTransitionService {
+  calls: TransitionRequest[] = [];
+  nextError: Error | null = null;
+
+  transition = (req: TransitionRequest): Promise<TransitionResult> => {
+    this.calls.push(req);
+    if (this.nextError !== null) return Promise.reject(this.nextError);
+    return Promise.resolve({
+      orderId: req.orderId,
+      fromStatus: 'placed',
+      toStatus: 'payment_failed',
     });
-    this.transitionStatusCalls.push({ orderId, ...decision });
-    // Service discards the return value; the cast keeps the signature
-    // honest without forcing every test to assemble a full Order row.
-    return Promise.resolve({ id: orderId, status: decision.toStatus } as unknown as Order);
   };
 }
 
@@ -432,12 +437,14 @@ function build(): {
   repo: FakePaymentMethodsRepo;
   txRepo: FakePaymentTransactionsRepo;
   ordersRepo: FakeOrdersRepo;
+  orderTransitions: FakeOrderTransitionService;
   ledgerRepo: FakeLedgerEntriesRepo;
   aeropay: FakeAeropayClient;
 } {
   const repo = new FakePaymentMethodsRepo();
   const txRepo = new FakePaymentTransactionsRepo();
   const ordersRepo = new FakeOrdersRepo();
+  const orderTransitions = new FakeOrderTransitionService();
   const ledgerRepo = new FakeLedgerEntriesRepo();
   const aeropay = new FakeAeropayClient();
   // The settlement path opens a single transaction. The fake just hands the
@@ -456,11 +463,12 @@ function build(): {
     repo as unknown as PaymentMethodsRepository,
     txRepo as unknown as PaymentTransactionsRepository,
     ordersRepo as unknown as OrdersRepository,
+    orderTransitions as unknown as OrderTransitionService,
     fakeDb,
     settlementReposFor,
     aeropay,
   );
-  return { service, repo, txRepo, ordersRepo, ledgerRepo, aeropay };
+  return { service, repo, txRepo, ordersRepo, orderTransitions, ledgerRepo, aeropay };
 }
 
 describe('PaymentMethodsService.list', () => {
@@ -796,7 +804,7 @@ describe('PaymentMethodsService.applyWebhook', () => {
   });
 
   it('noops on payment.refunded (handled by the refunds service in 6.5)', async () => {
-    const { service, repo, txRepo, ordersRepo, aeropay } = build();
+    const { service, repo, txRepo, orderTransitions, aeropay } = build();
 
     await service.applyWebhook({
       type: 'payment.refunded',
@@ -810,11 +818,11 @@ describe('PaymentMethodsService.applyWebhook', () => {
     expect(repo.updateStatusCalls).toHaveLength(0);
     expect(txRepo.findByProviderRefCalls).toHaveLength(0);
     expect(txRepo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 
   it('noops on payout.* events (handled by the payouts cron in 6.6)', async () => {
-    const { service, repo, txRepo, ordersRepo } = build();
+    const { service, repo, txRepo, orderTransitions } = build();
 
     await service.applyWebhook({
       type: 'payout.paid',
@@ -833,7 +841,7 @@ describe('PaymentMethodsService.applyWebhook', () => {
 
     expect(txRepo.findByProviderRefCalls).toHaveLength(0);
     expect(repo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 });
 
@@ -908,7 +916,7 @@ describe('PaymentMethodsService.applyWebhook — payment.authorized', () => {
   });
 
   it('does nothing when no payment_transactions row matches the provider ref', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
 
     await service.applyWebhook({
       type: 'payment.authorized',
@@ -922,7 +930,7 @@ describe('PaymentMethodsService.applyWebhook — payment.authorized', () => {
       { provider: 'aeropay', providerRef: 'pay_unknown_999' },
     ]);
     expect(txRepo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 });
 
@@ -1316,7 +1324,7 @@ describe('PaymentMethodsService.applyWebhook — payment.settled distribution', 
 
 describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
   it('marks the payment failed and transitions the parent order to payment_failed', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
 
     await service.applyWebhook({
@@ -1345,11 +1353,13 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
         },
       },
     ]);
-    expect(ordersRepo.transitionStatusCalls).toEqual([
+    // Routed through the single chokepoint as a system actor — this is what
+    // fires the post-commit OrderTransitionedEvent (notifications + realtime).
+    expect(orderTransitions.calls).toEqual([
       {
         orderId: ORDER_ID,
-        toStatus: 'payment_failed',
-        eventType: 'payment_failed',
+        event: 'PAYMENT_FAILED',
+        actor: { role: 'system' },
         payload: {
           paymentTransactionId: PAYMENT_TX_ID,
           aeropayPaymentId: AEROPAY_PAYMENT_ID,
@@ -1361,7 +1371,7 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
   });
 
   it('records null failure details when the envelope omits them', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
 
     await service.applyWebhook({
@@ -1377,7 +1387,7 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
       failureCode: null,
       failureReason: null,
     });
-    expect(ordersRepo.transitionStatusCalls[0]?.payload).toEqual({
+    expect(orderTransitions.calls[0]?.payload).toEqual({
       paymentTransactionId: PAYMENT_TX_ID,
       aeropayPaymentId: AEROPAY_PAYMENT_ID,
       failureCode: null,
@@ -1409,7 +1419,7 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
   });
 
   it('does not regress a row that already settled (skip and noop the order)', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
 
     await service.applyWebhook({
@@ -1421,11 +1431,11 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 
   it('does nothing for a row that is already failed (replay)', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'failed' }));
 
     await service.applyWebhook({
@@ -1437,11 +1447,11 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 
   it('does nothing for a canceled row (terminal guard)', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'canceled' }));
 
     await service.applyWebhook({
@@ -1453,11 +1463,11 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 
   it('does nothing when no payment_transactions row matches', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
 
     await service.applyWebhook({
       type: 'payment.failed',
@@ -1468,13 +1478,73 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
+  });
+
+  it('swallows ORDER_INVALID_TRANSITION when the order advanced past placed', async () => {
+    const { service, txRepo, orderTransitions } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    orderTransitions.nextError = OrderError.invalidTransition('accepted', 'PAYMENT_FAILED');
+
+    // The webhook must still resolve — the payment row is durably marked
+    // failed and the refund/dispute flow owns reconciliation from here.
+    await expect(
+      service.applyWebhook({
+        type: 'payment.failed',
+        eventId: 'evt_pay_failed_8',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(txRepo.updateStatusCalls).toHaveLength(1);
+    expect(txRepo.updateStatusCalls[0]?.status).toBe('failed');
+    expect(orderTransitions.calls).toHaveLength(1);
+  });
+
+  it('swallows ORDER_TERMINAL_STATE when the order is already terminal', async () => {
+    const { service, txRepo, orderTransitions } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    orderTransitions.nextError = OrderError.terminalState('delivered', 'PAYMENT_FAILED');
+
+    await expect(
+      service.applyWebhook({
+        type: 'payment.failed',
+        eventId: 'evt_pay_failed_9',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(txRepo.updateStatusCalls[0]?.status).toBe('failed');
+    expect(orderTransitions.calls).toHaveLength(1);
+  });
+
+  it('rethrows an unexpected OrderError so the webhook 5xxs and retries', async () => {
+    const { service, txRepo, orderTransitions } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    orderTransitions.nextError = OrderError.actorForbidden('system actor rejected');
+
+    await expect(
+      service.applyWebhook({
+        type: 'payment.failed',
+        eventId: 'evt_pay_failed_10',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).rejects.toBeInstanceOf(OrderError);
+
+    // The payment row was still flipped before the transition was attempted.
+    expect(txRepo.updateStatusCalls[0]?.status).toBe('failed');
   });
 });
 
 describe('PaymentMethodsService.applyWebhook — payment.canceled', () => {
   it('flips an initiated payment row to canceled and stamps canceledAt', async () => {
-    const { service, txRepo, ordersRepo } = build();
+    const { service, txRepo, orderTransitions } = build();
     txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
 
     await service.applyWebhook({
@@ -1494,7 +1564,7 @@ describe('PaymentMethodsService.applyWebhook — payment.canceled', () => {
     ]);
     // The order intentionally stays in `placed`; the cancellation must
     // run through the explicit cancel flow with its own auditing.
-    expect(ordersRepo.transitionStatusCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
   });
 
   it('also cancels an authorized row (Aeropay can cancel pre-settle)', async () => {
