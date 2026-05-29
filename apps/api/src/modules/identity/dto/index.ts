@@ -1,4 +1,14 @@
 export {
+  CreateAddressRequestDto,
+  CreateAddressRequestSchema,
+  ListAddressesResponseSchema,
+  PatchAddressRequestDto,
+  PatchAddressRequestSchema,
+  UserAddressResponseSchema,
+  type ListAddressesResponse,
+  type UserAddressResponse,
+} from './address.dto.js';
+export {
   DispensaryMembershipSchema,
   DispensaryMembershipsResponseDto,
   DispensaryMembershipsResponseSchema,

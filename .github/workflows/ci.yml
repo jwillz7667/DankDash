@@ -139,6 +139,216 @@ jobs:
           flags: unit
           slug: jwillz7667/DankDash
 
+  security-audit:
+    name: dependency audit (high + critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        # Policy lives in audit-ci.json at the repo root. The gate fails the
+        # job on any high or critical advisory; moderate and low are reported
+        # but do not block. Allowlist entries belong in audit-ci.json with an
+        # `expiry` date so we cannot silently accumulate untriaged debt.
+        run: pnpm run security:audit
+
+  secrets-scan:
+    name: secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need the base branch tip so we can scope the scan to the PR
+          # diff. `fetch-depth: 0` would also work but is heavier than
+          # the targeted fetch below.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        # Pin a release so a malicious upstream tag cannot bypass the
+        # scan. Upgrade intentionally in a separate commit when bumping.
+        run: |
+          curl -sSL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan PR / push for secrets
+        # On a PR, scope to the commit range between base and head.
+        # On a push to main, scope to the single pushed commit.
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            LOG_OPTS="origin/${GITHUB_BASE_REF}..HEAD"
+          else
+            LOG_OPTS="${GITHUB_SHA}~1..${GITHUB_SHA}"
+          fi
+          gitleaks detect \
+            --config=.gitleaks.toml \
+            --log-opts="${LOG_OPTS}" \
+            --redact \
+            --no-banner \
+            --verbose \
+            --exit-code=1
+
+  snyk:
+    name: snyk vulnerability scan (high+critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Snyk requires SNYK_TOKEN. Skip when running against a fork PR
+    # (forks cannot read repo secrets) so contributors are not blocked
+    # waiting on a job that cannot succeed for them.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Snyk test
+        # `--all-projects` walks every workspace lockfile. We pin the
+        # severity threshold to high so the gate stays in sync with the
+        # `pnpm audit` policy — moderate/low advisories are reported in
+        # the Snyk UI but do not block the merge.
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --all-projects --policy-path=.snyk
+
+  license-audit:
+    name: license audit (forbid GPL/AGPL/LGPL family)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production licenses
+        # Script lives at scripts/audit-licenses.sh and is the source of
+        # truth for forbidden license SPDX identifiers. Updating the
+        # forbidden list is a deliberate code change with legal review.
+        run: pnpm run security:licenses
+
+  semgrep:
+    name: semgrep SAST (owasp + typescript + nodejs + repo-local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Skip Dependabot's auto-PRs — semgrep registry pulls take ~30s of network
+    # the bot doesn't need (its diff is package metadata, not source code).
+    if: github.actor != 'dependabot[bot]'
+
+    container:
+      # Pin a specific tag so a malicious registry tag can't slip a different
+      # binary in. Bump intentionally in a dedicated commit.
+      image: returntocorp/semgrep:1.92.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run semgrep
+        # Hosted rulesets cover the OWASP Top 10 + TypeScript/Node patterns;
+        # repo-local rules in `.semgrep/` enforce the project-specific bans
+        # (`console.log`, silent `catch`, `as any`, `// TODO`). The `--error`
+        # flag converts findings into a non-zero exit, blocking the merge.
+        run: |
+          semgrep \
+            --config=p/owasp-top-ten \
+            --config=p/typescript \
+            --config=p/nodejs \
+            --config=.semgrep \
+            --error \
+            --metrics=off \
+            --exclude='**/node_modules/**' \
+            --exclude='**/dist/**' \
+            --exclude='**/build/**' \
+            --exclude='**/.next/**'
+
+  codeql:
+    name: codeql analysis (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript-typescript"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-and-quality` is broader than `security-extended` — we want
+          # the quality checks too because they catch latent issues (unused
+          # exceptions, dead error paths) that complement semgrep.
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
   compliance-gate:
     name: compliance suite (blocks deploy)
     runs-on: ubuntu-latest

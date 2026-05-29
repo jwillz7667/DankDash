@@ -63,6 +63,7 @@ const config = {
         'config',
         'types',
         'ui',
+        'design-tokens',
         'test-utils',
         'infra',
         'docs',

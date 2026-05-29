@@ -81,7 +81,7 @@ export function InviteStaffForm({
       onSubmit={(e) => {
         void handleSubmit(e);
       }}
-      className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+      className="flex flex-col gap-4 rounded-2xl border border-outline bg-surface p-5 shadow-sm"
       noValidate
     >
       <div className="flex items-start gap-3">
@@ -89,10 +89,10 @@ export function InviteStaffForm({
           <ShieldPlus aria-hidden="true" className="h-4 w-4" />
         </div>
         <div className="space-y-1">
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
             Invite a teammate
           </h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             They'll receive an email with a sign-in link. Inviting someone who already has an
             account links it to this store immediately.
           </p>
@@ -105,7 +105,7 @@ export function InviteStaffForm({
           <div className="relative">
             <Mail
               aria-hidden="true"
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
             />
             <Input
               id={emailId}
@@ -132,7 +132,7 @@ export function InviteStaffForm({
               setRole(e.target.value as VendorStaffRole);
             }}
             disabled={busy}
-            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:border-moss-500 focus:outline-none focus:ring-4 focus:ring-moss-500/15 disabled:cursor-not-allowed disabled:bg-slate-50"
+            className="h-10 w-full rounded-lg border border-outline bg-surface px-3 text-sm text-foreground focus:border-moss-500 focus:outline-none focus:ring-4 focus:ring-moss-500/15 disabled:cursor-not-allowed disabled:bg-surface-muted"
           >
             {availableRoles.map((r) => (
               <option key={r} value={r}>
@@ -153,10 +153,10 @@ export function InviteStaffForm({
         </Button>
       </div>
 
-      <p className="text-xs text-slate-500">{roleBlurb(role)}</p>
+      <p className="text-xs text-muted">{roleBlurb(role)}</p>
 
       {error !== null ? (
-        <p role="alert" className="text-sm font-medium text-rose-700">
+        <p role="alert" className="text-sm font-medium text-danger">
           {error}
         </p>
       ) : null}

@@ -41,14 +41,14 @@ export default async function TwoFactorPage(): Promise<ReactNode> {
           Required
         </p>
       </div>
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-md">
+      <div className="rounded-2xl border border-outline bg-surface p-8 shadow-md">
         <header className="mb-6 space-y-1.5 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             Add two-factor authentication
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             Manager and owner accounts must complete enrollment before continuing. Your account
-            <span className="font-medium text-slate-700"> ({session.user.email}) </span>
+            <span className="font-medium text-secondary"> ({session.user.email}) </span>
             has not yet enrolled.
           </p>
         </header>

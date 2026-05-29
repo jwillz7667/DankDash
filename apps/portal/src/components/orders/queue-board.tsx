@@ -397,14 +397,14 @@ function DragErrorBanner({ message, onDismiss }: DragErrorBannerProps): ReactNod
     <div
       role="alert"
       data-testid="drag-error-banner"
-      className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+      className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger"
     >
       <AlertCircle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
       <span className="flex-1">{message}</span>
       <button
         type="button"
         onClick={onDismiss}
-        className="font-semibold text-rose-800 hover:text-rose-900"
+        className="font-semibold text-danger hover:text-danger"
       >
         Dismiss
       </button>

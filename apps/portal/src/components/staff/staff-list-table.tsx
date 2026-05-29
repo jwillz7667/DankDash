@@ -79,11 +79,11 @@ export function StaffListTable({
         canAssignOwner={canAssignOwner}
       />
 
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+      <div className="rounded-2xl border border-outline bg-surface shadow-sm">
+        <div className="flex items-center justify-between gap-3 border-b border-outline-subtle px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold tracking-tight text-slate-900">Roster</h2>
-            <p className="text-sm text-slate-500">
+            <h2 className="text-base font-semibold tracking-tight text-foreground">Roster</h2>
+            <p className="text-sm text-muted">
               {active.length} active · {pending.length} pending · {removed.length} removed
             </p>
           </div>
@@ -94,7 +94,7 @@ export function StaffListTable({
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm" data-testid="staff-table">
-              <thead className="border-b border-slate-100 bg-slate-50/50 text-2xs font-medium uppercase tracking-wider text-slate-500">
+              <thead className="border-b border-outline-subtle bg-surface-muted/50 text-2xs font-medium uppercase tracking-wider text-muted">
                 <tr>
                   <th scope="col" className="py-3 pl-5 pr-3">
                     Name
@@ -116,7 +116,7 @@ export function StaffListTable({
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-outline-subtle">
                 {staff.map((member) => (
                   <StaffRow
                     key={member.id}
@@ -180,8 +180,8 @@ function EmptyState(): ReactNode {
         <Users aria-hidden="true" className="h-5 w-5" />
       </div>
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold tracking-tight text-slate-900">No teammates yet</h3>
-        <p className="max-w-sm text-sm text-slate-500">
+        <h3 className="text-sm font-semibold tracking-tight text-foreground">No teammates yet</h3>
+        <p className="max-w-sm text-sm text-muted">
           Invite the operators who need access to this store. They'll receive a sign-in email and
           show up here as soon as they accept.
         </p>

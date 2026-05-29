@@ -1,0 +1,73 @@
+# Gitleaks configuration for DankDash. Inherits the default ruleset and
+# adds project-specific allowlists for test fixtures, the example env
+# file, and intentional brand strings that look like high-entropy
+# secrets but aren't.
+#
+# Rule of thumb for adding to the allowlist:
+#   - PATHS:   only test fixtures, example configs, generated docs.
+#   - REGEXES: only when the rule fires repeatedly on a non-secret
+#              pattern we control (e.g. UUIDv7 sentinel values).
+# Anything that looks like a real credential MUST be moved to env, not
+# allowlisted. The `expiry` convention from audit-ci does not apply
+# here — gitleaks allowlists are entry-by-entry triage.
+
+title = "DankDash gitleaks policy"
+
+[extend]
+# Pull in the default rules from upstream so we cover the OWASP class
+# secrets (AWS keys, GitHub PATs, JWT, Slack tokens, Stripe, etc.).
+useDefault = true
+
+[allowlist]
+description = "Repo-level allowlist for fixtures + examples"
+
+paths = [
+  # Example env file is intentionally committed; values are placeholders.
+  '''(?i)^\.env\.example$''',
+  '''(?i)^.*/\.env\.example$''',
+
+  # Lockfiles can include integrity hashes that match the high-entropy
+  # heuristic. They are not secrets.
+  '''(?i)^pnpm-lock\.ya?ml$''',
+  '''(?i)^package-lock\.json$''',
+
+  # Spec documents contain sample tokens / fake credentials inline to
+  # illustrate request shapes.
+  '''(?i)^spec-docs/.*''',
+  '''(?i)^docs/spec/.*''',
+
+  # Test fixtures intentionally contain example tokens / sample JWTs /
+  # synthetic IDs to exercise the parsers.
+  '''(?i).*/(test|tests|__tests__|__fixtures__|fixtures|test-utils)/.*''',
+  '''(?i).*\.fixture\.(ts|js|json)$''',
+  '''(?i).*\.test\.(ts|tsx|js|mjs|cjs|json)$''',
+  '''(?i).*\.spec\.(ts|tsx|js|mjs|cjs|json)$''',
+
+  # Drizzle migration SQL files include synthetic UUID seeds that flag
+  # the generic high-entropy rule. They are not secrets.
+  '''(?i)^packages/db/src/migrations/.*\.sql$''',
+
+  # Generated OpenAPI / schema artifacts.
+  '''(?i)^packages/types/(src|dist)/generated/.*''',
+
+  # iOS snapshot baselines and Veriff sandbox config (committed by
+  # design — sandbox public key only).
+  '''(?i)^DankDashKit/.*/__Snapshots__/.*''',
+  '''(?i)^DankDashKit/.*/VeriffConfig\.swift$''',
+
+  # Repo-level operator state.
+  '''(?i)^PROGRESS\.md$''',
+  '''(?i)^BLOCKED\.md$''',
+]
+
+regexes = [
+  # The brand accent green hex appears in many design-token files and
+  # trips the generic-high-entropy rule. It is not a secret.
+  '''3B9322''',
+  '''3b9322''',
+
+  # Sample dispensary / driver / customer UUIDs used in seeds + docs.
+  # Format `00000000-0000-0000-0000-00000000000X` is reserved for
+  # docs-only references.
+  '''00000000-0000-0000-0000-0000000000[0-9a-f]''',
+]

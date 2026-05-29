@@ -20,17 +20,26 @@
  *   POST /v1/auth/mfa/disable   — Authenticated. Requires a current code so
  *                                  a stolen access token alone cannot strip
  *                                  the second factor.
+ *   POST /v1/auth/checkout-handoff — Authenticated (customer). Mints the
+ *                                  Apple §10.4 single-shot token that the
+ *                                  iOS client carries into Safari for
+ *                                  checkout-web. Body `{ cartId,
+ *                                  deliveryAddressId }`; the server validates
+ *                                  both belong to the caller before signing.
  *
  * Public routes carry @Public; everything else inherits the global
  * JwtAuthGuard. The MFA routes do not need @Roles — any authenticated user
- * may manage their own MFA.
+ * may manage their own MFA. checkout-handoff is restricted to customers
+ * (drivers/managers have no cart to hand off).
  */
-import { Body, Controller, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post, Req, UseGuards } from '@nestjs/common';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { AuthService, type AuthRequestContext } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
+import { Roles } from './decorators/roles.decorator.js';
 import {
+  CheckoutHandoffRequestDto,
   LoginRequestDto,
   LogoutRequestDto,
   MfaConfirmRequestDto,
@@ -38,11 +47,14 @@ import {
   MfaVerifyRequestDto,
   RefreshRequestDto,
   RegisterRequestDto,
+  type CheckoutHandoffResponse,
   type LoginResponse,
   type MfaSetupResponse,
   type RefreshResponse,
   type RegisterResponse,
 } from './dto/index.js';
+import { RolesGuard } from './guards/roles.guard.js';
+import { CheckoutHandoffService } from './handoff/checkout-handoff.service.js';
 import type { AuthenticatedUser } from './guards/auth-types.js';
 import type { FastifyRequest } from 'fastify';
 
@@ -51,7 +63,10 @@ const HOUR_MS = 60 * MINUTE_MS;
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly checkoutHandoff: CheckoutHandoffService,
+  ) {}
 
   @Public()
   @RateLimit({ name: 'auth-register-ip', tracker: 'ip', limit: 3, windowMs: HOUR_MS })
@@ -130,6 +145,23 @@ export class AuthController {
     @Body() body: MfaDisableRequestDto,
   ): Promise<void> {
     await this.auth.disableMfa(user.userId, body.code);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles('customer', 'admin', 'superadmin')
+  @RateLimit({
+    name: 'auth-checkout-handoff',
+    tracker: 'user',
+    limit: 30,
+    windowMs: MINUTE_MS,
+  })
+  @Post('checkout-handoff')
+  @HttpCode(HttpStatus.CREATED)
+  issueCheckoutHandoff(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: CheckoutHandoffRequestDto,
+  ): Promise<CheckoutHandoffResponse> {
+    return this.checkoutHandoff.issue(user.userId, body.cartId, body.deliveryAddressId);
   }
 }
 

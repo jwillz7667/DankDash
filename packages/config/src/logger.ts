@@ -19,6 +19,13 @@ export interface LoggerOptions {
    * (a custom destination and a transport are mutually exclusive in pino).
    */
   readonly destination?: DestinationStream;
+  /**
+   * Optional pino mixin. The api/realtime/workers pass
+   * `requestContextMixin` from `@dankdash/observability` so every log
+   * record carries the ALS-bound request_id/trace_id/span_id without
+   * threading the request through every call site.
+   */
+  readonly mixin?: PinoOptions['mixin'];
 }
 
 /**
@@ -133,6 +140,7 @@ export function createLogger(options: LoggerOptions): Logger {
       service: options.name,
       env,
     },
+    ...(options.mixin !== undefined ? { mixin: options.mixin } : {}),
   };
 
   // An explicit destination (test seam) is mutually exclusive with a

@@ -1,0 +1,18 @@
+# Snyk policy file — controls how the snyk CLI evaluates the dependency
+# graph during CI. The default behaviour (no patches, no ignores) is
+# what we want: every high+critical advisory in production deps must
+# either be fixed or have a dated, documented ignore entry below.
+#
+# Format: https://docs.snyk.io/manage-issues/policies/the-.snyk-file
+#
+# When adding an ignore, REQUIRED fields are:
+#   - vulnerability ID (e.g. SNYK-JS-PACKAGE-12345)
+#   - `reason` (one sentence — why this is acceptable risk)
+#   - `expires` (ISO 8601 — re-evaluation date, max 90 days out)
+#
+# Untriaged debt is forbidden: an entry without `expires` will be
+# rejected at review.
+
+version: v1.25.0
+ignore: {}
+patch: {}

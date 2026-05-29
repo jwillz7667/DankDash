@@ -86,17 +86,17 @@ export function SyncBanner({
   return (
     <div className="flex flex-col gap-2">
       <div
-        className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+        className="flex flex-col gap-3 rounded-2xl border border-outline bg-surface px-5 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
         data-testid="sync-banner"
       >
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold tracking-tight text-slate-900">POS sync</h2>
+            <h2 className="text-sm font-semibold tracking-tight text-foreground">POS sync</h2>
             <Badge tone={tone} aria-label={`sync ${tone}`}>
               {label}
             </Badge>
           </div>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             One-click sync stamps every active listing as just-reconciled. Manual edits made since
             the last sync are preserved — this only updates the freshness signal.
           </p>
@@ -113,7 +113,7 @@ export function SyncBanner({
         </Button>
       </div>
       {error !== null ? (
-        <p role="alert" className="px-1 text-sm text-rose-700">
+        <p role="alert" className="px-1 text-sm text-danger">
           {error}
         </p>
       ) : null}

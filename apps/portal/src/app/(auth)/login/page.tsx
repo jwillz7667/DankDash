@@ -23,10 +23,10 @@ export default async function LoginPage({ searchParams }: LoginPageProps): Promi
           DankDash for Business
         </p>
       </div>
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-md">
+      <div className="rounded-2xl border border-outline bg-surface p-8 shadow-md">
         <header className="mb-6 space-y-1.5 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Sign in</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Sign in</h1>
+          <p className="text-sm text-muted">
             Use the email and password your dispensary provisioned for you.
           </p>
         </header>
@@ -35,7 +35,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps): Promi
           initialError={params.error ?? null}
         />
       </div>
-      <p className="text-center text-xs text-slate-500">
+      <p className="text-center text-xs text-muted">
         Trouble signing in?{' '}
         <Link
           href="mailto:support@dankdash.com"
