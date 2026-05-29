@@ -9,7 +9,7 @@ backend tier.
 infra/
   Dockerfile.api          # multi-stage build for apps/api
   Dockerfile.workers      # multi-stage build for apps/workers
-  Dockerfile.realtime     # placeholder for apps/realtime (Phase 9)
+  Dockerfile.realtime     # multi-stage build for apps/realtime (Socket.io)
   railway.api.toml        # per-service Railway config
   railway.workers.toml
   railway.realtime.toml
@@ -30,8 +30,17 @@ services:
 | `@dankdash/portal`       | `apps/portal`       | **Vercel** (this Railway service stub will be removed) |
 | `@dankdash/checkout-web` | `apps/checkout-web` | **Vercel** (this Railway service stub will be removed) |
 
-Plus two managed databases: `Postgres` (Railway PG 16; PostGIS extension
+Plus two managed databases: Postgres (Railway PG 16; PostGIS extension
 enabled post-create) and `Redis`.
+
+> **Live state (production env):** the active Postgres service is named
+> **`postgis`** — every app service's `DATABASE_URL` resolves to
+> `postgis.railway.internal:5432`. Several earlier Postgres instances
+> (`Postgres`, `Postgres-1geX`, `Postgres-mAID`, `Postgres-SVLJ`) remain
+> in the project but are **unreferenced orphans** left over from
+> provisioning iterations; they should be removed once confirmed empty.
+> The project is on the **Hobby** plan, which caps services at a single
+> replica — `numReplicas > 1` in these tomls only takes effect on Pro.
 
 ### Per-service config path
 
@@ -59,13 +68,24 @@ reference-variable syntax so the secrets never appear in code or in
 git:
 
 ```
-DATABASE_URL = ${{Postgres.DATABASE_URL}}
+DATABASE_URL = ${{postgis.DATABASE_URL}}
 REDIS_URL    = ${{Redis.REDIS_URL}}
 ```
 
-These are wired via `railway variables --service <svc> --set "KEY=value"`
-or via the dashboard. They must be **literal strings** with the
-`${{...}}` syntax — Railway expands them at deploy time.
+Note the DB reference targets the **`postgis`** service (the active
+Postgres instance), not a service literally named `Postgres`. These are
+wired via `railway variables --service <svc> --set "KEY=value"` or via
+the dashboard. They must be **literal strings** with the `${{...}}`
+syntax — Railway expands them at deploy time. Prefer the reference form
+over pasting an expanded connection string so a credential rotation on
+`postgis` propagates automatically.
+
+Realtime additionally requires `JWT_PUBLIC_KEY_BASE64` (verify-only — it
+never signs) and, for browser clients (the vendor portal), an explicit
+`SOCKET_CORS_ORIGINS` allow-list. With `SOCKET_CORS_ORIGINS` empty the
+Socket.io server reflects any request origin, so set it to the portal's
+production origin(s) before launch; the JWT handshake is the primary
+gate but the origin allow-list is defense in depth.
 
 ### Application secrets
 

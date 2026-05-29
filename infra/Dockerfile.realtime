@@ -2,12 +2,12 @@
 # ============================================================================
 # DankDash — apps/realtime production image
 #
-# Placeholder image for the Socket.io standalone service. The real
-# implementation lands in Phase 9 (Realtime Service) — the namespaces,
-# Redis adapter, and JWT auth are wired there. This Dockerfile exists so
-# the Railway service has a well-defined build/start contract from day
-# one, and so the image shape can be exercised in CI before Phase 9
-# adds the runtime code.
+# Standalone Socket.io service: customer/driver/vendor namespaces, the
+# Redis pub/sub adapter, JWT handshake auth, the Redis-stream consumer,
+# and the /health + /health/ready probes (see apps/realtime/src). Same
+# three-stage shape as Dockerfile.api — build with dev deps, ship a slim
+# prod-only runtime that runs as the non-root `node` user. Binds $PORT
+# (defaults to 4000); Railway injects $PORT at runtime.
 # ============================================================================
 
 ARG NODE_VERSION=22.11.0
