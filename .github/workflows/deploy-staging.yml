@@ -1,7 +1,13 @@
 name: deploy-staging
 
+# Staging deploys are gated on a green CI run, not on the raw push. The `ci`
+# workflow (typecheck/lint/test + compliance & payments coverage gates) must
+# complete on main before this fires; a failed CI run is filtered out by the
+# job-level `if` below. `workflow_dispatch` remains an operator override.
 on:
-  push:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -17,6 +23,9 @@ jobs:
   deploy:
     name: railway staging
     runs-on: ubuntu-latest
+    # Only deploy when the upstream CI run actually passed. Manual dispatch has
+    # no upstream run, so allow it through unconditionally (operator override).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     environment:
       name: staging
       url: https://api.staging.dankdash.com
@@ -25,6 +34,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # On workflow_run, github.sha is the default-branch head, which may
+          # have advanced past the commit CI validated. Pin to the exact commit
+          # the triggering CI run tested; fall back to github.sha on dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -88,4 +102,4 @@ jobs:
     steps:
       - name: Notify
         run: |
-          echo "Vercel will deploy commit ${{ github.sha }} for apps/portal automatically."
+          echo "Vercel will deploy commit ${{ github.event.workflow_run.head_sha || github.sha }} for apps/portal automatically."

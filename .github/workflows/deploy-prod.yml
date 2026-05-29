@@ -38,6 +38,22 @@ jobs:
             exit 1
           fi
 
+      - name: Assert CI is green for this SHA
+        # Production never deploys a commit that has not passed the full `ci`
+        # workflow (typecheck/lint/test + compliance & payments coverage gates).
+        # Mirrors the staging gate, which fires only on a successful ci run.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          successful=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ inputs.git_sha }}&status=completed" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "${successful:-0}" -lt 1 ]; then
+            echo "No successful ci.yml run found for SHA ${{ inputs.git_sha }} — refusing production deploy." >&2
+            exit 1
+          fi
+          echo "Found ${successful} successful ci.yml run(s) for ${{ inputs.git_sha }}."
+
   deploy:
     name: railway production
     runs-on: ubuntu-latest
