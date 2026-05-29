@@ -62,14 +62,20 @@ jobs:
         # Both URLs come from repo secrets so we never publish them in
         # the workflow file. The lookup fails the job if the secret is
         # unset rather than silently scanning the wrong host.
+        #
+        # The dispatch input is passed through `env` rather than inlined
+        # into the script body so an untrusted workflow input can never
+        # reach the shell as executable code (semgrep run-shell-injection).
+        env:
+          TARGET: ${{ github.event.inputs.target }}
         run: |
-          if [[ "${{ github.event.inputs.target }}" == "staging" ]]; then
+          if [[ "${TARGET}" == "staging" ]]; then
             url="${STAGING_URL}"
           else
             url="${PROD_URL}"
           fi
           if [[ -z "${url}" ]]; then
-            echo "::error::Target URL for ${{ github.event.inputs.target }} secret is not configured"
+            echo "::error::Target URL for ${TARGET} secret is not configured"
             exit 1
           fi
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
