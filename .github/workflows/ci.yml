@@ -239,16 +239,35 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check Snyk token
+        # Snyk is supplementary defence-in-depth: the `dependency audit`
+        # job already gates the same high+critical advisories via the npm
+        # registry. When SNYK_TOKEN is not provisioned, skip the scan with
+        # a warning instead of hard-failing CI on a missing credential.
+        id: snyk_token
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [[ -n "${SNYK_TOKEN}" ]]; then
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::SNYK_TOKEN is not configured — skipping Snyk scan. High+critical advisories are still gated by the dependency-audit (pnpm) and semgrep jobs."
+          fi
+
       - name: Snyk test
         # `--all-projects` walks every workspace lockfile. We pin the
         # severity threshold to high so the gate stays in sync with the
         # `pnpm audit` policy — moderate/low advisories are reported in
-        # the Snyk UI but do not block the merge.
+        # the Snyk UI but do not block the merge. `DankDashKit` (Swift)
+        # is excluded: the snyk container has no `swift` toolchain, so its
+        # Package.swift cannot be resolved and would abort the scan.
+        if: ${{ steps.snyk_token.outputs.present == 'true' }}
         uses: snyk/actions/node@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --all-projects --policy-path=.snyk
+          args: --severity-threshold=high --all-projects --exclude=DankDashKit --policy-path=.snyk
 
   license-audit:
     name: license audit (forbid GPL/AGPL/LGPL family)
