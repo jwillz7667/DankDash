@@ -35,12 +35,23 @@ enabled post-create) and `Redis`.
 
 > **Live state (production env):** the active Postgres service is named
 > **`postgis`** — every app service's `DATABASE_URL` resolves to
-> `postgis.railway.internal:5432`. Several earlier Postgres instances
-> (`Postgres`, `Postgres-1geX`, `Postgres-mAID`, `Postgres-SVLJ`) remain
-> in the project but are **unreferenced orphans** left over from
-> provisioning iterations; they should be removed once confirmed empty.
-> The project is on the **Hobby** plan, which caps services at a single
-> replica — `numReplicas > 1` in these tomls only takes effect on Pro.
+> `postgis.railway.internal:5432`. The four orphan Postgres services left
+> over from provisioning iterations (`Postgres`, `Postgres-1geX`,
+> `Postgres-mAID`, `Postgres-SVLJ`) were **deleted** on 2026-05-29 after
+> confirming each held zero user tables (empty Postgres 18 templates,
+> no PostGIS, no schema). Their detached volumes plus one pre-existing
+> detached volume linger because Railway's `volumeDelete` API is a no-op
+> on service-orphaned volumes — remove them from the dashboard
+> (Volumes → Delete) or via `railway volume delete -v <name>` in an
+> interactive terminal. The project is on the **Hobby** plan, which caps
+> services at a single replica — `numReplicas > 1` in these tomls only
+> takes effect on Pro.
+>
+> **Deploys** are driven solely by Railway's GitHub trigger (auto-deploy
+> on push to `main`). Each service's trigger has `checkSuites` ("Wait for
+> CI") enabled, so Railway blocks a deploy until the `ci` workflow passes
+> for that commit. There are no GitHub Actions deploy workflows — `ci.yml`
+> validates, Railway deploys.
 
 ### Per-service config path
 
