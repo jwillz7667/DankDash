@@ -108,6 +108,23 @@ export const EnvSchema = z
     // mounts it only when this flag is explicitly set, so a default prod
     // deploy never leaks the schema. See apps/api/src/main.ts.
     ENABLE_API_DOCS: booleanFromString.default(false),
+
+    // Browser origins permitted to read API responses — the vendor portal
+    // (Vercel) and the consumer checkout web app. Comma-separated exact
+    // matches; no wildcards. Empty/unset leaves CORS disabled, which is
+    // correct for the native iOS clients since CORS is a browser-only
+    // concern. Consumed by apps/api/src/main.ts.
+    CORS_ALLOWED_ORIGINS: z
+      .string()
+      .optional()
+      .transform((value): readonly string[] =>
+        value === undefined
+          ? []
+          : value
+              .split(',')
+              .map((origin) => origin.trim())
+              .filter((origin) => origin.length > 0),
+      ),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not

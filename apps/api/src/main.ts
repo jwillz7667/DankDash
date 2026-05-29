@@ -64,6 +64,28 @@ async function bootstrap(): Promise<void> {
     crossOriginEmbedderPolicy: false,
   });
 
+  // CORS is an explicit exact-match origin allowlist (CORS_ALLOWED_ORIGINS),
+  // never a wildcard. Only the browser clients need it — the vendor portal
+  // and the consumer checkout web app; the native iOS apps are unaffected
+  // (CORS is a browser concern). With no origins configured we leave CORS
+  // off entirely rather than defaulting open. allowedHeaders covers the
+  // custom headers the portal sends (X-Dispensary-Id for vendor context),
+  // and exposedHeaders lets the browser read the request id and the 429
+  // Retry-After hint.
+  if (env.CORS_ALLOWED_ORIGINS.length > 0) {
+    app.enableCors({
+      origin: [...env.CORS_ALLOWED_ORIGINS],
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id', 'X-Dispensary-Id'],
+      exposedHeaders: ['X-Request-Id', 'Retry-After'],
+      maxAge: 600,
+    });
+    logger.info({ origins: env.CORS_ALLOWED_ORIGINS }, 'CORS allowlist enabled');
+  } else {
+    logger.warn('CORS disabled: CORS_ALLOWED_ORIGINS is empty');
+  }
+
   app.useGlobalPipes(new ZodValidationPipe());
   app.useGlobalFilters(new GlobalExceptionFilter(logger));
   app.useGlobalInterceptors(new RequestIdInterceptor(), new LoggingInterceptor(logger));
