@@ -120,10 +120,12 @@ export function MenuTable({ initialListings, actions, nowFactory }: MenuTablePro
     try {
       const next = await actions.list();
       setListings(next);
-    } catch {
-      // Ignore — the banner already showed success; the table refresh is
-      // cosmetic. The next manual interaction will re-fetch on its own
-      // via patch.
+    } catch (e) {
+      // The banner already showed success; this list refresh is cosmetic,
+      // so a failure is intentionally not surfaced to the user. Bind and
+      // explicitly discard the error (mirrors menu-row.tsx) — the next
+      // manual interaction re-fetches on its own via patch.
+      void e;
     }
   }, [actions]);
 
