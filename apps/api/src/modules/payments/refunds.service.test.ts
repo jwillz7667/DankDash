@@ -41,7 +41,7 @@ import {
   type RefundStatus,
   type RefundsRepository,
 } from '@dankdash/db';
-import { NotFoundError, PaymentError, ValidationError } from '@dankdash/types';
+import { NotFoundError, PaymentError, RepositoryError, ValidationError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
 import {
   RefundsService,
@@ -435,6 +435,43 @@ describe('RefundsService.initiate', () => {
     expect(res.completedAt).not.toBeNull();
   });
 
+  it('throws RepositoryError when the refund row vanishes inside the finalize tx', async () => {
+    const { service, ordersRepo, txRepo, refundsRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction());
+    // Aeropay has already moved the money; the in-tx status flip then finds
+    // the refund row gone. Throwing rolls back the payment-status flip and the
+    // ledger insert so the tx leaves no half-written state.
+    refundsRepo.updateStatus = (): Promise<Refund | null> => Promise.resolve(null);
+
+    await expect(
+      service.initiate(VENDOR_CTX, ORDER_ID, {
+        amountCents: 5_000,
+        reasonCode: 'missing_item',
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
+  it('throws RepositoryError when the payment row vanishes inside the finalize tx', async () => {
+    const { service, ordersRepo, txRepo, refundsRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction());
+    // The refund row flips fine, but the payment_transactions status UPDATE
+    // returns null — the same roll-back guarantee must hold for the second
+    // write in the tx.
+    txRepo.updateStatus = (): Promise<PaymentTransaction | null> => Promise.resolve(null);
+
+    await expect(
+      service.initiate(VENDOR_CTX, ORDER_ID, {
+        amountCents: 5_000,
+        reasonCode: 'missing_item',
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(refundsRepo.rows[0]?.status).toBe('completed');
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
   it('flips payment status to refunded when the refund clears the full charge', async () => {
     const { service, ordersRepo, txRepo, refundsRepo } = build();
     ordersRepo.rows.push(makeOrder({ subtotalCents: 5_000, totalCents: 5_000 }));
@@ -585,6 +622,25 @@ describe('RefundsService.initiate', () => {
     expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
     expect(txRepo.updateStatusCalls).toHaveLength(0);
   });
+
+  it('throws RepositoryError when the fail-marking UPDATE also returns null after an Aeropay outage', async () => {
+    const { service, ordersRepo, txRepo, refundsRepo, ledgerRepo, aeropay } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction());
+    aeropay.shouldThrow = new Error('aeropay outage');
+    // Aeropay fails, then the compensating "mark failed" write also reports the
+    // row gone. The original cause must be chained onto the repo error rather
+    // than masked by the 502.
+    refundsRepo.updateStatus = (): Promise<Refund | null> => Promise.resolve(null);
+
+    await expect(
+      service.initiate(VENDOR_CTX, ORDER_ID, {
+        amountCents: 2_500,
+        reasonCode: 'damaged_product',
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
 });
 
 describe('RefundsService.approve', () => {
@@ -620,6 +676,25 @@ describe('RefundsService.approve', () => {
 
     expect(res.requiresAdminApproval).toBe(true);
     expect(res.approvedBy).toBe(ADMIN_USER_ID);
+  });
+
+  it('throws RepositoryError when the order backing a pending refund has vanished', async () => {
+    const { service, refundsRepo, aeropay } = build();
+    // Pending refund exists but its order row is gone — the FK should have
+    // prevented this, so approve() fails loudly instead of refunding blind.
+    refundsRepo.rows.push(
+      makeRefund({
+        id: '01935f3d-0000-7000-8000-0000000000fd',
+        amountCents: 4_000,
+        status: 'pending',
+        initiatedBy: VENDOR_USER_ID,
+      }),
+    );
+
+    await expect(
+      service.approve(ADMIN_USER_ID, '01935f3d-0000-7000-8000-0000000000fd'),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(aeropay.refundCalls).toHaveLength(0);
   });
 
   it('returns 404 for an unknown refund id', async () => {

@@ -1302,6 +1302,27 @@ describe('PaymentMethodsService.applyWebhook — payment.settled distribution', 
     expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 
+  it('throws RepositoryError when the settle UPDATE finds the row gone mid-transaction', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'authorized' }));
+    ordersRepo.rows.push(makeOrder());
+    // The pre-tx read found the row, but a concurrent delete lands before the
+    // in-tx status flip, so updateStatus returns null. The throw must roll the
+    // transaction back before any ledger row is written.
+    txRepo.updateStatus = (): Promise<PaymentTransaction | null> => Promise.resolve(null);
+
+    await expect(
+      service.applyWebhook({
+        type: 'payment.settled',
+        eventId: 'evt_dist_vanish',
+        objectId: AEROPAY_PAYMENT_ID,
+        occurredAt: WEBHOOK_OCCURRED_AT,
+        raw: {},
+      }),
+    ).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
   it('throws RepositoryError when discount + platform fee exceeds subtotal', async () => {
     const { service, txRepo, ordersRepo, ledgerRepo } = build();
     // subtotal=10_000, platform=1_500, discount=9_000 → dispensaryShare = -500
@@ -1416,6 +1437,31 @@ describe('PaymentMethodsService.applyWebhook — payment.failed', () => {
 
     expect(txRepo.updateStatusCalls[0]?.patch.failureCode).toBeNull();
     expect(txRepo.updateStatusCalls[0]?.patch.failureReason).toBeNull();
+  });
+
+  it('records null failure details when data.object is present but not an object', async () => {
+    const { service, txRepo, orderTransitions } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    // `data` is an object but `data.object` is null — the parser must short
+    // out to null/null rather than reading properties off a non-object.
+    await service.applyWebhook({
+      type: 'payment.failed',
+      eventId: 'evt_pay_failed_obj_null',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: { data: { object: null } },
+    });
+
+    expect(txRepo.updateStatusCalls[0]?.patch).toEqual({
+      failedAt: WEBHOOK_OCCURRED_AT,
+      failureCode: null,
+      failureReason: null,
+    });
+    expect(orderTransitions.calls[0]?.payload).toMatchObject({
+      failureCode: null,
+      failureReason: null,
+    });
   });
 
   it('does not regress a row that already settled (skip and noop the order)', async () => {
