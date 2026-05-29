@@ -26,7 +26,7 @@ import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { uuidv7 } from 'uuidv7';
 import { loadRealtimeEnv, type RealtimeEnv } from '../src/env.js';
 import { buildServer, type RealtimeServer } from '../src/server.js';
-import type { MembershipRepository } from '../src/membership/repo.js';
+import type { ActiveDelivery, MembershipRepository } from '../src/membership/repo.js';
 
 const TOKEN_ISSUER = 'dankdash';
 const TOKEN_AUDIENCE = 'dankdash.app';
@@ -74,6 +74,8 @@ export interface TestHarness {
 export class InMemoryMembershipRepository implements MembershipRepository {
   private readonly staff = new Map<string, Set<string>>();
   private readonly drivers = new Map<string, string>();
+  // Keyed by the driver's *user* id, mirroring `orders.driver_id`.
+  private readonly activeDeliveries = new Map<string, ActiveDelivery>();
 
   addStaff(userId: string, dispensaryId: string): void {
     const set = this.staff.get(userId) ?? new Set<string>();
@@ -83,6 +85,15 @@ export class InMemoryMembershipRepository implements MembershipRepository {
 
   addDriver(userId: string, driverId: string): void {
     this.drivers.set(driverId, userId);
+  }
+
+  /** Test mutator: assign (or with `null`, clear) the driver's active delivery. */
+  setActiveDelivery(driverUserId: string, delivery: ActiveDelivery | null): void {
+    if (delivery === null) {
+      this.activeDeliveries.delete(driverUserId);
+    } else {
+      this.activeDeliveries.set(driverUserId, delivery);
+    }
   }
 
   isStaffOfDispensary(userId: string, dispensaryId: string): Promise<boolean> {
@@ -102,6 +113,10 @@ export class InMemoryMembershipRepository implements MembershipRepository {
       if (ownerUserId === userId) return Promise.resolve(driverId);
     }
     return Promise.resolve(null);
+  }
+
+  findActiveDeliveryForDriverUser(driverUserId: string): Promise<ActiveDelivery | null> {
+    return Promise.resolve(this.activeDeliveries.get(driverUserId) ?? null);
   }
 }
 
