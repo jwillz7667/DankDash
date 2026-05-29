@@ -16,7 +16,7 @@
  * separate scraper.
  */
 import { type RedisMetrics } from '@dankdash/observability';
-import { Controller, Get, HttpException, HttpStatus, Inject } from '@nestjs/common';
+import { Controller, Get, HttpException, HttpStatus, Inject, Logger } from '@nestjs/common';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { DRIZZLE_POOL } from '../../infrastructure/drizzle.module.js';
 import { REDIS_METRICS } from '../../infrastructure/observability.module.js';
@@ -61,6 +61,8 @@ export class HealthController {
     @Inject(REDIS_CLIENT) private readonly redis: RedisClient,
     @Inject(REDIS_METRICS) private readonly redisMetrics: RedisMetrics,
   ) {}
+
+  private readonly logger = new Logger(HealthController.name);
 
   @Public()
   @Get('health')
@@ -126,9 +128,14 @@ export class HealthController {
         ? Number(connectedClientsLine.split(':')[1] ?? 0)
         : 0;
       this.redisMetrics.setRedisGaugesFrom({ connectedClients, opsPerSecond: 0 });
-    } catch {
+    } catch (error) {
       // Sampling failure is non-fatal; the readiness check already
-      // passed via PING. The next sample run will retry.
+      // passed via PING. The next sample run will retry. Log at debug so
+      // the discarded failure is still observable without alarming the
+      // readiness path that just succeeded.
+      this.logger.debug(
+        `redis INFO sampling failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     return durationMs(startedAt);
   }
