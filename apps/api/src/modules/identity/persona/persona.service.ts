@@ -63,21 +63,24 @@ export interface PersonaInquiry {
 export type WebhookOutcome =
   | {
       readonly type: 'kyc.completed';
+      readonly eventId: string;
       readonly userId: string;
       readonly inquiryId: string;
       readonly dateOfBirth: string;
     }
   | {
       readonly type: 'kyc.failed';
+      readonly eventId: string;
       readonly userId: string;
       readonly inquiryId: string;
     }
   | {
       readonly type: 'kyc.expired';
+      readonly eventId: string;
       readonly userId: string;
       readonly inquiryId: string;
     }
-  | { readonly type: 'ignored'; readonly eventName: string };
+  | { readonly type: 'ignored'; readonly eventId: string; readonly eventName: string };
 
 const DEFAULT_API_BASE_URL = 'https://withpersona.com';
 const DEFAULT_HOSTED_FLOW_BASE_URL = 'https://withpersona.com/verify';
@@ -104,6 +107,9 @@ const InquiryPayloadSchema = z.object({
 
 const WebhookEnvelopeSchema = z.object({
   data: z.object({
+    // Persona's top-level event id (e.g. `evt_...`). This is the dedup key:
+    // Persona retries the same event for up to 24h, always reusing this id.
+    id: z.string().min(1),
     attributes: z.object({
       name: z.string().min(1),
       payload: InquiryPayloadSchema,
@@ -219,6 +225,7 @@ export class PersonaService {
       );
     }
 
+    const eventId = parsed.data.data.id;
     const eventName = parsed.data.data.attributes.name;
     const inquiry = parsed.data.data.attributes.payload.data;
     const inquiryId = inquiry.id;
@@ -253,6 +260,7 @@ export class PersonaService {
         }
         return {
           type: 'kyc.completed',
+          eventId,
           userId: referenceId,
           inquiryId,
           dateOfBirth: dob,
@@ -265,7 +273,7 @@ export class PersonaService {
             inquiryId,
           });
         }
-        return { type: 'kyc.failed', userId: referenceId, inquiryId };
+        return { type: 'kyc.failed', eventId, userId: referenceId, inquiryId };
       }
       case 'inquiry.expired': {
         if (referenceId === null || referenceId.length === 0) {
@@ -277,10 +285,10 @@ export class PersonaService {
             },
           );
         }
-        return { type: 'kyc.expired', userId: referenceId, inquiryId };
+        return { type: 'kyc.expired', eventId, userId: referenceId, inquiryId };
       }
       default:
-        return { type: 'ignored', eventName };
+        return { type: 'ignored', eventId, eventName };
     }
   }
 

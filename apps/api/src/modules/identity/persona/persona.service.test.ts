@@ -328,6 +328,7 @@ describe('PersonaService.handleWebhook — payload parsing + dispatch', () => {
     });
     expect(signedHandle(body)).toEqual({
       type: 'kyc.completed',
+      eventId: 'evt_test_001',
       userId: 'user_aaa',
       inquiryId: 'inq_xyz',
       dateOfBirth: '1990-01-15',
@@ -364,6 +365,7 @@ describe('PersonaService.handleWebhook — payload parsing + dispatch', () => {
     });
     expect(signedHandle(body)).toEqual({
       type: 'kyc.failed',
+      eventId: 'evt_test_001',
       userId: 'user_a',
       inquiryId: 'inq_x',
     });
@@ -385,6 +387,7 @@ describe('PersonaService.handleWebhook — payload parsing + dispatch', () => {
     });
     expect(signedHandle(body)).toEqual({
       type: 'kyc.expired',
+      eventId: 'evt_test_001',
       userId: 'user_a',
       inquiryId: 'inq_x',
     });
@@ -392,7 +395,11 @@ describe('PersonaService.handleWebhook — payload parsing + dispatch', () => {
 
   it('other event names are returned as ignored', () => {
     const body = inquiryEvent('inquiry.started', { referenceId: 'user_a' });
-    expect(signedHandle(body)).toEqual({ type: 'ignored', eventName: 'inquiry.started' });
+    expect(signedHandle(body)).toEqual({
+      type: 'ignored',
+      eventId: 'evt_test_001',
+      eventName: 'inquiry.started',
+    });
   });
 
   it('raises KYC_WEBHOOK_PAYLOAD_INVALID when body is not JSON', () => {

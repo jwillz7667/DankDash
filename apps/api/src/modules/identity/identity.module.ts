@@ -13,6 +13,7 @@ import {
   DispensariesRepository,
   DispensaryStaffRepository,
   UsersRepository,
+  WebhookEventsProcessedRepository,
   type Database,
 } from '@dankdash/db';
 import { Module, type FactoryProvider } from '@nestjs/common';
@@ -36,6 +37,13 @@ const dispensariesRepositoryProvider: FactoryProvider<DispensariesRepository> = 
   useFactory: (db: Database): DispensariesRepository => new DispensariesRepository(db),
 };
 
+const webhookEventsRepositoryProvider: FactoryProvider<WebhookEventsProcessedRepository> = {
+  provide: WebhookEventsProcessedRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): WebhookEventsProcessedRepository =>
+    new WebhookEventsProcessedRepository(db),
+};
+
 const identityServiceProvider: FactoryProvider<IdentityService> = {
   provide: IdentityService,
   inject: [UsersRepository, PersonaService, DispensaryStaffRepository, DispensariesRepository],
@@ -53,6 +61,7 @@ const identityServiceProvider: FactoryProvider<IdentityService> = {
   providers: [
     dispensaryStaffRepositoryProvider,
     dispensariesRepositoryProvider,
+    webhookEventsRepositoryProvider,
     identityServiceProvider,
   ],
   exports: [IdentityService],

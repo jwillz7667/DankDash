@@ -313,6 +313,7 @@ describe('IdentityService.applyKycOutcome', () => {
   it('on kyc.completed: flips status=active, stamps verifiedAt, and overwrites DOB with Persona value', async () => {
     const outcome: WebhookOutcome = {
       type: 'kyc.completed',
+      eventId: 'evt_abc123',
       userId: 'u1',
       inquiryId: 'inq_abc123',
       dateOfBirth: '1989-06-15', // Persona-verified value differs from user input
@@ -333,6 +334,7 @@ describe('IdentityService.applyKycOutcome', () => {
 
     await rig.service.applyKycOutcome({
       type: 'kyc.failed',
+      eventId: 'evt_abc123',
       userId: 'u1',
       inquiryId: 'inq_abc123',
     });
@@ -348,6 +350,7 @@ describe('IdentityService.applyKycOutcome', () => {
 
     await rig.service.applyKycOutcome({
       type: 'kyc.expired',
+      eventId: 'evt_abc123',
       userId: 'u1',
       inquiryId: 'inq_abc123',
     });
@@ -362,6 +365,7 @@ describe('IdentityService.applyKycOutcome', () => {
 
     await rig.service.applyKycOutcome({
       type: 'ignored',
+      eventId: 'evt_abc123',
       eventName: 'inquiry.created',
     });
 
