@@ -266,6 +266,31 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', (sig) => void shutdown(sig));
   process.on('SIGINT', (sig) => void shutdown(sig));
+
+  // Last-resort safety net. An unhandled rejection or uncaught exception
+  // leaves the process in an undefined state — node's own guidance is to
+  // log and exit rather than limp on. We do NOT run the graceful shutdown
+  // here (its async cleanup could hang on a half-broken handle); a non-zero
+  // exit is enough for Railway to restart the worker, and the structured
+  // `fatal` line carries the error for post-mortem. Without these handlers
+  // an unhandled rejection would terminate silently with no log at all.
+  process.on('unhandledRejection', (reason) => {
+    logger.fatal(
+      {
+        event: 'workers.unhandled_rejection',
+        err: reason instanceof Error ? reason : new Error(String(reason)),
+      },
+      'workers: unhandled promise rejection — exiting for restart',
+    );
+    process.exit(1);
+  });
+  process.on('uncaughtException', (err) => {
+    logger.fatal(
+      { event: 'workers.uncaught_exception', err },
+      'workers: uncaught exception — exiting for restart',
+    );
+    process.exit(1);
+  });
 }
 
 /**
