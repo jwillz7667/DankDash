@@ -121,8 +121,10 @@ on a documented schedule.
 ### 2.1 Environment variables
 
 Each variable must be set in Railway production environment
-and validated by `packages/config/src/env.schema.ts`
-(`[FACT-CHECK — file not yet created]`) at process boot.
+and validated by `packages/config/src/env.ts` (`EnvSchema`,
+backed by Zod) at process boot. The repo template documenting
+production sources for every variable is `.env.production.example`
+at the repo root.
 
 **API (`apps/api`):**
 
@@ -195,11 +197,15 @@ Each rotation has a runbook (see `docs/runbooks/`).
 
 ### 2.3 Boot validation
 
-- [ ] Config loader (`packages/config/src/env.schema.ts`)
+- [ ] Config loader (`packages/config/src/env.ts`, `EnvSchema`)
       fails fast on missing or malformed values.
-- [ ] Successful boot is verified by a one-time `pnpm
-    --filter @dankdash/api run env-check` on the
-      production environment.
+- [ ] `pnpm --filter @dankdash/api run env-check` exits 0 against
+      the populated `.env.production`. The CLI runs the schema, then
+      the production-strict overlay from `@dankdash/config`
+      (`runAllChecks`): bans localhost / debug-tier log levels,
+      checks JWT key-pair coherence, checks feature-flag/credential
+      coherence, and enforces the Twilio-sender XOR. Exit code 2 means
+      at least one rule failed; do not deploy until exit 0.
 
 ## 3. Third-party provisioning
 
@@ -270,7 +276,7 @@ checkout transaction.
       enforced. DST transitions tested with explicit
       fixtures.
 - [ ] Geofence rule (`ST_Contains(delivery_polygon,
-    address_point)`) enforced. Interstate addresses are
+address_point)`) enforced. Interstate addresses are
       rejected even if the geofence boundary touches.
 - [ ] Age rule (DOB ≥ 21 years before today, server-side)
       enforced.
