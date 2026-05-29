@@ -159,4 +159,68 @@ describe('PartitionsRepository (integration)', () => {
       await expect(repo.dropTable("bad'name")).rejects.toThrow();
     });
   });
+
+  describe('rolloverMonthlyPartitions', () => {
+    const MONTHLY_PARENTS = [
+      'order_events',
+      'order_status_history',
+      'notifications',
+      'audit_log',
+    ] as const;
+
+    // True iff a MONTH-shaped partition (`<parent>_YYYY_MM`) exists for the
+    // month `monthsAhead` from now. The suffix is computed in SQL with the
+    // exact date math dankdash_create_month_partition uses, so the assertion
+    // can't drift from the function's clock or the test runner's timezone.
+    async function monthPartitionExists(parent: string, monthsAhead: number): Promise<boolean> {
+      const rows = (await getPool().db.execute<{ present: boolean }>(
+        sql.raw(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_class
+            WHERE relname = '${parent}_' || to_char(
+              (date_trunc('month', NOW()) + interval '${monthsAhead} months')::date,
+              'YYYY_MM'
+            )
+          ) AS present
+        `),
+      )) as ReadonlyArray<{ present: boolean }>;
+      return rows[0]?.present === true;
+    }
+
+    it('runs without raising — the pre-fix function tripped the driver_location_history overlap', async () => {
+      const repo = new PartitionsRepository(getPool().db);
+      await expect(repo.rolloverMonthlyPartitions()).resolves.toBeUndefined();
+    });
+
+    it('is idempotent — a second call is a no-op, not an error', async () => {
+      const repo = new PartitionsRepository(getPool().db);
+      await repo.rolloverMonthlyPartitions();
+      await expect(repo.rolloverMonthlyPartitions()).resolves.toBeUndefined();
+    });
+
+    it('guarantees the current month plus a three-month look-ahead for every monthly table', async () => {
+      const repo = new PartitionsRepository(getPool().db);
+      await repo.rolloverMonthlyPartitions();
+
+      for (const parent of MONTHLY_PARENTS) {
+        for (let monthsAhead = 0; monthsAhead <= 3; monthsAhead += 1) {
+          expect(
+            await monthPartitionExists(parent, monthsAhead),
+            `${parent} +${monthsAhead}mo partition`,
+          ).toBe(true);
+        }
+      }
+    });
+
+    it('does not create a monthly partition for the week-partitioned driver_location_history', async () => {
+      const repo = new PartitionsRepository(getPool().db);
+      await repo.rolloverMonthlyPartitions();
+
+      // A `driver_location_history_YYYY_MM` table (no `w`) would be the
+      // overlapping monthly partition the old function tried to make.
+      for (let monthsAhead = 0; monthsAhead <= 3; monthsAhead += 1) {
+        expect(await monthPartitionExists('driver_location_history', monthsAhead)).toBe(false);
+      }
+    });
+  });
 });

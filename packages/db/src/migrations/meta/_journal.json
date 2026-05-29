@@ -64,6 +64,13 @@
       "when": 1748188800000,
       "tag": "0008_metrc_next_retry",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1748275200000,
+      "tag": "0009_monthly_rollover_fix",
+      "breakpoints": true
     }
   ]
 }

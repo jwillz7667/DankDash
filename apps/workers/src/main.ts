@@ -47,6 +47,7 @@ import {
 } from './jobs/location-ingest/index.js';
 import { scheduleMetrcReconciliationJob } from './jobs/metrc-reconciliation/index.js';
 import { scheduleMetrcReportingJob } from './jobs/metrc-reporting/index.js';
+import { scheduleMonthlyPartitionRolloverJob } from './jobs/monthly-partition-rollover/index.js';
 import {
   ParquetPartitionArchiver,
   schedulePartitionManagementJob,
@@ -127,6 +128,17 @@ async function main(): Promise<void> {
   const partitionTask = schedulePartitionManagementJob({
     partitions,
     archiver: partitionArchiver,
+    logger,
+    clock: () => new Date(),
+  });
+
+  // Keeps the monthly-partitioned append-only tables (order_events,
+  // order_status_history, notifications, audit_log) ahead of the write
+  // horizon. Runs daily AND on boot (runOnInit) — the order lifecycle's
+  // write path dies the moment these run out of partitions, so this is the
+  // one rollover job we want re-asserted on every worker start.
+  const monthlyPartitionRolloverTask = scheduleMonthlyPartitionRolloverJob({
+    partitions,
     logger,
     clock: () => new Date(),
   });
@@ -243,6 +255,7 @@ async function main(): Promise<void> {
     dispatchTask.stop();
     offerExpiryTask.stop();
     partitionTask.stop();
+    monthlyPartitionRolloverTask.stop();
     metrcReportingTask?.stop();
     metrcReconciliationTask?.stop();
     await locationIngest.stop();

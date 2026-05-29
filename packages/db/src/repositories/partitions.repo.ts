@@ -73,6 +73,24 @@ export class PartitionsRepository extends BaseRepository {
   }
 
   /**
+   * Idempotent — wraps the `dankdash_rollover_monthly_partitions` SQL
+   * function (see migration 0009). It ensures the current month plus a
+   * three-month look-ahead of partitions exist for every monthly-partitioned
+   * append-only table (`order_events`, `order_status_history`,
+   * `notifications`, `audit_log`). Each child create short-circuits via
+   * `pg_class` when the partition already exists, so the daily cron — and the
+   * boot-time run — can fire this repeatedly without raising.
+   *
+   * `driver_location_history` is deliberately NOT covered here: it is
+   * week-partitioned and maintained by `PartitionLifecycleService`. The SQL
+   * function used to include it, which raised on the weekly/monthly bound
+   * overlap; 0009 removed that.
+   */
+  async rolloverMonthlyPartitions(): Promise<void> {
+    await this.db.execute(sql`SELECT dankdash_rollover_monthly_partitions()`);
+  }
+
+  /**
    * Returns every child partition of `parentTable` with its parsed range
    * bounds, ordered chronologically. Reads `pg_get_expr(relpartbound)`
    * which serializes the partition bound as e.g.
