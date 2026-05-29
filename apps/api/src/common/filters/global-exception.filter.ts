@@ -13,7 +13,7 @@
  * double-counting.
  */
 import { type Logger } from '@dankdash/config';
-import { DomainError, toErrorEnvelope } from '@dankdash/types';
+import { DomainError, RateLimitError, toErrorEnvelope } from '@dankdash/types';
 import {
   Catch,
   HttpException,
@@ -55,6 +55,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         },
         'request failed with domain error',
       );
+      // A 429 must tell the client when to come back. RateLimitGuard puts
+      // the window reset in `retryAfterMs`; HTTP Retry-After is in seconds,
+      // rounded up so we never advise a retry before the window resets.
+      if (exception instanceof RateLimitError) {
+        const retryAfterMs = exception.details['retryAfterMs'];
+        if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs)) {
+          void res.header('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+        }
+      }
       void res.status(exception.statusCode).send(toErrorEnvelope(exception, requestId));
       return;
     }
