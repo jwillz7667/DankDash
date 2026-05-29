@@ -102,6 +102,12 @@ export const EnvSchema = z
     // lifecycle continues, the notification row carries the reason.
     ENABLE_TWILIO: booleanFromString.default(true),
     ENABLE_RESEND: booleanFromString.default(true),
+    // Swagger UI + the generated OpenAPI document expose the full internal
+    // API surface (including compliance-gated paths). Non-production
+    // environments always mount it for developer convenience; production
+    // mounts it only when this flag is explicitly set, so a default prod
+    // deploy never leaks the schema. See apps/api/src/main.ts.
+    ENABLE_API_DOCS: booleanFromString.default(false),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not

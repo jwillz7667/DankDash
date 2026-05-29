@@ -82,17 +82,26 @@ async function bootstrap(): Promise<void> {
     new RateLimitGuard(reflector, rateLimitStore),
   );
 
-  const swagger = new DocumentBuilder()
-    .setTitle('DankDash API')
-    .setDescription(
-      'Internal API for the three DankDash clients (consumer, vendor portal, ' +
-        'driver). Compliance-gated endpoints are documented in ' +
-        'docs/spec/openapi-excerpt.yaml.',
-    )
-    .setVersion('1.0.0')
-    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
-    .build();
-  SwaggerModule.setup('docs', app, () => SwaggerModule.createDocument(app, swagger));
+  // Swagger UI at /docs publishes the entire internal API surface — every
+  // route, DTO shape, and the compliance-gated cart/checkout contract. In
+  // production that is reconnaissance handed to an attacker, so mount it
+  // only outside production, or when an operator explicitly opts in via
+  // ENABLE_API_DOCS (e.g. a locked-down internal prod). A default
+  // production deploy never exposes it.
+  if (env.NODE_ENV !== 'production' || env.ENABLE_API_DOCS) {
+    const swagger = new DocumentBuilder()
+      .setTitle('DankDash API')
+      .setDescription(
+        'Internal API for the three DankDash clients (consumer, vendor portal, ' +
+          'driver). Compliance-gated endpoints are documented in ' +
+          'docs/spec/openapi-excerpt.yaml.',
+      )
+      .setVersion('1.0.0')
+      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
+      .build();
+    SwaggerModule.setup('docs', app, () => SwaggerModule.createDocument(app, swagger));
+    logger.info('OpenAPI docs mounted at /docs');
+  }
 
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
   logger.info({ port: env.PORT }, 'apps/api listening');
