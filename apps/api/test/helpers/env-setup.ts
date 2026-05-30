@@ -11,8 +11,22 @@
  * Each value here is deterministic and clearly fake — production secrets
  * never go through this path. Services that need real signing/keying for
  * a given test override locally.
+ *
+ * Registered as the suite's `setupFiles` entry, so it also installs the
+ * one global hook every test file shares: a `vi.useRealTimers()` after
+ * each test. The api suite runs single-fork (`pool: 'forks'`,
+ * `singleFork: true`), so every test file shares one worker and one
+ * global timer state. A unit test that calls `vi.useFakeTimers()` in a
+ * `beforeEach` without restoring leaks the fake clock into the next
+ * file — and the next compliance-gated integration file's
+ * `beforeAll(buildTestApp)` then hangs forever (Nest/Fastify bootstrap
+ * awaits a real `setTimeout`/`setImmediate` that the frozen clock never
+ * fires). This guard resets to real timers after every test so no file
+ * can poison the next; tests that want a fake clock re-arm it in their
+ * own `beforeEach`, so the reset is invisible to them.
  */
 import { generateKeyPairSync } from 'node:crypto';
+import { afterEach, vi } from 'vitest';
 
 // AuthJwtModule decodes JWT_*_KEY_BASE64 at boot and rejects anything that
 // is not a real PEM block. A throwaway 2048-bit RSA keypair is fast to
@@ -87,3 +101,9 @@ const DEFAULTS: Record<string, string> = {
 for (const [key, value] of Object.entries(DEFAULTS)) {
   process.env[key] ??= value;
 }
+
+// Single-fork safety net: never let one test file's fake clock survive
+// into the next. Idempotent when timers are already real.
+afterEach(() => {
+  vi.useRealTimers();
+});
