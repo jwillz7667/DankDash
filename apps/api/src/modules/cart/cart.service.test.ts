@@ -762,9 +762,12 @@ describe('CartService.delete', () => {
     expect(rig.carts.rows.has(CART_ID)).toBe(false);
   });
 
-  it('silently no-ops for a cross-user / missing id (204 either way)', async () => {
+  it('throws NotFoundError for a cross-user / missing id and leaves the row intact', async () => {
     rig.carts.seed(makeCart({ userId: OTHER_USER_ID }));
-    await expect(rig.service.delete(USER_ID, CART_ID)).resolves.toBeUndefined();
+    // Zero rows match the (id, userId) pair, so the delete reports false and
+    // the service surfaces a 404 rather than a misleading 204 — without
+    // distinguishing "not yours" from "never existed".
+    await expect(rig.service.delete(USER_ID, CART_ID)).rejects.toBeInstanceOf(NotFoundError);
     // The row owned by the other user is untouched.
     expect(rig.carts.rows.has(CART_ID)).toBe(true);
   });
