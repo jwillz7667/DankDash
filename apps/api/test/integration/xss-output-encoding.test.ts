@@ -31,7 +31,7 @@
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestApp } from '../helpers/build-app.js';
-import { SEED_IDS, bearer, seedFixtures, signTokenFor } from './setup.js';
+import { SEED_IDS, bearer, resetRateLimit, seedFixtures, signTokenFor } from './setup.js';
 
 const XSS_PAYLOADS: ReadonlyArray<string> = [
   '<script>alert(1)</script>',
@@ -67,6 +67,10 @@ describe('XSS output encoding — JSON contract + safe response headers', () => 
 
   beforeEach(async () => {
     await seedFixtures();
+    // it.each fans these payloads into separate `it`s that all hammer the
+    // same per-user address endpoints within one rate-limit window; clear
+    // the in-memory limiter between cases so a later payload is not 429'd.
+    resetRateLimit(app);
   });
 
   it.each(XSS_PAYLOADS)(
