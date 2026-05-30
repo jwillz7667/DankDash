@@ -14,8 +14,8 @@
  * special role, body, or path-param requirements — so the failure
  * surface is strictly the auth layer.
  *
- * Successful response from the guard is 401 with `AUTH_TOKEN_INVALID`
- * (or `AUTH_TOKEN_EXPIRED` for the expiry case). The error body
+ * Successful response from the guard is 401 with `TOKEN_INVALID`
+ * (or `TOKEN_EXPIRED` for the expiry case). The error body
  * shape carries no information about WHY the token failed beyond the
  * code — i.e. we do not echo back the offending claim or signature
  * mismatch detail.
@@ -229,6 +229,6 @@ describe('JWT tampering — JwtAuthGuard rejects invalid tokens', () => {
     expect(res.statusCode).toBe(401);
     // The error body must not leak which check failed.
     const body = res.json<ErrorBody>();
-    expect(body.error.code).toMatch(/^AUTH_/u);
+    expect(body.error.code).toMatch(/^TOKEN_/u);
   });
 });

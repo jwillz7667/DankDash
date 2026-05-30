@@ -64,11 +64,15 @@ describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => 
        VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5::uuid,
                $6::uuid, 'driver_assigned',
                1000, 100, 87, 599, 1786,
-               '{}'::jsonb, '{}'::jsonb)
+               '{}'::jsonb,
+               '{"line1":"123 Main St","line2":null,"city":"Minneapolis","region":"MN","postalCode":"55401","location":{"type":"Point","coordinates":[-93.265,44.978]},"deliveryInstructions":null}'::jsonb)
        ON CONFLICT (id) DO NOTHING`,
       [
         ORDER_ID_DRIVER_1,
-        'IDOR-D1',
+        // short_code is rendered through OrderResponseSchema, which pins it
+        // to exactly 6 chars (.length(6)). A 7-char code throws a ZodError
+        // in projectOrder and surfaces as a 500 — keep this at 6.
+        'IDORD1',
         SEED_IDS.user.customer1,
         SEED_IDS.dispensary.mpls,
         DRIVER_1_USER_ID,
@@ -115,7 +119,14 @@ describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => 
       method: 'POST',
       url: `/v1/driver/orders/${ORDER_ID_DRIVER_1}/pickup-confirm`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { location: { latitude: 44.978, longitude: -93.265 } },
+      payload: {
+        location: {
+          latitude: 44.978,
+          longitude: -93.265,
+          accuracyMeters: 8,
+          capturedAt: '2026-05-30T18:00:00.000Z',
+        },
+      },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json<ErrorBody>().error.code).toBe('NOT_FOUND');
@@ -130,7 +141,15 @@ describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => 
       method: 'POST',
       url: `/v1/driver/orders/${ORDER_ID_DRIVER_1}/delivery-confirm`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { location: { latitude: 44.978, longitude: -93.265 }, note: 'left at door' },
+      payload: {
+        location: {
+          latitude: 44.978,
+          longitude: -93.265,
+          accuracyMeters: 8,
+          capturedAt: '2026-05-30T18:00:00.000Z',
+        },
+        notes: 'left at door',
+      },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -157,7 +176,7 @@ describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => 
       method: 'POST',
       url: `/v1/driver/orders/${ORDER_ID_DRIVER_1}/id-scan-result`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { sessionId: 'srv-not-real', status: 'approved' },
+      payload: { verificationId: 'srv-not-real' },
     });
     expect(res.statusCode).toBe(404);
   });

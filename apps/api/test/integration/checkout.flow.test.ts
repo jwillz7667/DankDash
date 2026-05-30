@@ -32,10 +32,19 @@ import {
 } from '@dankdash/aeropay';
 import { stableUuid } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../../src/modules/payments/tokens.js';
 import { buildTestApp } from '../helpers/build-app.js';
-import { SEED_IDS, bearer, getPool, seedFixtures, signTokenFor } from './setup.js';
+import {
+  SEED_IDS,
+  bearer,
+  freezeToBusinessHours,
+  getPool,
+  resetRateLimit,
+  restoreClock,
+  seedFixtures,
+  signTokenFor,
+} from './setup.js';
 
 /**
  * Wrap an arbitrary thrown value in an Error so `Promise.reject` always
@@ -171,12 +180,22 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
   });
 
   beforeEach(async () => {
+    // Pin the clock inside MN sale hours so the server-authoritative
+    // compliance check can't flake when CI runs in the 2–8 AM dead zone.
+    freezeToBusinessHours();
     await seedFixtures();
     await force24HourHours();
+    // The frozen clock never advances the rate-limit window, so clear it
+    // between tests to stop hits accumulating across the suite.
+    resetRateLimit(app);
     // Reset the fake between tests so per-test next* config doesn't bleed.
     aeropay.createCalls.length = 0;
     aeropay.nextStatus = 'initiated';
     aeropay.nextThrow = null;
+  });
+
+  afterEach(() => {
+    restoreClock();
   });
 
   it('happy path — creates order, decrements inventory, deletes cart, writes balanced ledger, charges Aeropay with idempotency key', async () => {
@@ -324,12 +343,17 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
       { listingId: MPLS_NORTHERN_LIGHTS_LISTING_ID, quantity: 1 },
     ]);
 
-    // Force the cart's expires_at backward by 1 minute so the checkout
-    // service's `cart.expiresAt.getTime() <= now.getTime()` trips.
-    await getPool().sql.unsafe(
-      `UPDATE carts SET expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1`,
-      [cart.id],
-    );
+    // Force the cart's expires_at to 1 minute before the FROZEN now so the
+    // checkout service's `cart.expiresAt.getTime() <= now.getTime()` trips.
+    // The check compares against `new Date()` (frozen), so the fixture must
+    // be tied to the frozen instant, not the DB wall clock — `Date.now()`
+    // here already returns the frozen value.
+    // postgres-js `.unsafe` binds parameters over the wire protocol and does
+    // NOT serialize a JS Date — pass an ISO-8601 string for the timestamptz.
+    await getPool().sql.unsafe(`UPDATE carts SET expires_at = $2 WHERE id = $1`, [
+      cart.id,
+      new Date(Date.now() - 60_000).toISOString(),
+    ]);
 
     const resp = await app.inject({
       method: 'POST',

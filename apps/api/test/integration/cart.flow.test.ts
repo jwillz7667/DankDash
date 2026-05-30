@@ -19,9 +19,18 @@
  */
 import { stableUuid } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestApp } from '../helpers/build-app.js';
-import { SEED_IDS, bearer, getPool, seedFixtures, signTokenFor } from './setup.js';
+import {
+  SEED_IDS,
+  bearer,
+  freezeToBusinessHours,
+  getPool,
+  resetRateLimit,
+  restoreClock,
+  seedFixtures,
+  signTokenFor,
+} from './setup.js';
 
 const ALICE_ADDRESS_ID = stableUuid('address', 'addr-alice-home');
 const MPLS_DARK_CHOCOLATE_LISTING_ID = stableUuid('listing', 'mpls-p-edible-nl-1');
@@ -67,6 +76,11 @@ describe('/v1/carts — CRUD + compliance preview', () => {
   });
 
   beforeEach(async () => {
+    // Pin the clock to midday so the validate path's compliance hours rule
+    // is deterministic — the 24-hour rewrite below still intersects MN sale
+    // hours [08:00, 02:00), so a real clock in the 2–8 AM dead zone would
+    // otherwise flake `passed=true`.
+    freezeToBusinessHours();
     await seedFixtures();
     // Force the seeded dispensaries to 24-hour operations so the hours
     // rule never trips a test based on the local wall clock. The cart
@@ -85,6 +99,13 @@ describe('/v1/carts — CRUD + compliance preview', () => {
         sun: { open: '00:00', close: '23:59' },
       }),
     ]);
+    // The frozen clock never advances the rate-limit window; clear it so
+    // hits don't accumulate across this file's tests.
+    resetRateLimit(app);
+  });
+
+  afterEach(() => {
+    restoreClock();
   });
 
   it('POST /v1/carts is idempotent per (userId, dispensaryId)', async () => {
