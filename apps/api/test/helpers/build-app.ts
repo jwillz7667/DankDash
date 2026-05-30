@@ -84,6 +84,8 @@ export async function buildTestApp(
   await app.register(helmet, {
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    // Mirror main.ts: deny framing entirely (stricter than SAMEORIGIN).
+    xFrameOptions: { action: 'deny' },
   });
   const logger = pino({ level: 'silent' });
 

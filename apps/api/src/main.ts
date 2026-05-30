@@ -81,6 +81,10 @@ async function bootstrap(): Promise<void> {
   await app.register(helmet, {
     contentSecurityPolicy: false, // API responds JSON; CSP belongs on the web tiers
     crossOriginEmbedderPolicy: false,
+    // The API serves JSON and is never meant to be framed by any origin.
+    // DENY is stricter than helmet's SAMEORIGIN default and is the
+    // clickjacking guarantee the security header contract asserts.
+    xFrameOptions: { action: 'deny' },
   });
 
   // CORS is an explicit exact-match origin allowlist (CORS_ALLOWED_ORIGINS),
