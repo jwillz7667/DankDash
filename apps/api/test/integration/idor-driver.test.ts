@@ -29,8 +29,10 @@ interface ErrorBody {
   readonly error: { readonly code: string };
 }
 interface EarningsBody {
-  readonly availableCents: number;
-  readonly pendingCents: number;
+  readonly tipsCents: number;
+  readonly deliveryFeesCents: number;
+  readonly deliveriesCount: number;
+  readonly totalCents: number;
 }
 
 describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => {
@@ -169,8 +171,10 @@ describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => 
   // driver-1 deliveries.
   // --------------------------------------------------------------------
   it('GET /v1/driver/earnings — driver-2 does not see driver-1 earnings', async () => {
-    // Mark the driver-1 order as delivered with a tip, and add ledger
-    // entries the earnings service reads from.
+    // Mark the driver-1 order as delivered with a tip. These earnings are
+    // bound to driver-1's `users.id` (which is what `orders.driver_id`
+    // references) and must never surface in driver-2's window — not even
+    // as an aggregate that leaks the existence of a driver-1 delivery.
     const pool = getPool();
     await pool.sql.unsafe(
       `UPDATE orders
@@ -186,14 +190,16 @@ describe('IDOR — driver surface (cross-driver 404 + no earnings leak)', () => 
     const driver2Token = signTokenFor(app, { userId: DRIVER_2_USER_ID, role: 'driver' });
     const res = await app.inject({
       method: 'GET',
-      url: '/v1/driver/earnings',
+      url: '/v1/driver/earnings?period=today',
       headers: bearer(driver2Token),
     });
-    // Driver-2 has no orders; both gauges must be zero.
+    // Driver-2 has no delivered orders; every gauge must be zero.
     expect(res.statusCode).toBe(200);
     const body = res.json<EarningsBody>();
-    expect(body.availableCents).toBe(0);
-    expect(body.pendingCents).toBe(0);
+    expect(body.totalCents).toBe(0);
+    expect(body.tipsCents).toBe(0);
+    expect(body.deliveryFeesCents).toBe(0);
+    expect(body.deliveriesCount).toBe(0);
   });
 
   // --------------------------------------------------------------------

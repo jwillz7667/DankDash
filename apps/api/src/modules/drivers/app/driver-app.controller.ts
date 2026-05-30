@@ -2,8 +2,13 @@
  * /v1/driver — read-only driver-app surface (Phase 8.5).
  *
  *   GET /v1/driver/current-route   — order in flight + pickup + dropoff
- *   GET /v1/driver/earnings        — bucketed tips + fees + deliveries
  *   GET /v1/driver/shifts          — recent shift history
+ *
+ * Earnings (`GET /v1/driver/earnings`) is served by
+ * `DriverEarningsController` — it keys on the principal's `users.id`
+ * (which is what `orders.driver_id` references), so it lives with the
+ * cashout/wallet surface rather than here, where the only id in hand is
+ * the `drivers.id` from `DriverContext`.
  *
  * Auth: global JwtAuthGuard authenticates the principal;
  * DriverContextGuard (class-level) refuses non-driver principals and
@@ -18,20 +23,15 @@
  *
  * Rate limits sized for the driver app's polling cadence: current-route
  * is polled every few seconds while a delivery is in flight, so it sits
- * high (120/min). Earnings + shifts are dashboard cards, polled on
- * navigation only, so they sit lower (30/min).
+ * high (120/min). The shifts list is a dashboard card, polled on
+ * navigation only, so it sits lower (30/min).
  */
-import { Controller, Get, HttpCode, HttpStatus, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
 import { RateLimit } from '../../../common/decorators/rate-limit.decorator.js';
 import { CurrentDriver } from '../context/current-driver.decorator.js';
 import { DriverContextGuard } from '../context/driver-context.guard.js';
 import { DriverAppService } from './driver-app.service.js';
-import {
-  EarningsQueryDto,
-  type CurrentRouteResponse,
-  type EarningsResponse,
-  type ShiftsListResponse,
-} from './dto/index.js';
+import { type CurrentRouteResponse, type ShiftsListResponse } from './dto/index.js';
 import type { DriverContext } from '../context/driver-context.types.js';
 
 @Controller('driver')
@@ -44,16 +44,6 @@ export class DriverAppController {
   @RateLimit({ name: 'driver-current-route', tracker: 'user', limit: 120, windowMs: 60_000 })
   currentRoute(@CurrentDriver() ctx: DriverContext): Promise<CurrentRouteResponse> {
     return this.app.currentRoute(ctx);
-  }
-
-  @Get('earnings')
-  @HttpCode(HttpStatus.OK)
-  @RateLimit({ name: 'driver-earnings', tracker: 'user', limit: 30, windowMs: 60_000 })
-  earnings(
-    @CurrentDriver() ctx: DriverContext,
-    @Query() query: EarningsQueryDto,
-  ): Promise<EarningsResponse> {
-    return this.app.earnings(ctx, query);
   }
 
   @Get('shifts')

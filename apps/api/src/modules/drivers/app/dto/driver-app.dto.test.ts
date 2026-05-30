@@ -1,16 +1,13 @@
 /**
  * Boundary-validation tests for the driver-app DTOs. Asserts the wire
- * shape against the bits a controller can't catch on its own — period
- * defaulting, .strict() enforcement, the dropoff/pickup nesting, and
- * the explicit ISO datetime + UUID + integer shapes.
+ * shape against the bits a controller can't catch on its own —
+ * .strict() enforcement, the dropoff/pickup nesting, and the explicit
+ * UUID + integer + GeoJSON-Point shapes.
  */
 import { describe, expect, it } from 'vitest';
 import {
   CurrentRouteResponseSchema,
   DropoffSchema,
-  EarningsPeriodSchema,
-  EarningsQuerySchema,
-  EarningsResponseSchema,
   PickupSchema,
   ShiftsListResponseSchema,
 } from './driver-app.dto.js';
@@ -79,68 +76,6 @@ const VALID_ORDER = {
   },
   ratings: { customer: null, review: null, dispensary: null, driver: null },
 };
-
-describe('EarningsPeriodSchema', () => {
-  it('exposes exactly the three periods the service handles', () => {
-    expect(EarningsPeriodSchema.options).toEqual(['today', 'week', 'month']);
-  });
-});
-
-describe('EarningsQuerySchema', () => {
-  it('defaults missing period to today', () => {
-    const res = EarningsQuerySchema.safeParse({});
-    expect(res.success).toBe(true);
-    if (res.success) expect(res.data.period).toBe('today');
-  });
-
-  it('accepts an explicit period', () => {
-    const res = EarningsQuerySchema.safeParse({ period: 'week' });
-    expect(res.success).toBe(true);
-    if (res.success) expect(res.data.period).toBe('week');
-  });
-
-  it('rejects an unknown period', () => {
-    expect(EarningsQuerySchema.safeParse({ period: 'year' }).success).toBe(false);
-  });
-
-  it('rejects extra keys (.strict)', () => {
-    expect(EarningsQuerySchema.safeParse({ period: 'today', extra: 1 }).success).toBe(false);
-  });
-});
-
-describe('EarningsResponseSchema', () => {
-  const VALID: ReturnType<(typeof EarningsResponseSchema)['parse']> = {
-    period: 'today',
-    since: '2026-05-19T05:00:00.000Z',
-    until: '2026-05-20T05:00:00.000Z',
-    tipsCents: 1500,
-    deliveryFeesCents: 4000,
-    deliveriesCount: 5,
-    totalCents: 5500,
-  };
-
-  it('accepts a well-formed response', () => {
-    expect(EarningsResponseSchema.safeParse(VALID).success).toBe(true);
-  });
-
-  it('rejects negative cents', () => {
-    expect(EarningsResponseSchema.safeParse({ ...VALID, tipsCents: -1 }).success).toBe(false);
-  });
-
-  it('rejects fractional cents', () => {
-    expect(EarningsResponseSchema.safeParse({ ...VALID, tipsCents: 12.5 }).success).toBe(false);
-  });
-
-  it('rejects extra keys (.strict)', () => {
-    expect(EarningsResponseSchema.safeParse({ ...VALID, extra: 1 }).success).toBe(false);
-  });
-
-  it('rejects a non-ISO since timestamp', () => {
-    expect(
-      EarningsResponseSchema.safeParse({ ...VALID, since: '2026-05-19 05:00:00' }).success,
-    ).toBe(false);
-  });
-});
 
 describe('PickupSchema', () => {
   it('accepts a well-formed pickup', () => {
