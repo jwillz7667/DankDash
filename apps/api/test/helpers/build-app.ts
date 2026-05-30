@@ -32,8 +32,14 @@ import {
   RATE_LIMIT_STORE,
   type RateLimitStore,
 } from '../../src/common/rate-limit/rate-limit-store.js';
+import {
+  EXCEPTION_COUNTERS,
+  HTTP_HISTOGRAMS,
+  SENTRY_HANDLE,
+} from '../../src/infrastructure/observability.module.js';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard.js';
 import { JwtService } from '../../src/modules/auth/jwt/jwt.service.js';
+import type { ExceptionCounters, HttpHistograms, SentryHandle } from '@dankdash/observability';
 
 export interface ProviderOverride {
   readonly token: unknown;
@@ -78,11 +84,10 @@ export async function buildTestApp(
   await app.register(helmet, {
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    // Mirror main.ts: deny framing entirely (stricter than SAMEORIGIN).
+    xFrameOptions: { action: 'deny' },
   });
   const logger = pino({ level: 'silent' });
-  app.useGlobalPipes(new ZodValidationPipe());
-  app.useGlobalFilters(new GlobalExceptionFilter(logger));
-  app.useGlobalInterceptors(new RequestIdInterceptor(), new LoggingInterceptor(logger));
 
   // Mirror main.ts: deny-by-default global auth + global rate limiting.
   // Tests that hit authenticated routes mint a token via the test rig and
@@ -92,6 +97,16 @@ export async function buildTestApp(
   const reflector = app.get(Reflector);
   const jwtService = app.get(JwtService);
   const rateLimitStore = app.get<RateLimitStore>(RATE_LIMIT_STORE);
+  const httpHistograms = app.get<HttpHistograms>(HTTP_HISTOGRAMS);
+  const sentryHandle = app.get<SentryHandle>(SENTRY_HANDLE);
+  const exceptionCounters = app.get<ExceptionCounters>(EXCEPTION_COUNTERS);
+
+  app.useGlobalPipes(new ZodValidationPipe());
+  app.useGlobalFilters(new GlobalExceptionFilter(logger, sentryHandle, exceptionCounters));
+  app.useGlobalInterceptors(
+    new RequestIdInterceptor(),
+    new LoggingInterceptor(logger, httpHistograms),
+  );
   app.useGlobalGuards(
     new JwtAuthGuard(reflector, jwtService),
     new RateLimitGuard(reflector, rateLimitStore),

@@ -28,7 +28,7 @@ export function Sidebar({ role }: SidebarProps): ReactNode {
   return (
     <nav
       aria-label="Primary"
-      className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white"
+      className="flex h-full w-64 shrink-0 flex-col border-r border-outline bg-surface"
     >
       <div className="flex h-16 items-center px-6">
         <Link href="/dashboard" aria-label="DankDash for Business — Dashboard" className="block">
@@ -36,9 +36,7 @@ export function Sidebar({ role }: SidebarProps): ReactNode {
         </Link>
       </div>
       <div className="px-3 pb-2 pt-2">
-        <p className="px-3 text-2xs font-semibold uppercase tracking-wider text-slate-400">
-          Workspace
-        </p>
+        <p className="px-3 text-2xs font-semibold uppercase tracking-wider text-muted">Workspace</p>
       </div>
       <ul className="flex flex-1 flex-col gap-0.5 px-3">
         {items.map((item) => {
@@ -60,14 +58,14 @@ export function Sidebar({ role }: SidebarProps): ReactNode {
                   'group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ease-out',
                   active
                     ? 'bg-moss-50 text-moss-800'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+                    : 'text-secondary hover:bg-surface-muted hover:text-foreground',
                 )}
               >
                 <Icon
                   aria-hidden="true"
                   className={cn(
                     'h-4 w-4 shrink-0 transition-colors duration-150',
-                    active ? 'text-moss-600' : 'text-slate-400 group-hover:text-slate-600',
+                    active ? 'text-moss-600' : 'text-muted group-hover:text-secondary',
                   )}
                   strokeWidth={2}
                 />
@@ -77,7 +75,7 @@ export function Sidebar({ role }: SidebarProps): ReactNode {
           );
         })}
       </ul>
-      <div className="border-t border-slate-100 px-6 py-4 text-2xs text-slate-400">
+      <div className="border-t border-outline-subtle px-6 py-4 text-2xs text-muted">
         <p>v1.0 · MN compliant</p>
       </div>
     </nav>

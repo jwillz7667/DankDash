@@ -21,10 +21,10 @@ export function PayoutsListTable({ payouts }: PayoutsListTableProps): ReactNode 
     return (
       <div
         role="status"
-        className="flex flex-col items-center gap-1.5 rounded-2xl border border-dashed border-slate-200 bg-white px-6 py-12 text-center"
+        className="flex flex-col items-center gap-1.5 rounded-2xl border border-dashed border-outline bg-surface px-6 py-12 text-center"
       >
-        <p className="text-sm font-medium text-slate-700">No payouts yet</p>
-        <p className="max-w-md text-sm text-slate-500">
+        <p className="text-sm font-medium text-secondary">No payouts yet</p>
+        <p className="max-w-md text-sm text-muted">
           Once your first delivered order settles overnight, the next-day payout will appear here
           with the gross, fees, and final net deposit.
         </p>
@@ -33,9 +33,9 @@ export function PayoutsListTable({ payouts }: PayoutsListTableProps): ReactNode 
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <table className="w-full divide-y divide-slate-100 text-left text-sm">
-        <thead className="bg-slate-50 text-xs font-medium uppercase tracking-wider text-slate-500">
+    <div className="overflow-hidden rounded-2xl border border-outline bg-surface shadow-sm">
+      <table className="w-full divide-y divide-outline-subtle text-left text-sm">
+        <thead className="bg-surface-muted text-xs font-medium uppercase tracking-wider text-muted">
           <tr>
             <th scope="col" className="px-4 py-3">
               Period
@@ -57,7 +57,7 @@ export function PayoutsListTable({ payouts }: PayoutsListTableProps): ReactNode 
             </th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">
+        <tbody className="divide-y divide-outline-subtle">
           {payouts.map((payout) => (
             <PayoutsListRow key={payout.id} payout={payout} />
           ))}
@@ -70,11 +70,11 @@ export function PayoutsListTable({ payouts }: PayoutsListTableProps): ReactNode 
 function PayoutsListRow({ payout }: { readonly payout: VendorPayoutSummary }): ReactNode {
   const badge = payoutStatusBadge(payout.status);
   return (
-    <tr className="hover:bg-slate-50">
+    <tr className="hover:bg-surface-muted">
       <td className="px-4 py-3">
         <Link
           href={`/payouts/${payout.id}`}
-          className="font-medium text-slate-900 underline-offset-4 hover:underline"
+          className="font-medium text-foreground underline-offset-4 hover:underline"
         >
           {formatPeriodRange(payout.periodStart, payout.periodEnd)}
         </Link>
@@ -86,16 +86,16 @@ function PayoutsListRow({ payout }: { readonly payout: VendorPayoutSummary }): R
           {badge.label}
         </span>
       </td>
-      <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+      <td className="px-4 py-3 text-right tabular-nums text-secondary">
         {formatMoney(payout.grossCents)}
       </td>
-      <td className="px-4 py-3 text-right tabular-nums text-slate-500">
+      <td className="px-4 py-3 text-right tabular-nums text-muted">
         {payout.feesCents === 0 ? '—' : `−${formatMoney(payout.feesCents)}`}
       </td>
-      <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">
+      <td className="px-4 py-3 text-right font-semibold tabular-nums text-foreground">
         {formatMoney(payout.netCents)}
       </td>
-      <td className="px-4 py-3 text-slate-500">
+      <td className="px-4 py-3 text-muted">
         {payout.completedAt === null ? '—' : formatTimestamp(payout.completedAt)}
       </td>
     </tr>

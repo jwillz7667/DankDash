@@ -36,6 +36,10 @@ export default tseslint.config(
       // Reference material checked in for AI/human readers. Not part of any
       // TypeScript project and not on the build path; treated as docs.
       'docs/**',
+      // k6 load-test scripts run in k6's Goja runtime, not Node — they
+      // depend on `__ENV`, the `k6/*` modules, and a separate JS dialect.
+      // Lint there belongs to k6's own `k6 archive` validation.
+      'loadtest/**',
     ],
   },
   // Type-aware rules for TypeScript source.

@@ -65,7 +65,7 @@ export function HourlyHeatmap({ buckets }: HourlyHeatmapProps): ReactNode {
 
   if (!anyOrders) {
     return (
-      <div className="flex h-40 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500">
+      <div className="flex h-40 items-center justify-center rounded-xl border border-dashed border-outline bg-surface-muted text-sm text-muted">
         No orders in this window.
       </div>
     );
@@ -78,7 +78,7 @@ export function HourlyHeatmap({ buckets }: HourlyHeatmapProps): ReactNode {
       className="flex flex-col gap-1.5 overflow-x-auto"
       data-testid="hourly-heatmap"
     >
-      <div className="flex items-center gap-1.5 pl-10 text-2xs font-medium uppercase tracking-wider text-slate-400">
+      <div className="flex items-center gap-1.5 pl-10 text-2xs font-medium uppercase tracking-wider text-muted">
         {Array.from({ length: HOURS }, (_, hour) => (
           <span
             key={hour}
@@ -92,7 +92,7 @@ export function HourlyHeatmap({ buckets }: HourlyHeatmapProps): ReactNode {
       </div>
       {Array.from({ length: DAYS }, (_, dow) => (
         <div key={dow} className="flex items-center gap-1.5">
-          <span className="w-9 shrink-0 pr-1 text-right text-2xs font-medium uppercase tracking-wider text-slate-500">
+          <span className="w-9 shrink-0 pr-1 text-right text-2xs font-medium uppercase tracking-wider text-muted">
             {dayOfWeekLabel(dow)}
           </span>
           {cells

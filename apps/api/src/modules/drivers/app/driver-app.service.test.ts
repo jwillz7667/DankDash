@@ -8,14 +8,6 @@
  *     3. Driver row missing → DRIVER_NOT_FOUND (403).
  *     4. Driver points at a missing order → RepositoryError (500).
  *     5. Order points at a missing dispensary → RepositoryError (500).
- *   earnings()
- *     1. `today` bucket — half-open local-day window in America/Chicago.
- *        DST spring-forward and fall-back days are explicit edge cases
- *        because UTC offset shifts mid-bucket.
- *     2. `week` and `month` bucket bounds resolve to ISO-week-start
- *        Monday and 1st-of-month local respectively.
- *     3. totalCents = tipsCents + deliveryFeesCents (deliveriesCount is
- *        a count, not a money column).
  *   shifts()
  *     1. Forwards listForDriver, projects each row.
  *
@@ -36,7 +28,7 @@ import {
 } from '@dankdash/db';
 import { RepositoryError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
-import { DriverAppService, __bucketBounds } from './driver-app.service.js';
+import { DriverAppService } from './driver-app.service.js';
 import type { DriverContext } from '../context/driver-context.types.js';
 import type { DriverError } from '@dankdash/types';
 
@@ -211,32 +203,13 @@ class FakeDriversRepo implements Pick<DriversRepository, 'findById'> {
   }
 }
 
-class FakeOrdersRepo implements Pick<OrdersRepository, 'findById' | 'sumDriverEarningsBetween'> {
+class FakeOrdersRepo implements Pick<OrdersRepository, 'findById'> {
   public order: Order | null = null;
   public findByIdCalls: string[] = [];
-  public earningsCalls: { driverId: string; since: Date; until: Date }[] = [];
-  public earnings: { tipsCents: number; deliveryFeesCents: number; deliveriesCount: number } = {
-    tipsCents: 0,
-    deliveryFeesCents: 0,
-    deliveriesCount: 0,
-  };
 
   findById(id: string): Promise<Order | null> {
     this.findByIdCalls.push(id);
     return Promise.resolve(this.order);
-  }
-
-  sumDriverEarningsBetween(
-    driverId: string,
-    since: Date,
-    until: Date,
-  ): Promise<{
-    readonly tipsCents: number;
-    readonly deliveryFeesCents: number;
-    readonly deliveriesCount: number;
-  }> {
-    this.earningsCalls.push({ driverId, since, until });
-    return Promise.resolve(this.earnings);
   }
 }
 
@@ -338,91 +311,6 @@ describe('DriverAppService.currentRoute', () => {
   });
 });
 
-describe('DriverAppService.earnings', () => {
-  // 2026-05-19 is a Tuesday — convenient because the ISO week starts the
-  // day before (Monday 2026-05-18 00:00 local). `now` at 19:30 UTC is
-  // 14:30 CDT (CDT is UTC-5), so the today bucket starts at 05:00 UTC
-  // (the previous local midnight) and ends at 05:00 UTC next day.
-  const NOW = new Date('2026-05-19T19:30:00.000Z');
-
-  it('forwards today bucket bounds and returns tips + fees + count + total', async () => {
-    const { service, orders } = setup();
-    orders.earnings = { tipsCents: 1500, deliveryFeesCents: 4000, deliveriesCount: 5 };
-
-    const res = await service.earnings(makeContext(), { period: 'today' }, NOW);
-
-    expect(orders.earningsCalls).toHaveLength(1);
-    const call = orders.earningsCalls[0];
-    if (call === undefined) throw new TypeError('expected earnings call');
-    expect(call.driverId).toBe(DRIVER_ID);
-    expect(call.since.toISOString()).toBe('2026-05-19T05:00:00.000Z');
-    expect(call.until.toISOString()).toBe('2026-05-20T05:00:00.000Z');
-    expect(res).toEqual({
-      period: 'today',
-      since: '2026-05-19T05:00:00.000Z',
-      until: '2026-05-20T05:00:00.000Z',
-      tipsCents: 1500,
-      deliveryFeesCents: 4000,
-      deliveriesCount: 5,
-      totalCents: 5500,
-    });
-  });
-
-  it('week bucket resolves to ISO-week-start Monday in America/Chicago', async () => {
-    const { service } = setup();
-
-    const res = await service.earnings(makeContext(), { period: 'week' }, NOW);
-
-    // Tuesday 2026-05-19 → ISO week starts Mon 2026-05-18 00:00 local
-    // (05:00 UTC during CDT) and ends Mon 2026-05-25 00:00 local.
-    expect(res.since).toBe('2026-05-18T05:00:00.000Z');
-    expect(res.until).toBe('2026-05-25T05:00:00.000Z');
-  });
-
-  it('month bucket resolves to 1st-of-month local boundaries', async () => {
-    const { service } = setup();
-
-    const res = await service.earnings(makeContext(), { period: 'month' }, NOW);
-
-    expect(res.since).toBe('2026-05-01T05:00:00.000Z');
-    expect(res.until).toBe('2026-06-01T05:00:00.000Z');
-  });
-
-  it('returns zero totals when the repo finds nothing', async () => {
-    const { service, orders } = setup();
-    orders.earnings = { tipsCents: 0, deliveryFeesCents: 0, deliveriesCount: 0 };
-
-    const res = await service.earnings(makeContext(), { period: 'today' }, NOW);
-
-    expect(res.tipsCents).toBe(0);
-    expect(res.deliveryFeesCents).toBe(0);
-    expect(res.deliveriesCount).toBe(0);
-    expect(res.totalCents).toBe(0);
-  });
-});
-
-describe('__bucketBounds (DST edges)', () => {
-  // Spring forward in America/Chicago: 2026-03-08 02:00 CST → 03:00 CDT
-  // (jump from UTC-6 to UTC-5). A `today` bucket spanning the shift is
-  // 23 hours wide in UTC, not 24.
-  it('today on spring-forward day is 23h wide (CST -> CDT)', () => {
-    const { since, until } = __bucketBounds('today', new Date('2026-03-08T15:00:00.000Z'));
-    expect(since.toISOString()).toBe('2026-03-08T06:00:00.000Z'); // 2026-03-08 00:00 CST = 06:00 UTC
-    expect(until.toISOString()).toBe('2026-03-09T05:00:00.000Z'); // 2026-03-09 00:00 CDT = 05:00 UTC
-    expect(until.getTime() - since.getTime()).toBe(23 * 60 * 60 * 1000);
-  });
-
-  // Fall back in America/Chicago: 2026-11-01 02:00 CDT → 01:00 CST
-  // (jump back from UTC-5 to UTC-6). A `today` bucket spanning the
-  // shift is 25 hours wide in UTC.
-  it('today on fall-back day is 25h wide (CDT -> CST)', () => {
-    const { since, until } = __bucketBounds('today', new Date('2026-11-01T15:00:00.000Z'));
-    expect(since.toISOString()).toBe('2026-11-01T05:00:00.000Z'); // 2026-11-01 00:00 CDT = 05:00 UTC
-    expect(until.toISOString()).toBe('2026-11-02T06:00:00.000Z'); // 2026-11-02 00:00 CST = 06:00 UTC
-    expect(until.getTime() - since.getTime()).toBe(25 * 60 * 60 * 1000);
-  });
-});
-
 describe('DriverAppService.shifts', () => {
   it('forwards listForDriver and projects each row', async () => {
     const { service, shifts } = setup();
@@ -469,7 +357,9 @@ describe('DriverAppService.shifts', () => {
  * or some shared id would flunk these immediately.
  *
  * Authorization at the offer surface is covered separately in
- * `driver-offers.service.test.ts` (DRIVER_OFFER_NOT_YOURS).
+ * `driver-offers.service.test.ts` (DRIVER_OFFER_NOT_YOURS); earnings
+ * isolation (keyed on the principal's `users.id`) is pinned in
+ * `driver-earnings.service.test.ts`.
  */
 describe('DriverAppService — driver isolation', () => {
   const OTHER_DRIVER_ID = '01935f3d-0000-7000-8000-0000000000ff';
@@ -481,15 +371,6 @@ describe('DriverAppService — driver isolation', () => {
     await service.currentRoute(makeContext({ driverId: DRIVER_ID }));
 
     expect(drivers.findByIdCalls).toEqual([DRIVER_ID]);
-  });
-
-  it('earnings forwards ONLY the calling driver id to sumDriverEarningsBetween', async () => {
-    const { service, orders } = setup();
-    const now = new Date('2026-05-19T19:30:00.000Z');
-
-    await service.earnings(makeContext({ driverId: DRIVER_ID }), { period: 'today' }, now);
-
-    expect(orders.earningsCalls.map((c) => c.driverId)).toEqual([DRIVER_ID]);
   });
 
   it('shifts forwards ONLY the calling driver id to listForDriver', async () => {

@@ -29,8 +29,8 @@ export default async function SettingsLayout({
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
       <header className="space-y-1.5">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Settings</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Settings</h1>
+        <p className="text-sm text-muted">
           Configure your store, integrations, and compliance posture.
         </p>
       </header>

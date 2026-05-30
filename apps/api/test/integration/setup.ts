@@ -28,6 +28,8 @@ import '../helpers/env-setup.js';
 import { randomUUID } from 'node:crypto';
 import { stableUuid } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
+import { vi } from 'vitest';
+import { RATE_LIMIT_STORE } from '../../src/common/rate-limit/rate-limit-store.js';
 import { JwtService } from '../../src/modules/auth/jwt/jwt.service.js';
 import { resetDb, seedDefault, getPool } from './db.js';
 
@@ -98,4 +100,53 @@ export function signTokenFor(app: NestFastifyApplication, input: TokenInput): st
 
 export function bearer(token: string): { readonly authorization: string } {
   return { authorization: `Bearer ${token}` };
+}
+
+/**
+ * MN cannabis sale hours (8:00 AM – 2:00 AM America/Chicago) are enforced
+ * server-side on every compliance check, so a real-clock checkout flakes
+ * whenever CI runs inside the 2:00–8:00 AM window where no dispensary may
+ * legally sell. `freezeToBusinessHours()` pins the app clock so any
+ * compliance-gated flow is deterministic regardless of wall-clock time.
+ *
+ * It freezes the TIME-OF-DAY to 18:00 UTC — which is 12:00–13:00
+ * America/Chicago across both CST and CDT, comfortably mid-window and far
+ * from either sale-hour edge or a DST transition — while keeping the real
+ * current DATE. The date must stay real because `order_events` and
+ * `order_status_history` are RANGE-partitioned monthly on their
+ * timestamp, and the test DB only bootstraps partitions for [boot month,
+ * +12 months]; a fixed past date would land an insert in a non-existent
+ * partition. Aligning the frozen month to the real boot month keeps every
+ * partitioned insert valid.
+ *
+ * Only `Date` is faked — real timers keep running so postgres-js sockets
+ * and other async I/O are untouched. Tests that opt in MUST call
+ * `restoreClock()` in `afterEach`, and should `resetRateLimit(app)` in
+ * `beforeEach` because a frozen clock never advances the in-memory
+ * rate-limit window.
+ */
+export function freezeToBusinessHours(): void {
+  // Drop any fake timers a prior file may have leaked so the line below
+  // reads the true wall clock (singleFork shares one worker across files).
+  vi.useRealTimers();
+  const real = new Date();
+  const instant = new Date(
+    Date.UTC(real.getUTCFullYear(), real.getUTCMonth(), real.getUTCDate(), 18, 0, 0, 0),
+  );
+  vi.useFakeTimers({ toFake: ['Date'], now: instant });
+}
+
+export function restoreClock(): void {
+  vi.useRealTimers();
+}
+
+/**
+ * Clear the in-memory rate-limit store. Needed when the clock is frozen
+ * (fixed-window entries never expire) or when an `it.each` loop would
+ * otherwise accumulate hits across iterations and trip the limiter. No-op
+ * if a non-memory store is ever bound (the Redis impl has no `reset`).
+ */
+export function resetRateLimit(app: NestFastifyApplication): void {
+  const store = app.get<{ reset?: () => void }>(RATE_LIMIT_STORE);
+  store.reset?.();
 }

@@ -95,7 +95,7 @@ export function ContactCard({ phone, email, onPatch, onPatched }: ContactCardPro
               <div className="relative">
                 <Phone
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
                 />
                 <Input
                   id={phoneId}
@@ -116,7 +116,7 @@ export function ContactCard({ phone, email, onPatch, onPatched }: ContactCardPro
               <div className="relative">
                 <Mail
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
                 />
                 <Input
                   id={emailId}
@@ -137,7 +137,7 @@ export function ContactCard({ phone, email, onPatch, onPatched }: ContactCardPro
           <div className="flex items-center justify-between gap-3">
             <div className="min-h-[1.25rem]">
               {error !== null ? (
-                <p role="alert" className="text-sm font-medium text-rose-700">
+                <p role="alert" className="text-sm font-medium text-danger">
                   {error}
                 </p>
               ) : success !== null ? (

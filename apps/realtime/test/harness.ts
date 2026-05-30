@@ -141,6 +141,13 @@ export async function createTestHarness(): Promise<TestHarness> {
       REDIS_URL: redisUrl,
       JWT_PUBLIC_KEY_BASE64: Buffer.from(publicKey).toString('base64'),
       REALTIME_CONSUMER_GROUP: consumerGroup,
+      // Tight consumer timings for the suite: a 100ms XREADGROUP block keeps
+      // the poll loop responsive and — critically — lets `stop()` (which
+      // awaits the in-flight read) return within one short block instead of
+      // a 5s default, so per-test teardown is near-instant. A 200ms idle
+      // threshold lets the XCLAIM-recovery test assert without a long sleep.
+      REALTIME_STREAM_BLOCK_MS: '100',
+      REALTIME_STREAM_RECOVER_IDLE_MS: '200',
       // Short bucket so rate-limit tests do not have to sleep a full
       // second between attempts.
       DRIVER_LOCATION_BURST: '2',

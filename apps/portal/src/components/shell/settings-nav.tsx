@@ -28,7 +28,7 @@ export function SettingsNav({ role }: SettingsNavProps): ReactNode {
               'relative rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ease-out',
               active
                 ? 'bg-moss-50 text-moss-800'
-                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+                : 'text-secondary hover:bg-surface-muted hover:text-foreground',
             )}
           >
             {active ? (

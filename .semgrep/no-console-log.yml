@@ -1,0 +1,40 @@
+# Forbid console.* in shipped source. The project ships pino on the
+# backend (with PII redaction paths configured) and os_log on iOS;
+# anything that reaches console.log in production is unstructured and
+# unredacted. CLAUDE.md treats this as a non-negotiable.
+#
+# Test files are exempt because expecting console output is a normal
+# test idiom and tests are not shipped.
+
+rules:
+  - id: dankdash-no-console-log
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Replace `console.*` with the pino logger (backend) or the structured
+      logger (Next.js / portal). console output bypasses PII redaction.
+    paths:
+      include:
+        - apps/
+        - packages/
+      exclude:
+        - "**/test/**"
+        - "**/tests/**"
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        - "**/*.spec.ts"
+        - "**/*.spec.tsx"
+        - "**/fixtures/**"
+        - "**/__fixtures__/**"
+        - "**/scripts/**"
+        - "**/dist/**"
+        - "**/build/**"
+        - "**/.next/**"
+        - "**/node_modules/**"
+    pattern-either:
+      - pattern: console.log(...)
+      - pattern: console.debug(...)
+      - pattern: console.info(...)
+      - pattern: console.warn(...)
+      - pattern: console.error(...)

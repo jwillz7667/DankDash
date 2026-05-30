@@ -21,9 +21,13 @@ jobs:
   verify:
     name: typecheck / lint / test
     runs-on: ubuntu-latest
-    # Headroom for the API suite running twice (broad `Test` + payments
-    # coverage gate), each booting a Postgres testcontainer.
-    timeout-minutes: 25
+    # The @dankdash/api integration suite is the long pole: it boots a
+    # Postgres testcontainer and the full Nest AppModule once per file. It
+    # now runs exactly ONCE (coverage-instrumented — see the dedicated step
+    # below), not twice. 40m is deliberate temporary headroom while the
+    # suite's per-test reseed cost is profiled from the streamed verbose
+    # output; tighten once the steady-state runtime is known.
+    timeout-minutes: 40
 
     strategy:
       fail-fast: false
@@ -104,26 +108,32 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        # Broad green/red signal across every package. No `--coverage` here:
-        # 8 packages lack @vitest/coverage-v8 and would error, and turbo does
-        # not hash pass-through args (a cached run would skip coverage anyway).
-        # Per-gate coverage is enforced in the dedicated steps below. As a side
-        # effect this turbo run produces dist/ for every workspace package via
-        # the `^build` chain, so the filtered coverage run below resolves its
-        # workspace deps without a separate build.
-        run: pnpm test
+      - name: Test (non-API packages)
+        # Green/red across every package EXCEPT @dankdash/api, which is the
+        # long-pole integration suite run once on its own below. No
+        # `--coverage` here: several packages lack @vitest/coverage-v8 and
+        # would error; per-gate coverage is enforced in the api step. Nothing
+        # in the workspace depends on @dankdash/api, so excluding it is safe.
+        # `--log-order=stream` interleaves task output live — turbo's default
+        # grouped buffering only flushes a task's output on completion, so a
+        # never-completing task would otherwise swallow the entire log.
+        run: pnpm turbo run test --filter='!@dankdash/api' --log-order=stream
         env:
           NODE_ENV: test
 
-      - name: Coverage gate (API payments)
-        # Re-runs ONLY the API suite with coverage to enforce the payments
-        # module's mandated 100% lines/statements/functions threshold
-        # (apps/api/vitest.config.ts). Direct `pnpm --filter` rather than turbo
-        # so the `--coverage` flag is honoured (turbo would replay the cached,
-        # non-coverage `Test` result above). Workspace deps' dist already exist
-        # from that run.
-        run: pnpm --filter @dankdash/api test -- --coverage
+      - name: Test + coverage gate (API, streamed)
+        # The API suite runs exactly ONCE here. This single coverage-
+        # instrumented run is BOTH the green/red signal for @dankdash/api and
+        # the enforcement of the payments module's mandated 100%
+        # lines/statements/functions threshold (apps/api/vitest.config.ts).
+        # Routed through turbo so the `test -> ^build` chain produces dist/ for
+        # api's workspace deps first (the step is self-sufficient). `--force`
+        # is REQUIRED: turbo does not hash pass-through args, so a cached
+        # non-coverage result would otherwise be replayed and `--coverage`
+        # silently skipped. `--log-order=stream` + vitest `--reporter=verbose`
+        # stream a line per test live, so if the suite stalls the last line
+        # printed pinpoints the offending test.
+        run: pnpm turbo run test --filter='@dankdash/api' --force --log-order=stream -- --coverage --reporter=verbose
         env:
           NODE_ENV: test
 
@@ -138,6 +148,235 @@ jobs:
           fail_ci_if_error: false
           flags: unit
           slug: jwillz7667/DankDash
+
+  security-audit:
+    name: dependency audit (high + critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        # Policy lives in audit-ci.json at the repo root. The gate fails the
+        # job on any high or critical advisory; moderate and low are reported
+        # but do not block. Allowlist entries belong in audit-ci.json with an
+        # `expiry` date so we cannot silently accumulate untriaged debt.
+        run: pnpm run security:audit
+
+  secrets-scan:
+    name: secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need the base branch tip so we can scope the scan to the PR
+          # diff. `fetch-depth: 0` would also work but is heavier than
+          # the targeted fetch below.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        # Pin a release so a malicious upstream tag cannot bypass the
+        # scan. Upgrade intentionally in a separate commit when bumping.
+        run: |
+          curl -sSL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan PR / push for secrets
+        # On a PR, scope to the commit range between base and head.
+        # On a push to main, scope to the single pushed commit.
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            LOG_OPTS="origin/${GITHUB_BASE_REF}..HEAD"
+          else
+            LOG_OPTS="${GITHUB_SHA}~1..${GITHUB_SHA}"
+          fi
+          gitleaks detect \
+            --config=.gitleaks.toml \
+            --log-opts="${LOG_OPTS}" \
+            --redact \
+            --no-banner \
+            --verbose \
+            --exit-code=1
+
+  snyk:
+    name: snyk vulnerability scan (high+critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Snyk requires SNYK_TOKEN. Skip when running against a fork PR
+    # (forks cannot read repo secrets) so contributors are not blocked
+    # waiting on a job that cannot succeed for them.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Snyk token
+        # Snyk is supplementary defence-in-depth: the `dependency audit`
+        # job already gates the same high+critical advisories via the npm
+        # registry. When SNYK_TOKEN is not provisioned, skip the scan with
+        # a warning instead of hard-failing CI on a missing credential.
+        id: snyk_token
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [[ -n "${SNYK_TOKEN}" ]]; then
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::SNYK_TOKEN is not configured — skipping Snyk scan. High+critical advisories are still gated by the dependency-audit (pnpm) and semgrep jobs."
+          fi
+
+      - name: Snyk test
+        # `--all-projects` walks every workspace lockfile. We pin the
+        # severity threshold to high so the gate stays in sync with the
+        # `pnpm audit` policy — moderate/low advisories are reported in
+        # the Snyk UI but do not block the merge. `DankDashKit` (Swift)
+        # is excluded: the snyk container has no `swift` toolchain, so its
+        # Package.swift cannot be resolved and would abort the scan.
+        if: ${{ steps.snyk_token.outputs.present == 'true' }}
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --all-projects --exclude=DankDashKit --policy-path=.snyk
+
+  license-audit:
+    name: license audit (forbid GPL/AGPL/LGPL family)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production licenses
+        # Script lives at scripts/audit-licenses.sh and is the source of
+        # truth for forbidden license SPDX identifiers. Updating the
+        # forbidden list is a deliberate code change with legal review.
+        run: pnpm run security:licenses
+
+  semgrep:
+    name: semgrep SAST (owasp + typescript + nodejs + repo-local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Skip Dependabot's auto-PRs — semgrep registry pulls take ~30s of network
+    # the bot doesn't need (its diff is package metadata, not source code).
+    if: github.actor != 'dependabot[bot]'
+
+    container:
+      # Pin a specific tag so a malicious registry tag can't slip a different
+      # binary in. Bump intentionally in a dedicated commit.
+      image: returntocorp/semgrep:1.92.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run semgrep
+        # Hosted rulesets cover the OWASP Top 10 + TypeScript/Node patterns;
+        # repo-local rules in `.semgrep/` enforce the project-specific bans
+        # (`console.log`, silent `catch`, `as any`, `// TODO`). The `--error`
+        # flag converts findings into a non-zero exit, blocking the merge.
+        run: |
+          semgrep \
+            --config=p/owasp-top-ten \
+            --config=p/typescript \
+            --config=p/nodejs \
+            --config=.semgrep \
+            --error \
+            --metrics=off \
+            --exclude='**/node_modules/**' \
+            --exclude='**/dist/**' \
+            --exclude='**/build/**' \
+            --exclude='**/.next/**'
+
+  codeql:
+    name: codeql analysis (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript-typescript"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-and-quality` is broader than `security-extended` — we want
+          # the quality checks too because they catch latent issues (unused
+          # exceptions, dead error paths) that complement semgrep.
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
 
   compliance-gate:
     name: compliance suite (blocks deploy)

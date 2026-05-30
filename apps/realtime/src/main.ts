@@ -8,10 +8,18 @@
  * listening on $PORT. SIGTERM triggers graceful shutdown — drain the
  * stream consumer, close the io server, close the Postgres pool.
  */
+// MUST be the first non-type import — `initOtel` patches `require` for
+// ioredis/pg/fastify/socket.io at module-load time, so loading any of
+// those before this line (directly or via `./server.js`) silently
+// disables instrumentation. Lint rule disabled locally to preserve
+// the order.
+/* eslint-disable import/order */
+import { realtimeOtelHandle } from './tracing.js';
 import { createLogger } from '@dankdash/config';
 import { createPool } from '@dankdash/db';
 import { loadRealtimeEnv } from './env.js';
 import { buildServer } from './server.js';
+/* eslint-enable import/order */
 
 async function bootstrap(): Promise<void> {
   const env = loadRealtimeEnv({
@@ -37,11 +45,18 @@ async function bootstrap(): Promise<void> {
     'apps/realtime listening',
   );
 
+  let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info({ event: 'realtime.shutdown', signal }, 'apps/realtime shutting down');
     try {
       await server.close();
       await pool.close();
+      // Flush OTel batch before exit. Railway grants a 30s SIGTERM
+      // window; the SDK's default batch span processor would otherwise
+      // drop the last few seconds of spans.
+      await realtimeOtelHandle.shutdown();
       process.exit(0);
     } catch (err) {
       logger.error(

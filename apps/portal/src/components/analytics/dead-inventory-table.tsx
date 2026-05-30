@@ -17,7 +17,7 @@ export interface DeadInventoryTableProps {
 export function DeadInventoryTable({ rows }: DeadInventoryTableProps): ReactNode {
   if (rows.length === 0) {
     return (
-      <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+      <p className="rounded-xl border border-dashed border-outline bg-surface-muted px-4 py-8 text-center text-sm text-muted">
         Nothing's gathering dust — every active listing sold in this window.
       </p>
     );
@@ -29,7 +29,7 @@ export function DeadInventoryTable({ rows }: DeadInventoryTableProps): ReactNode
         <caption className="sr-only">
           Listings with stock on hand that did not sell in the window
         </caption>
-        <thead className="border-b border-slate-100 bg-slate-50/50 text-2xs font-medium uppercase tracking-wider text-slate-500">
+        <thead className="border-b border-outline-subtle bg-surface-muted/50 text-2xs font-medium uppercase tracking-wider text-muted">
           <tr>
             <th scope="col" className="py-3 pl-4 pr-3">
               Product
@@ -52,20 +52,20 @@ export function DeadInventoryTable({ rows }: DeadInventoryTableProps): ReactNode
           {rows.map((row) => (
             <tr
               key={row.listingId}
-              className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50/50"
+              className="border-b border-outline-subtle last:border-b-0 hover:bg-surface-muted/50"
             >
               <td className="py-3 pl-4 pr-3">
-                <p className="font-medium text-slate-900">{row.name}</p>
-                <p className="text-xs text-slate-500">{row.brand}</p>
+                <p className="font-medium text-foreground">{row.name}</p>
+                <p className="text-xs text-muted">{row.brand}</p>
               </td>
-              <td className="px-3 py-3 font-mono text-xs text-slate-500">{row.sku}</td>
-              <td className="px-3 py-3 text-right font-tabular text-slate-700">
+              <td className="px-3 py-3 font-mono text-xs text-muted">{row.sku}</td>
+              <td className="px-3 py-3 text-right font-tabular text-secondary">
                 {row.quantityAvailable.toString()}
               </td>
-              <td className="px-3 py-3 text-right font-tabular text-slate-700">
+              <td className="px-3 py-3 text-right font-tabular text-secondary">
                 {formatMoney(row.priceCents)}
               </td>
-              <td className="pl-3 pr-4 py-3 text-right font-tabular text-slate-500">
+              <td className="pl-3 pr-4 py-3 text-right font-tabular text-muted">
                 {formatDaysSinceLastSale(row.daysSinceLastSale)}
               </td>
             </tr>

@@ -70,7 +70,7 @@ export function TwoFactorPanel({ email }: TwoFactorPanelProps): ReactNode {
 
   return (
     <div className="space-y-6">
-      <ol className="space-y-2.5 text-sm text-slate-600">
+      <ol className="space-y-2.5 text-sm text-secondary">
         <li className="flex gap-3">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-moss-50 text-2xs font-semibold text-moss-700">
             1
@@ -123,7 +123,7 @@ export function TwoFactorPanel({ email }: TwoFactorPanelProps): ReactNode {
         {error !== null && (
           <p
             role="alert"
-            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
+            className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger"
           >
             {error}
           </p>
@@ -137,9 +137,9 @@ export function TwoFactorPanel({ email }: TwoFactorPanelProps): ReactNode {
           {pending ? 'Verifying…' : 'Verify'}
         </Button>
       </form>
-      <div className="flex items-center justify-between border-t border-slate-100 pt-4 text-xs text-slate-500">
+      <div className="flex items-center justify-between border-t border-outline-subtle pt-4 text-xs text-muted">
         <span>
-          Signed in as <span className="font-medium text-slate-700">{email}</span>
+          Signed in as <span className="font-medium text-secondary">{email}</span>
         </span>
         <button
           type="button"

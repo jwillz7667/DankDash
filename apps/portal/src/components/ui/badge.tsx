@@ -2,14 +2,17 @@ import { type HTMLAttributes, type ReactNode, forwardRef } from 'react';
 import { cn } from '../../lib/cn.js';
 
 /**
- * Pill badge for status/category labels. Tone maps to an intent:
+ * Pill badge for status/category labels. Tone maps to an intent; all
+ * tones source colors from `@dankdash/design-tokens` semantic palette
+ * (base + soft pair), so a tone change in the design tokens flows here
+ * automatically:
  *
- *   neutral  — slate, "no opinion"
- *   accent   — moss, brand-positive (active, in-progress)
- *   success  — moss-deep filled, completed/healthy
- *   warning  — amber, slowing/needs-attention
- *   danger   — ember, behind/failed/error
- *   info     — sky, neutral informational (counts, hints)
+ *   neutral  — surface-subtle / secondary text
+ *   accent   — moss soft / moss text, brand-positive (active, in-progress)
+ *   success  — semantic.success filled, completed/healthy
+ *   warning  — warning-soft / warning text, slowing/needs-attention
+ *   danger   — danger-soft / danger text, behind/failed/error
+ *   info     — info-soft / info text, neutral informational
  *
  * Badges are intentionally low-saturation; the visual loudness comes
  * from typography weight, not color intensity, so a dashboard with
@@ -18,12 +21,12 @@ import { cn } from '../../lib/cn.js';
 export type BadgeTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger' | 'info';
 
 const TONE: Record<BadgeTone, string> = {
-  neutral: 'bg-slate-100 text-slate-700',
+  neutral: 'bg-surface-subtle text-secondary',
   accent: 'bg-moss-50 text-moss-700 ring-1 ring-inset ring-moss-100',
-  success: 'bg-moss-500 text-white',
-  warning: 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-100',
-  danger: 'bg-rose-50 text-rose-800 ring-1 ring-inset ring-rose-100',
-  info: 'bg-sky-50 text-sky-800 ring-1 ring-inset ring-sky-100',
+  success: 'bg-success text-on-primary',
+  warning: 'bg-warning-soft text-warning ring-1 ring-inset ring-warning/20',
+  danger: 'bg-danger-soft text-danger ring-1 ring-inset ring-danger/20',
+  info: 'bg-info-soft text-info ring-1 ring-inset ring-info/20',
 };
 
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {

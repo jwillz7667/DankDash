@@ -29,7 +29,16 @@ describe('driver:location:update', () => {
     const driverUserId = uuidv7();
     const driverId = uuidv7();
     const customerId = uuidv7();
+    const orderId = uuidv7();
     harness.membership.addDriver(driverUserId, driverId);
+    // The handler resolves the broadcast's customer identity server-side from
+    // the driver's active `orders` row, never the client payload (see
+    // io/namespaces/driver.ts — a driver must not be able to stream GPS into
+    // an arbitrary customer's socket by naming their id). Without an active
+    // delivery the location publishes with a null customerId and the router
+    // drops it, so the assigned-customer broadcast can only be asserted once
+    // a delivery is registered for this driver.
+    harness.membership.setActiveDelivery(driverUserId, { orderId, customerId });
 
     const driverSocket = await harness.connect('/driver', {
       token: harness.signToken({ sub: driverUserId, role: 'driver' }),
@@ -43,6 +52,8 @@ describe('driver:location:update', () => {
       'driver:location',
     );
 
+    // `orderId`/`customerId` here are intentionally ignored by the handler
+    // (stripped by the schema); routing uses the registered delivery above.
     driverSocket.emit('driver:location:update', {
       lat: 44.9778,
       lng: -93.265,

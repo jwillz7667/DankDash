@@ -75,7 +75,7 @@ export function NotificationControls({
       {showBlocked && (
         <span
           data-testid="notification-permission-blocked"
-          className="inline-flex items-center gap-1 text-xs text-slate-500"
+          className="inline-flex items-center gap-1 text-xs text-muted"
           title="Browser notifications are blocked. Re-enable from your browser's site settings to see new-order toasts."
         >
           <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5" />
@@ -98,8 +98,8 @@ export function NotificationControls({
           className={cn(
             'inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors',
             isMuted
-              ? 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100'
-              : 'border-moss-200 bg-white text-moss-700 hover:bg-moss-50',
+              ? 'border-outline bg-surface-muted text-muted hover:bg-surface-subtle'
+              : 'border-moss-200 bg-surface text-moss-700 hover:bg-moss-50',
           )}
         >
           {isMuted ? (

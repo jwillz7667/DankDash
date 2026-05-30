@@ -2,8 +2,10 @@
  * DTOs for the driver-self app surface (Phase 8.5):
  *
  *   GET /v1/driver/current-route   — order in flight + pickup + dropoff
- *   GET /v1/driver/earnings        — bucketed tips + fees + deliveries
  *   GET /v1/driver/shifts          — recent shift history
+ *
+ * Earnings DTOs live in `../../dto/earnings.dto.ts` next to the
+ * `DriverEarningsController` that serves `GET /v1/driver/earnings`.
  *
  * `CurrentRouteResponse.activeOrder` is `null` when the driver has no
  * order in flight. We deliberately do not 404 — the driver app polls this
@@ -19,14 +21,6 @@
  * the driver is supposed to deliver. `deliveryInstructions` ride on the
  * snapshot for the same reason.
  *
- * `EarningsResponse` carries:
- *   - `period`           — the bucket the totals belong to (today/week/month)
- *   - `since`/`until`    — explicit half-open window so the client can
- *                          render "Today (May 19)" without re-deriving
- *                          the bucket against a local clock
- *   - tips / fees / count / total — money in integer cents (project rule),
- *                                   delivery count is an int
- *
  * `ShiftsListResponse` is a flat array (no cursor) — `listForDriver`
  * caps at 50 rows; the driver app surfaces "recent shifts" and historic
  * detail goes through admin tooling, so cursor pagination is overkill
@@ -37,45 +31,6 @@ import { z } from 'zod';
 import { GeoPointSchema } from '../../../dispensaries/dto/dispensary.dto.js';
 import { OrderResponseSchema } from '../../../orders/dto/index.js';
 import { DriverShiftResponseSchema } from '../../shift/dto/index.js';
-
-/**
- * Period vocabulary for the earnings endpoint.
- *
- *   - `today` — local calendar day in America/Chicago (start-of-day
- *               inclusive → next start-of-day exclusive)
- *   - `week`  — local calendar week starting Monday 00:00 in the same
- *               zone (ISO week convention)
- *   - `month` — local calendar month, 1st 00:00 → next 1st 00:00
- *
- * Three discrete options instead of free-form bounds — this is a driver
- * dashboard endpoint, not an analytics surface. Fewer knobs = fewer
- * cache misses = simpler invalidation when the worker rolls a delivery
- * into a driver's "today" bucket.
- */
-export const EarningsPeriodSchema = z.enum(['today', 'week', 'month']);
-export type EarningsPeriod = z.infer<typeof EarningsPeriodSchema>;
-
-export const EarningsQuerySchema = z
-  .object({
-    period: EarningsPeriodSchema.optional().default('today'),
-  })
-  .strict();
-export type EarningsQuery = z.infer<typeof EarningsQuerySchema>;
-export class EarningsQueryDto extends createZodDto(EarningsQuerySchema) {}
-
-export const EarningsResponseSchema = z
-  .object({
-    period: EarningsPeriodSchema,
-    since: z.string().datetime({ offset: true }),
-    until: z.string().datetime({ offset: true }),
-    tipsCents: z.number().int().min(0),
-    deliveryFeesCents: z.number().int().min(0),
-    deliveriesCount: z.number().int().min(0),
-    totalCents: z.number().int().min(0),
-  })
-  .strict();
-export type EarningsResponse = z.infer<typeof EarningsResponseSchema>;
-export class EarningsResponseDto extends createZodDto(EarningsResponseSchema) {}
 
 /**
  * Pickup-side projection of the dispensary for the driver app. We surface

@@ -2,29 +2,28 @@ import { type ButtonHTMLAttributes, forwardRef } from 'react';
 import { cn } from '../../lib/cn.js';
 
 /**
- * Buttons.
+ * Buttons. All variants pull from `@dankdash/design-tokens` aliases —
+ * primary/moss-500, surface/outline tokens for the neutral chrome,
+ * ember for danger. Radius is `rounded-xl` (12 pt, matches DankRadius.md
+ * on iOS) so primary CTAs look the same across portal + consumer + dasher.
  *
- *   primary — moss-500 filled; the call-to-action on every page.
- *   secondary — slate border on white, slate text; the every-day action.
- *   ghost — no border, no fill; subordinate actions inside cards.
- *   danger — ember; destructive, used sparingly.
- *
- * Sizes follow our 8-px rhythm: sm=32, md=40, lg=44. The lg button is
- * intentionally only 4px taller than md (not 12) so dense forms don't
- * end up with conspicuously tall primary CTAs.
+ *   primary   — moss-500 filled; the call-to-action on every page.
+ *   secondary — outline border on surface; the every-day action.
+ *   ghost     — no border, no fill; subordinate actions inside cards.
+ *   danger    — ember; destructive, used sparingly.
  */
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md' | 'lg';
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   primary:
-    'bg-moss-500 text-white shadow-sm hover:bg-moss-600 active:bg-moss-700 focus-visible:ring-moss-500',
+    'bg-moss-500 text-on-primary shadow-sm hover:bg-moss-600 active:bg-moss-700 focus-visible:ring-moss-500',
   secondary:
-    'bg-white text-slate-800 border border-slate-200 shadow-sm hover:bg-slate-50 hover:border-slate-300 active:bg-slate-100 focus-visible:ring-moss-500',
+    'bg-surface text-foreground border border-outline shadow-sm hover:bg-surface-muted hover:border-outline-strong active:bg-surface-subtle focus-visible:ring-moss-500',
   ghost:
-    'bg-transparent text-slate-700 hover:bg-slate-100 active:bg-slate-200 focus-visible:ring-moss-500',
+    'bg-transparent text-secondary hover:bg-surface-subtle active:bg-outline focus-visible:ring-moss-500',
   danger:
-    'bg-ember text-white shadow-sm hover:brightness-110 active:brightness-95 focus-visible:ring-ember',
+    'bg-ember text-on-primary shadow-sm hover:brightness-110 active:brightness-95 focus-visible:ring-ember',
 };
 
 const SIZE_CLASSES: Record<ButtonSize, string> = {
@@ -47,9 +46,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       type={type ?? 'button'}
       className={cn(
-        'inline-flex items-center justify-center rounded-lg font-medium tracking-tight',
+        'inline-flex items-center justify-center rounded-xl font-medium tracking-tight',
         'transition-colors duration-150 ease-out',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-surface',
         'disabled:pointer-events-none disabled:opacity-50',
         VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],

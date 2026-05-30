@@ -468,8 +468,13 @@ describe('QueueBoard', () => {
       // Wait for the drawer to load.
       expect(await screen.findByTestId('order-detail-drawer')).toBeInTheDocument();
 
+      // The drawer shell mounts before its async order-detail fetch resolves;
+      // the accept action only renders once the detail loads. Wait for the
+      // button rather than racing the fetch microtask — a synchronous
+      // getByTestId here flaked under CI load.
+      const acceptAction = await screen.findByTestId('order-detail-action-accept');
       await act(async () => {
-        fireEvent.click(screen.getByTestId('order-detail-action-accept'));
+        fireEvent.click(acceptAction);
       });
 
       expect(actions.accept).toHaveBeenCalledWith('a');

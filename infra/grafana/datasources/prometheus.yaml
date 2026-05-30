@@ -1,0 +1,37 @@
+# Prometheus / Mimir datasource provisioning for Grafana.
+#
+# When deploying to Grafana Cloud, the "Prometheus" datasource is
+# pre-provisioned by Cloud — this file is what self-hosted Grafana
+# (docker compose profile) loads on boot. The `${VAR}` placeholders
+# resolve from the operator's env at apply time.
+#
+# Auth: Mimir / Grafana Cloud uses basic-auth with the stack id as
+# the username and a service account token as the password. The
+# operator generates the SA token in the Grafana Cloud UI under
+# "Access Policies → Add policy → metrics:read".
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    editable: false
+    basicAuth: true
+    basicAuthUser: ${PROMETHEUS_USERNAME}
+    secureJsonData:
+      basicAuthPassword: ${PROMETHEUS_PASSWORD}
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Mimir
+      prometheusVersion: 2.9.0
+      timeInterval: 30s
+      exemplarTraceIdDestinations:
+        # When a histogram bucket carries an exemplar with `trace_id`,
+        # clicking it opens the Tempo trace. Wires up the
+        # logs-metrics-traces triangle the on-call walks.
+        - name: trace_id
+          datasourceUid: tempo
