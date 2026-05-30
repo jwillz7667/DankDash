@@ -113,7 +113,7 @@ describe('IDOR — consumer surface (cross-user 404)', () => {
       headers: bearer(probeToken),
     });
     expect(probe.statusCode).toBe(404);
-    expect(probe.json<ErrorBody>().error.code).toBe('NOT_FOUND');
+    expect(probe.json<ErrorBody>().error.code).toBe('ORDER_NOT_FOUND');
   });
 
   // --------------------------------------------------------------------
@@ -194,10 +194,15 @@ describe('IDOR — consumer surface (cross-user 404)', () => {
 
     it('POST /:id/validate → 404', async () => {
       const cart = await aliceCart();
+      // deliveryAddressId is a required, strict query param — without it the
+      // request 422s at the ZodValidationPipe before the ownership check ever
+      // runs, so the probe must be well-formed to exercise the real 404 path.
+      // Any syntactically-valid uuid works: the cart ownership guard fires
+      // before the address is resolved.
       const res = await app.inject({
         method: 'POST',
-        url: `/v1/carts/${cart.id}/validate`,
-        headers: { ...bearer(intruderToken()), 'content-type': 'application/json' },
+        url: `/v1/carts/${cart.id}/validate?deliveryAddressId=01935f3d-0000-7000-8000-000000000060`,
+        headers: bearer(intruderToken()),
       });
       expect(res.statusCode).toBe(404);
     });
