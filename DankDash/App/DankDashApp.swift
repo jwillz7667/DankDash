@@ -18,8 +18,14 @@ struct DankDashApp: App {
   var body: some Scene {
     WindowGroup {
       RootView(store: Self.store)
-        .preferredColorScheme(.dark)
-        .dynamicTypeSize(.medium ... .accessibility1)
+        // The design system ships a single cream/ink light palette; pin
+        // .light so the app doesn't inherit the device's dark appearance
+        // (which left text on unstyled system-dark backgrounds).
+        .preferredColorScheme(.light)
+        // Clamp Dynamic Type one notch above default. The spacing/type
+        // tokens are tuned for .large; uncapped accessibility sizes
+        // overflowed the dense compliance and checkout screens.
+        .dynamicTypeSize(.medium ... .xLarge)
         .onOpenURL { url in
           Self.store.send(.deepLinkReceived(url))
         }
