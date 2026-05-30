@@ -21,9 +21,13 @@ jobs:
   verify:
     name: typecheck / lint / test
     runs-on: ubuntu-latest
-    # Headroom for the API suite running twice (broad `Test` + payments
-    # coverage gate), each booting a Postgres testcontainer.
-    timeout-minutes: 25
+    # The @dankdash/api integration suite is the long pole: it boots a
+    # Postgres testcontainer and the full Nest AppModule once per file. It
+    # now runs exactly ONCE (coverage-instrumented — see the dedicated step
+    # below), not twice. 40m is deliberate temporary headroom while the
+    # suite's per-test reseed cost is profiled from the streamed verbose
+    # output; tighten once the steady-state runtime is known.
+    timeout-minutes: 40
 
     strategy:
       fail-fast: false
@@ -104,26 +108,32 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        # Broad green/red signal across every package. No `--coverage` here:
-        # 8 packages lack @vitest/coverage-v8 and would error, and turbo does
-        # not hash pass-through args (a cached run would skip coverage anyway).
-        # Per-gate coverage is enforced in the dedicated steps below. As a side
-        # effect this turbo run produces dist/ for every workspace package via
-        # the `^build` chain, so the filtered coverage run below resolves its
-        # workspace deps without a separate build.
-        run: pnpm test
+      - name: Test (non-API packages)
+        # Green/red across every package EXCEPT @dankdash/api, which is the
+        # long-pole integration suite run once on its own below. No
+        # `--coverage` here: several packages lack @vitest/coverage-v8 and
+        # would error; per-gate coverage is enforced in the api step. Nothing
+        # in the workspace depends on @dankdash/api, so excluding it is safe.
+        # `--log-order=stream` interleaves task output live — turbo's default
+        # grouped buffering only flushes a task's output on completion, so a
+        # never-completing task would otherwise swallow the entire log.
+        run: pnpm turbo run test --filter='!@dankdash/api' --log-order=stream
         env:
           NODE_ENV: test
 
-      - name: Coverage gate (API payments)
-        # Re-runs ONLY the API suite with coverage to enforce the payments
-        # module's mandated 100% lines/statements/functions threshold
-        # (apps/api/vitest.config.ts). Direct `pnpm --filter` rather than turbo
-        # so the `--coverage` flag is honoured (turbo would replay the cached,
-        # non-coverage `Test` result above). Workspace deps' dist already exist
-        # from that run.
-        run: pnpm --filter @dankdash/api test -- --coverage
+      - name: Test + coverage gate (API, streamed)
+        # The API suite runs exactly ONCE here. This single coverage-
+        # instrumented run is BOTH the green/red signal for @dankdash/api and
+        # the enforcement of the payments module's mandated 100%
+        # lines/statements/functions threshold (apps/api/vitest.config.ts).
+        # Routed through turbo so the `test -> ^build` chain produces dist/ for
+        # api's workspace deps first (the step is self-sufficient). `--force`
+        # is REQUIRED: turbo does not hash pass-through args, so a cached
+        # non-coverage result would otherwise be replayed and `--coverage`
+        # silently skipped. `--log-order=stream` + vitest `--reporter=verbose`
+        # stream a line per test live, so if the suite stalls the last line
+        # printed pinpoints the offending test.
+        run: pnpm turbo run test --filter='@dankdash/api' --force --log-order=stream -- --coverage --reporter=verbose
         env:
           NODE_ENV: test
 
