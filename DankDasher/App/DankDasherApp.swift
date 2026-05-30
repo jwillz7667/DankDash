@@ -19,7 +19,10 @@ struct DankDasherApp: App {
     WindowGroup {
       RootView(store: Self.store)
         .preferredColorScheme(.light)
-        .dynamicTypeSize(.medium ... .accessibility1)
+        // Clamp Dynamic Type one notch above default. The spacing/type
+        // tokens are tuned for .large; uncapped accessibility sizes
+        // overflowed the driver route, earnings, and handoff screens.
+        .dynamicTypeSize(.medium ... .xLarge)
         .onOpenURL { url in
           Self.store.send(.deepLinkReceived(url))
         }
