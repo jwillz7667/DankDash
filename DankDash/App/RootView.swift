@@ -61,7 +61,7 @@ struct RootView: View {
 private struct BootstrapView: View {
   var body: some View {
     VStack(spacing: DankSpacing.md) {
-      DankLogo(.mark, size: 88)
+      DankLogo(.mark, size: 64)
       DankLoader()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
