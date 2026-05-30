@@ -69,6 +69,18 @@ const DEFAULTS: Record<string, string> = {
   APNS_PRIVATE_KEY_BASE64: Buffer.from(
     apnsPrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   ).toString('base64'),
+  // Twilio and Resend default ON in the env schema, so every suite that
+  // boots AppModule would build a real client from these fake creds. The
+  // Twilio SDK validates the account SID in its constructor and throws
+  // "accountSid must start with AC" at boot; Resend would later attempt
+  // live HTTP on dispatch. No test exercises the SMS/email providers
+  // (they are never overridden), so disable both — NotificationsModule
+  // then wires NullNotificationProvider and the DI graph boots clean.
+  // APNs has no flag (always-on by design) and is satisfied above with a
+  // real EC P-256 key; Aeropay stays ON because the payment suites need
+  // the real providers with only AEROPAY_CLIENT faked via an override.
+  ENABLE_TWILIO: 'false',
+  ENABLE_RESEND: 'false',
   AEROPAY_LIVE: 'false',
 };
 
