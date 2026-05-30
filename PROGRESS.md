@@ -14,6 +14,45 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Phase 16 — iOS Consumer Foundation
+
+_Status: complete (2026-05-20). Branch: `phase/16-ios-consumer-foundation`._
+
+What landed:
+
+- **Xcode project promoted off the SwiftUI + SwiftData template.** The original `Item` CRUD scaffold (`DankDash/Item.swift`, `DankDash/ContentView.swift`) is gone; the iCloud + CloudKit entitlements (unused — no SwiftData/CloudKit in the spec) were stripped, leaving APNs as the only retained entitlement. The app target now hosts the production `@main` entrypoint at `DankDash/App/DankDashApp.swift`, a composition root at `DankDash/App/AppEnvironment.swift`, and the SwiftUI view layer under `DankDash/Features/`. `IPHONEOS_DEPLOYMENT_TARGET = 26.4`, `SWIFT_APPROACHABLE_CONCURRENCY = YES`, `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` — Swift 6 strict concurrency on by default.
+- **`DankDashKit` local Swift package** (`DankDashKit/`, swift-tools 6.0, `swiftLanguageModes: [.v6]`) with five library products: `DankDashDomain` (pure value types — `Email`, `Phone`, `DateOfBirth`, `Money`, `User`/`UserRole`/`UserStatus`), `DankDashDesignSystem` (token + component surface), `DankDashStorage` (`KeychainStore`, `BiometricAccessControl`, `UserDefaultsStore`), `DankDashNetwork` (`APIClient` + auth DTOs), `DankDashFeatures` (TCA reducers + `@DependencyClient` seams). External pins: `pointfreeco/swift-composable-architecture` and `pointfreeco/swift-snapshot-testing`. Hand-rolled APIClient against the verified auth contract; `swift-openapi-generator` deferred until `docs/spec/openapi.yaml` is complete.
+- **Design system tokens + components per spec §5.1.** `DankColor` (moss `#1A4314`, primaryDark, cream `#F5EFE0`, accent gold, frosted glass overlay, semantic success/warning/danger/info, four Text tones), `DankFont` (display/title/headline/body/bodySmall/caption/mono), `DankSpacing` (xxs/xs/sm/md/lg/xl/xxl), `DankRadius` (sm/md/lg/pill). Components: `DankButton` (4 styles × 3 sizes + loading/disabled), `DankCard` (solid + frosted dispensary-card variant), `DankInput` (text/secure/email/phone with `.idle/.valid/.invalid(String)` validation), `DankSheet`, `DankBadge` (6 tones), `DankLogo` (mark/wordmark/full), `DankLoader`. Every public token is enumerated in `allTokens` for regression-test-by-equality.
+- **TCA feature graph** (`DankDashKit/Sources/DankDashFeatures/`): `AgeGateFeature` (MN 21+ predicate matched against the same `DateOfBirth.isOver21(asOf:)` the server check uses), `LoginFeature` (three response branches — `authenticated`, `mfa_required` carrying `challengeId`, server error — collapsed into one reducer with an MFA verify continuation), `SignUpFeature` (per-field validation mirroring the backend register DTO rules; trim + lowercase + E.164 phone normalization happens client-side so the request body matches what the server expects), `ForgotPasswordFeature` (UX-only — confirms by default to avoid leaking which addresses are registered; the actual reset endpoint lands in Phase 17), and `RootFeature` (parent reducer routing `bootstrapping → ageGate → auth → signedIn`). Dependency seams: `AuthAPIClient` + `TokenStore` are `@Dependency` keys with `.live`, `.inMemory`, and `.unimplemented` bindings. 28 reducer tests cover every branch of every reducer (125 tests across the package — `swift test --package-path DankDashKit` is the source of truth).
+- **Keychain + biometric refresh-token guard per spec §5.1.** `KeychainStore` is a `SecItem` wrapper; access token gets `kSecAttrAccessibleAfterFirstUnlock`, refresh token gets `SecAccessControlCreateWithFlags` with `.biometryCurrentSet` so reading the refresh token incurs a Face/Touch ID challenge — only on the 401-refresh-retry path, never on the happy path. The keychain account names (`auth.access_token`, `auth.refresh_token`) live in `TokenStore.AccountKey` and are shared between `TokenStore.live` and the app target's `LiveAuthInterceptor`, so a token persisted by login is the same one the next request's bearer header carries.
+- **Networking with single-shot 401 → refresh → retry.** `APIClient` runs requests through an `AuthInterceptor` protocol (`accessToken() async throws -> String`, `refreshToken() async -> String?`, `persist(tokens:) async`, `clearTokens() async`); on a 401 it attempts one refresh, retries the original request once, and clears the keychain on a second 401. Errors are typed (`APIError.unauthorized`, `.noRefreshToken`, `.server(status, ErrorEnvelope)`, `.transport`, `.decoding`, `.configuration`, `.unexpectedStatus`); `APIErrorBox` collapses them into a UX-friendly surface for reducers. `URLProtocolMock` carries the test suite.
+- **App entrypoint + auth view layer.** `RootView` switches on `RootFeature.State.screen` and mounts the bootstrap loader, the age gate, the auth flow inside a `NavigationStack`, or the signed-in placeholder. Auth views: `AgeGateView` (month/day/year pickers + 21+ acknowledgement toggle), `LoginView` (email + password card; auto-presents `MfaPromptView` as a sheet when the reducer surfaces a challenge), `MfaPromptView` (6-digit code field), `SignUpView` (full register form with `DankInput.ValidationState`-bound per-field errors), `ForgotPasswordView` (UX-only confirmation), `KYCPlaceholderView` (Persona placeholder; SDK wires in Phase 17). Apple §10.4 constraint encoded structurally: `AppEnvironment` exposes `checkoutBaseURL` (default `https://app.dankdash.com/checkout`) but the reducer graph contains no `CheckoutFeature` and no view ever builds a payment surface.
+- **`DesignGalleryView`** — debug-only sheet behind a long-press on the version label in the signed-in placeholder. Renders the full token + component inventory (all 12 color tokens with hex labels, all 7 type tokens, all 7 spacing tokens, all 4 radii, every button × style × size × state, every input kind × validation, all 6 badge tones, both card styles, all 3 logo variants, all 3 loader sizes) in both Light and Dark color schemes via two `#Preview` blocks. Release builds compile the trigger out via `#if DEBUG`.
+- **`.github/workflows/ios.yml`** on macos-15 with two jobs: `swift-test` (`swift test --package-path DankDashKit --parallel`) and `xcode-build` (`xcodebuild build -project DankDash.xcodeproj -scheme DankDash -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`). Both select the newest `Xcode_26.x` toolchain and cache SwiftPM artifacts keyed on `Package.resolved` + `Package.swift`. Path-filtered to only run when iOS files change.
+- **ADR 0004** (`docs/adr/0004-tca-for-ios.md`) — documents the TCA + local-package choice and the Apple §10.4 structural enforcement so future contributors don't reintroduce an in-app checkout surface.
+
+Definition-of-Done verification:
+
+- Xcode project builds for iOS Simulator (verified on iPhone 16 Pro Max + generic iOS Simulator destinations).
+- TCA architecture wired with `@Reducer` + `@ObservableState` + `Scope` + `ifLet` per the spec.
+- Auth flow exercises register / login / refresh / MFA verify against the documented contract (POST `/v1/auth/{register,login,refresh,mfa/verify}`, GET `/v1/me`). Reducer tests cover both branches of the discriminated-union login response.
+- Age gate blocks under-21; client-side check matches the server's `DateOfBirth.isOver21(asOf:)` predicate.
+- Design system documented in `DesignGalleryView` and component snapshot tests in `DankDashDesignSystemTests`.
+- `swift test --package-path DankDashKit` → 125 tests pass.
+- CI lane added (`.github/workflows/ios.yml`).
+- Branch `phase/16-ios-consumer-foundation` pushed; PR opened against `main`.
+
+Deferred:
+
+- **Persona iOS SDK** — `KYCPlaceholderView` ships today with a "Begin verification" stub; SDK integration lands in Phase 17 with the full KYC flow.
+- **`swift-openapi-generator` codegen** — hand-rolled DTOs in `DankDashNetwork` are the bridge until `docs/spec/openapi.yaml` is complete (currently an excerpt). Codegen flips on when the full spec lands.
+- **Real `/v1/auth/reset-password` integration** — `ForgotPasswordFeature` ships as UX-only (confirms "check your email" regardless of input); backend endpoint + retry wiring lands with the Phase 17 account-management surface.
+- **Snapshot baseline recording** — `swift-snapshot-testing` is pinned and component-test files exist; baselines are recorded under `__Snapshots__/` and refreshed on simulator changes per the package's standard flow.
+- **DankDasher driver app target** — the package was sized so a second app target consuming `DankDashKit` is trivial to add; the second target ships in Phase 23 (driver app).
+- **In-app live order tracking / push notifications** — Phase 18 (cart) + Phase 21 (live tracking).
+
+---
+
 ## Phase 15 — Vendor Portal: Menu & Analytics
 
 _Status: complete (2026-05-20). Branch: `phase/15-portal-menu-analytics`. Commit range: `14979a8..c91deac` (11 commits)._
