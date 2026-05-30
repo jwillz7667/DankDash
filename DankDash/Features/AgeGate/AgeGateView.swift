@@ -17,18 +17,18 @@ struct AgeGateView: View {
       VStack(spacing: DankSpacing.lg) {
         header
         dobCard
+        continueButton
       }
       .padding(.horizontal, DankSpacing.lg)
-      .padding(.top, DankSpacing.xl)
-      .padding(.bottom, DankSpacing.md)
+      .padding(.vertical, DankSpacing.xl)
       .frame(maxWidth: 460)
       .frame(maxWidth: .infinity)
     }
-    // Don't bounce when the content already fits — only the largest
-    // Dynamic Type sizes need to scroll, so it reads as a static page.
+    // Only scroll when the content can't fit (small device or large
+    // Dynamic Type); otherwise it reads as a static single screen.
     .scrollBounceBehavior(.basedOnSize)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)
-    .safeAreaInset(edge: .bottom) { continueBar }
   }
 
   private var header: some View {
@@ -84,7 +84,7 @@ struct AgeGateView: View {
     }
   }
 
-  private var continueBar: some View {
+  private var continueButton: some View {
     DankButton(
       "Continue",
       style: .primary,
@@ -92,12 +92,6 @@ struct AgeGateView: View {
       isDisabled: !store.canSubmit,
       action: { store.send(.submitTapped) }
     )
-    .padding(.horizontal, DankSpacing.lg)
-    .padding(.top, DankSpacing.sm)
-    .padding(.bottom, DankSpacing.sm)
-    .frame(maxWidth: 460)
-    .frame(maxWidth: .infinity)
-    .background(DankColor.cream)
   }
 
   // MARK: - DOB bridge
