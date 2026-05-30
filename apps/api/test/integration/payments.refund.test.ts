@@ -36,10 +36,19 @@ import {
 } from '@dankdash/aeropay';
 import { stableUuid } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../../src/modules/payments/tokens.js';
 import { buildTestApp } from '../helpers/build-app.js';
-import { SEED_IDS, bearer, getPool, seedFixtures, signTokenFor } from './setup.js';
+import {
+  SEED_IDS,
+  bearer,
+  freezeToBusinessHours,
+  getPool,
+  resetRateLimit,
+  restoreClock,
+  seedFixtures,
+  signTokenFor,
+} from './setup.js';
 
 const ALICE_ADDRESS_ID = stableUuid('address', 'addr-alice-home');
 const ALICE_PAYMENT_METHOD_ID = stableUuid('payment-method', 'pm-alice');
@@ -175,12 +184,22 @@ describe('/v1/vendor/orders/:id/refund + /v1/admin/refunds/:id/approve — Phase
   });
 
   beforeEach(async () => {
+    // The refund flow drives a full checkout first, which runs the
+    // server-authoritative compliance check; pin the clock inside MN sale
+    // hours so it can't flake in the 2–8 AM dead zone.
+    freezeToBusinessHours();
     await seedFixtures();
     await force24HourHours();
+    // Frozen clock => static rate-limit window; clear between tests.
+    resetRateLimit(app);
     aeropay.createCalls.length = 0;
     aeropay.refundCalls.length = 0;
     aeropay.nextStatus = 'initiated';
     aeropay.nextRefundThrow = null;
+  });
+
+  afterEach(() => {
+    restoreClock();
   });
 
   it('auto-approves a small refund (≤ $50) inline: row completes, ledger balances, partially_refunded flip', async () => {
