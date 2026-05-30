@@ -10,7 +10,7 @@ struct KYCPlaceholderView: View {
 
   var body: some View {
     VStack(spacing: DankSpacing.lg) {
-      DankLogo(.mark, size: 80)
+      DankLogo(.mark, size: 64)
 
       VStack(spacing: DankSpacing.sm) {
         Text("Verify your identity")

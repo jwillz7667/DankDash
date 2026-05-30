@@ -91,7 +91,7 @@ struct RootView: View {
 private struct BootstrapView: View {
   var body: some View {
     VStack(spacing: DankSpacing.md) {
-      DankLogo(.mark, size: 88)
+      DankLogo(.mark, size: 64)
       DankLoader()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -110,7 +110,7 @@ private struct DriverBootstrapView: View {
 
   var body: some View {
     VStack(spacing: DankSpacing.lg) {
-      DankLogo(.mark, size: 88)
+      DankLogo(.mark, size: 64)
       if let message = errorMessage {
         VStack(spacing: DankSpacing.sm) {
           Text("Couldn't load your driver profile")
