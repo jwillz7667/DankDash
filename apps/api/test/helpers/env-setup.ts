@@ -19,6 +19,17 @@ import { generateKeyPairSync } from 'node:crypto';
 // generate (~50ms) and lets AppModule wire up without faking the module.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 
+// NotificationsModule builds a real `apn.Provider` at boot, and node-apn
+// eagerly signs a provider JWT with ES256 — which only succeeds against a
+// genuine EC P-256 private key (the format of an Apple `.p8`). A base64 of
+// an arbitrary string throws "secretOrPrivateKey must be an asymmetric key
+// when using ES256" and takes down every integration suite that boots
+// AppModule. Mint a throwaway P-256 key (Apple's curve) so construction
+// succeeds; it is never used to sign against real Apple infrastructure.
+const { privateKey: apnsPrivateKey } = generateKeyPairSync('ec', {
+  namedCurve: 'prime256v1',
+});
+
 const DEFAULTS: Record<string, string> = {
   NODE_ENV: 'test',
   LOG_LEVEL: 'fatal',
@@ -55,7 +66,9 @@ const DEFAULTS: Record<string, string> = {
   APNS_KEY_ID: 'test',
   APNS_TEAM_ID: 'test',
   APNS_BUNDLE_ID: 'com.dankdash.test',
-  APNS_PRIVATE_KEY_BASE64: Buffer.from('test-apns-key').toString('base64'),
+  APNS_PRIVATE_KEY_BASE64: Buffer.from(
+    apnsPrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  ).toString('base64'),
   AEROPAY_LIVE: 'false',
 };
 
