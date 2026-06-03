@@ -61,6 +61,8 @@ public struct DankButton: View {
       ZStack {
         Text(title)
           .font(size.font)
+          .lineLimit(1)
+          .minimumScaleFactor(0.7)
           .opacity(isLoading ? 0 : 1)
         if isLoading {
           ProgressView()

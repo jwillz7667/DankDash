@@ -38,9 +38,15 @@ public struct DankLogo: View {
       wordmarkText
         .accessibilityLabel("DankDash")
     case .full:
+      // The wordmark is a fixed-point font, so on a narrow proposal the
+      // mark + text row can exceed the device width and wrap. lineLimit +
+      // minimumScaleFactor let the wordmark shrink instead of wrapping;
+      // the mark stays height-bounded and width-safe (see markImage).
       HStack(spacing: DankSpacing.sm) {
         markImage
         wordmarkText
+          .lineLimit(1)
+          .minimumScaleFactor(0.5)
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("DankDash")
@@ -48,11 +54,14 @@ public struct DankLogo: View {
   }
 
   private var markImage: some View {
+    // `maxHeight` (not exact `height`) keeps the proposed width intact so
+    // `.fit` can shrink the mark when the container is narrower than the
+    // asset's intrinsic width — the mark can never overflow horizontally.
     Image("BrandLogo", bundle: .main)
       .resizable()
       .renderingMode(.original)
       .aspectRatio(contentMode: .fit)
-      .frame(height: size)
+      .frame(maxHeight: size)
   }
 
   private var wordmarkText: some View {
