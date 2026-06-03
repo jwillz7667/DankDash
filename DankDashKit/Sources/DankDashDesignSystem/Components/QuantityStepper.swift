@@ -82,7 +82,7 @@ public struct QuantityStepper: View {
     Button(action: action) {
       Image(systemName: symbol)
         .font(.system(size: 14, weight: .bold))
-        .frame(width: 32, height: 32)
+        .frame(width: 44, height: 44)
         .foregroundStyle(
           isEnabled ? DankColor.primary : DankColor.Text.muted
         )
