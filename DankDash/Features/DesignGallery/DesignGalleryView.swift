@@ -25,6 +25,7 @@ struct DesignGalleryView: View {
       }
       .padding(DankSpacing.lg)
       .frame(maxWidth: 720)
+      .frame(maxWidth: .infinity)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)

@@ -14,11 +14,14 @@ struct AgeGateView: View {
     ScrollView {
       VStack(spacing: DankSpacing.lg) {
         VStack(spacing: DankSpacing.md) {
-          DankLogo(.full, size: 96)
+          DankLogo(.mark, size: 96)
           Text("Welcome to DankDash")
             .font(DankFont.title)
             .foregroundStyle(DankColor.Text.primary)
             .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .minimumScaleFactor(0.7)
+            .fixedSize(horizontal: false, vertical: true)
           Text("Minnesota law requires you to confirm you're 21 or older.")
             .font(DankFont.body)
             .foregroundStyle(DankColor.Text.secondary)
@@ -31,32 +34,25 @@ struct AgeGateView: View {
               .font(DankFont.headline)
               .foregroundStyle(DankColor.Text.primary)
 
-            HStack(spacing: DankSpacing.sm) {
-              numericPicker(
-                title: "Month",
-                range: 1...12,
-                selection: Binding(
-                  get: { store.month },
-                  set: { store.send(.monthChanged($0)) }
-                )
-              )
-              numericPicker(
-                title: "Day",
-                range: 1...31,
-                selection: Binding(
-                  get: { store.day },
-                  set: { store.send(.dayChanged($0)) }
-                )
-              )
-              numericPicker(
-                title: "Year",
-                range: yearRange,
-                selection: Binding(
-                  get: { store.year },
-                  set: { store.send(.yearChanged($0)) }
-                )
-              )
-            }
+            DatePicker(
+              "Date of birth",
+              selection: dobBinding,
+              in: dobRange,
+              displayedComponents: .date
+            )
+            .labelsHidden()
+            .datePickerStyle(.compact)
+            .tint(DankColor.primary)
+            .padding(.horizontal, DankSpacing.md)
+            .padding(.vertical, DankSpacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: 48)
+            .background(DankColor.cream)
+            .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
+            .overlay(
+              RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous)
+                .strokeBorder(DankColor.primary.opacity(0.18), lineWidth: 1)
+            )
 
             Toggle(isOn: Binding(
               get: { store.acknowledged },
@@ -88,42 +84,40 @@ struct AgeGateView: View {
       }
       .padding(DankSpacing.lg)
       .frame(maxWidth: 560)
+      .frame(maxWidth: .infinity)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)
   }
 
-  private var yearRange: ClosedRange<Int> {
-    let currentYear = Calendar(identifier: .gregorian).component(.year, from: Date())
-    return (currentYear - 100)...currentYear
+  /// Valid DOB span: today back to 100 years ago. Bounding the picker
+  /// keeps the wheel/calendar focused and forbids future dates.
+  private var dobRange: ClosedRange<Date> {
+    let calendar = Calendar(identifier: .gregorian)
+    let now = Date()
+    let oldest = calendar.date(byAdding: .year, value: -100, to: now) ?? now
+    return oldest...now
   }
 
-  @ViewBuilder
-  private func numericPicker(
-    title: String,
-    range: ClosedRange<Int>,
-    selection: Binding<Int>
-  ) -> some View {
-    VStack(alignment: .leading, spacing: DankSpacing.xxs) {
-      Text(title)
-        .font(DankFont.caption)
-        .foregroundStyle(DankColor.Text.secondary)
-      Picker(title, selection: selection) {
-        ForEach(Array(range), id: \.self) { value in
-          Text(String(value)).tag(value)
-        }
+  /// Bridges the reducer's month/day/year Ints to a single `Date` so the
+  /// compact DatePicker can drive them; each setter still flows through
+  /// the existing actions, leaving `AgeGateFeature` untouched.
+  private var dobBinding: Binding<Date> {
+    Binding(
+      get: {
+        var components = DateComponents()
+        components.year = store.year
+        components.month = store.month
+        components.day = store.day
+        return Calendar(identifier: .gregorian).date(from: components) ?? Date()
+      },
+      set: { date in
+        let components = Calendar(identifier: .gregorian)
+          .dateComponents([.year, .month, .day], from: date)
+        if let month = components.month { store.send(.monthChanged(month)) }
+        if let day = components.day { store.send(.dayChanged(day)) }
+        if let year = components.year { store.send(.yearChanged(year)) }
       }
-      .pickerStyle(.menu)
-      .tint(DankColor.primary)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, DankSpacing.sm)
-      .frame(minHeight: 48)
-      .background(DankColor.cream)
-      .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous)
-          .strokeBorder(DankColor.primary.opacity(0.18), lineWidth: 1)
-      )
-    }
+    )
   }
 }

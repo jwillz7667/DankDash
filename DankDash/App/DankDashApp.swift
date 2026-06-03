@@ -18,7 +18,12 @@ struct DankDashApp: App {
   var body: some Scene {
     WindowGroup {
       RootView(store: Self.store)
-        .preferredColorScheme(.dark)
+        // The design system is a light theme (cream surfaces, dark-green
+        // ink). Forcing .dark made system controls (Picker, Toggle,
+        // DatePicker, secure fields) render dark chrome on cream — illegible.
+        // Pin to .light so app surfaces and system controls agree, matching
+        // the driver app.
+        .preferredColorScheme(.light)
         .dynamicTypeSize(.medium ... .accessibility1)
         .onOpenURL { url in
           Self.store.send(.deepLinkReceived(url))
