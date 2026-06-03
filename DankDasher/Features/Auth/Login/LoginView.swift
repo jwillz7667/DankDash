@@ -16,7 +16,7 @@ struct LoginView: View {
     ScrollView {
       VStack(spacing: DankSpacing.lg) {
         VStack(spacing: DankSpacing.sm) {
-          DankLogo(.full, size: 96)
+          DankLogo(.mark, size: 96)
           Text("Driver sign in")
             .font(DankFont.title)
             .foregroundStyle(DankColor.Text.primary)
@@ -80,6 +80,7 @@ struct LoginView: View {
       }
       .padding(DankSpacing.lg)
       .frame(maxWidth: 560)
+      .frame(maxWidth: .infinity)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)

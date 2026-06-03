@@ -111,6 +111,7 @@ struct VehicleDetailsView: View {
       }
       .padding(DankSpacing.lg)
       .frame(maxWidth: 560)
+      .frame(maxWidth: .infinity)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)
