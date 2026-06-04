@@ -37,10 +37,10 @@ export default function DashboardPage(): ReactNode {
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1.5">
           <p className="text-2xs font-semibold uppercase tracking-wider text-moss-600">Today</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
             Good morning, North Loop
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             Live metrics will update in real-time once the analytics service ships in Phase 17.
           </p>
         </div>
@@ -94,7 +94,7 @@ export default function DashboardPage(): ReactNode {
               Preview
             </Badge>
           </CardHeader>
-          <ul className="divide-y divide-slate-100">
+          <ul className="divide-y divide-outline-subtle">
             {ACTIVITY.map((row) => (
               <li key={row.id} className="flex items-start gap-4 px-6 py-4">
                 <span
@@ -104,12 +104,12 @@ export default function DashboardPage(): ReactNode {
                   <row.icon className="h-4 w-4" />
                 </span>
                 <div className="flex-1 space-y-0.5">
-                  <p className="text-sm font-medium text-slate-900">{row.title}</p>
-                  <p className="text-xs text-slate-500">{row.detail}</p>
+                  <p className="text-sm font-medium text-foreground">{row.title}</p>
+                  <p className="text-xs text-muted">{row.detail}</p>
                 </div>
                 <div className="flex flex-col items-end gap-1 font-tabular">
-                  <span className="text-sm font-medium text-slate-900">{row.amount}</span>
-                  <span className="text-2xs text-slate-400">{row.at}</span>
+                  <span className="text-sm font-medium text-foreground">{row.amount}</span>
+                  <span className="text-2xs text-muted">{row.at}</span>
                 </div>
               </li>
             ))}
@@ -130,8 +130,8 @@ export default function DashboardPage(): ReactNode {
                   aria-hidden="true"
                   className={
                     item.done
-                      ? 'mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-moss-500 text-white'
-                      : 'mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white'
+                      ? 'mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-moss-500 text-on-primary'
+                      : 'mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-outline bg-surface'
                   }
                 >
                   {item.done ? <CheckCircle2 className="h-3 w-3" /> : null}
@@ -139,12 +139,12 @@ export default function DashboardPage(): ReactNode {
                 <div className="flex-1 space-y-0.5">
                   <p
                     className={
-                      item.done ? 'text-sm text-slate-400 line-through' : 'text-sm text-slate-900'
+                      item.done ? 'text-sm text-muted line-through' : 'text-sm text-foreground'
                     }
                   >
                     {item.title}
                   </p>
-                  <p className="text-xs text-slate-500">{item.detail}</p>
+                  <p className="text-xs text-muted">{item.detail}</p>
                 </div>
               </div>
             ))}

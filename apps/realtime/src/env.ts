@@ -52,6 +52,17 @@ export const RealtimeEnvSchema = z
     DRIVER_LOCATION_RATE_PER_SECOND: positiveInt.default(1),
     DRIVER_LOCATION_BURST: positiveInt.default(2),
 
+    // Stream-consumer XREADGROUP BLOCK window. Production blocks 5s per
+    // read (few wakeups, low idle CPU); the integration tests inject a
+    // small value because `StreamConsumer.stop()` awaits the in-flight
+    // XREADGROUP, so a 5s block would make every per-test teardown wait a
+    // full block cycle. Bounded so a typo can't pin the loop on a hot spin.
+    REALTIME_STREAM_BLOCK_MS: positiveInt.default(5_000),
+    // Idle threshold before the consumer XCLAIMs a stalled peer's pending
+    // entries. Production waits 60s; tests shorten it so recovery
+    // assertions don't sleep a real minute.
+    REALTIME_STREAM_RECOVER_IDLE_MS: positiveInt.default(60_000),
+
     // Socket.io engine.io ping interval / timeout — short enough that a
     // dead client gets reaped before its driver assignment goes stale,
     // long enough to absorb a mobile network handoff.

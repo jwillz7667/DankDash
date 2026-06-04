@@ -18,6 +18,15 @@ import { setupTestDb, type TestDatabase } from '@dankdash/db/testing';
 let testDb: TestDatabase | undefined;
 
 export default async function (): Promise<() => Promise<void>> {
+  // VITEST_SKIP_TESTCONTAINER=1 lets pure-unit-test runs (fakes only, no
+  // Drizzle / no AppModule) bypass the Postgres container boot. Integration
+  // tests that build the real AppModule still need the container, so this
+  // is opt-in per-invocation, not a default. CI never sets it.
+  if (process.env['VITEST_SKIP_TESTCONTAINER'] === '1') {
+    return async () => {
+      /* no-op */
+    };
+  }
   testDb = await setupTestDb();
   process.env['DATABASE_URL'] = testDb.connectionString;
   process.env['TEST_DATABASE_URL'] = testDb.connectionString;

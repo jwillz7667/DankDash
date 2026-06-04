@@ -1,0 +1,33 @@
+{
+  "name": "@dankdash/design-tokens",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Single source of truth for DankDash brand tokens — colors, spacing, radii, typography, shadows. Consumed by the portal Tailwind config and the iOS DankDashDesignSystem Swift target (via codegen).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tokens.json": "./dist/tokens.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && pnpm run build:emit",
+    "build:emit": "node ./dist/codegen.cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

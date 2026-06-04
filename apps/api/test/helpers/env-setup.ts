@@ -11,13 +11,38 @@
  * Each value here is deterministic and clearly fake — production secrets
  * never go through this path. Services that need real signing/keying for
  * a given test override locally.
+ *
+ * Registered as the suite's `setupFiles` entry, so it also installs the
+ * one global hook every test file shares: a `vi.useRealTimers()` after
+ * each test. The api suite runs single-fork (`pool: 'forks'`,
+ * `singleFork: true`), so every test file shares one worker and one
+ * global timer state. A unit test that calls `vi.useFakeTimers()` in a
+ * `beforeEach` without restoring leaks the fake clock into the next
+ * file — and the next compliance-gated integration file's
+ * `beforeAll(buildTestApp)` then hangs forever (Nest/Fastify bootstrap
+ * awaits a real `setTimeout`/`setImmediate` that the frozen clock never
+ * fires). This guard resets to real timers after every test so no file
+ * can poison the next; tests that want a fake clock re-arm it in their
+ * own `beforeEach`, so the reset is invisible to them.
  */
 import { generateKeyPairSync } from 'node:crypto';
+import { afterEach, vi } from 'vitest';
 
 // AuthJwtModule decodes JWT_*_KEY_BASE64 at boot and rejects anything that
 // is not a real PEM block. A throwaway 2048-bit RSA keypair is fast to
 // generate (~50ms) and lets AppModule wire up without faking the module.
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+
+// NotificationsModule builds a real `apn.Provider` at boot, and node-apn
+// eagerly signs a provider JWT with ES256 — which only succeeds against a
+// genuine EC P-256 private key (the format of an Apple `.p8`). A base64 of
+// an arbitrary string throws "secretOrPrivateKey must be an asymmetric key
+// when using ES256" and takes down every integration suite that boots
+// AppModule. Mint a throwaway P-256 key (Apple's curve) so construction
+// succeeds; it is never used to sign against real Apple infrastructure.
+const { privateKey: apnsPrivateKey } = generateKeyPairSync('ec', {
+  namedCurve: 'prime256v1',
+});
 
 const DEFAULTS: Record<string, string> = {
   NODE_ENV: 'test',
@@ -55,9 +80,30 @@ const DEFAULTS: Record<string, string> = {
   APNS_KEY_ID: 'test',
   APNS_TEAM_ID: 'test',
   APNS_BUNDLE_ID: 'com.dankdash.test',
-  APNS_PRIVATE_KEY_BASE64: Buffer.from('test-apns-key').toString('base64'),
+  APNS_PRIVATE_KEY_BASE64: Buffer.from(
+    apnsPrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  ).toString('base64'),
+  // Twilio and Resend default ON in the env schema, so every suite that
+  // boots AppModule would build a real client from these fake creds. The
+  // Twilio SDK validates the account SID in its constructor and throws
+  // "accountSid must start with AC" at boot; Resend would later attempt
+  // live HTTP on dispatch. No test exercises the SMS/email providers
+  // (they are never overridden), so disable both — NotificationsModule
+  // then wires NullNotificationProvider and the DI graph boots clean.
+  // APNs has no flag (always-on by design) and is satisfied above with a
+  // real EC P-256 key; Aeropay stays ON because the payment suites need
+  // the real providers with only AEROPAY_CLIENT faked via an override.
+  ENABLE_TWILIO: 'false',
+  ENABLE_RESEND: 'false',
+  AEROPAY_LIVE: 'false',
 };
 
 for (const [key, value] of Object.entries(DEFAULTS)) {
   process.env[key] ??= value;
 }
+
+// Single-fork safety net: never let one test file's fake clock survive
+// into the next. Idempotent when timers are already real.
+afterEach(() => {
+  vi.useRealTimers();
+});

@@ -58,17 +58,19 @@ describe('payoutStatusBadge', () => {
     expect(payoutStatusBadge('completed').className).toContain('moss');
   });
 
-  it('uses rose tones for the failed badge', () => {
-    expect(payoutStatusBadge('failed').className).toContain('rose');
+  it('uses the danger token for the failed badge', () => {
+    expect(payoutStatusBadge('failed').className).toContain('bg-danger-soft');
+    expect(payoutStatusBadge('failed').className).toContain('text-danger');
   });
 
-  it('uses amber tones for processing', () => {
-    expect(payoutStatusBadge('processing').className).toContain('amber');
+  it('uses the warning token for processing', () => {
+    expect(payoutStatusBadge('processing').className).toContain('bg-warning-soft');
+    expect(payoutStatusBadge('processing').className).toContain('text-warning');
   });
 
-  it('uses slate tones for pending / canceled', () => {
-    expect(payoutStatusBadge('pending').className).toContain('slate');
-    expect(payoutStatusBadge('canceled').className).toContain('slate');
+  it('uses neutral surface tones for pending / canceled', () => {
+    expect(payoutStatusBadge('pending').className).toContain('bg-surface-subtle');
+    expect(payoutStatusBadge('canceled').className).toContain('bg-surface-subtle');
   });
 });
 

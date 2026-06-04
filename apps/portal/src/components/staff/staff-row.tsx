@@ -109,15 +109,15 @@ export function StaffRow({
     <tr className={isRemoved ? 'opacity-60' : ''}>
       <td className="px-5 py-4">
         <div className="flex flex-col">
-          <span className="text-sm font-medium text-slate-900">
+          <span className="text-sm font-medium text-foreground">
             {formatStaffDisplayName(member)}
             {isSelf ? (
-              <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-slate-600">
+              <span className="ml-1.5 rounded bg-surface-subtle px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-secondary">
                 You
               </span>
             ) : null}
           </span>
-          <span className="text-xs text-slate-500">{member.email}</span>
+          <span className="text-xs text-muted">{member.email}</span>
         </div>
       </td>
       <td className="px-3 py-4">
@@ -135,7 +135,7 @@ export function StaffRow({
                 void handleRoleChange(e.target.value as VendorStaffRole);
               }}
               disabled={busy}
-              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900 focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-500/30 disabled:cursor-not-allowed disabled:bg-slate-50"
+              className="h-8 rounded-md border border-outline bg-surface px-2 text-sm text-foreground focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-500/30 disabled:cursor-not-allowed disabled:bg-surface-muted"
             >
               {availableRoles.map((r) => (
                 <option key={r} value={r}>
@@ -149,19 +149,17 @@ export function StaffRow({
       <td className="px-3 py-4">
         <StaffStatusBadge status={status} />
       </td>
-      <td className="px-3 py-4 text-sm text-slate-600">
-        {member.mfaEnabled ? 'On' : <span className="text-amber-700">Off</span>}
+      <td className="px-3 py-4 text-sm text-secondary">
+        {member.mfaEnabled ? 'On' : <span className="text-warning">Off</span>}
       </td>
-      <td className="px-3 py-4 text-sm text-slate-500">
-        {formatStaffTimestamp(member.lastLoginAt)}
-      </td>
+      <td className="px-3 py-4 text-sm text-muted">{formatStaffTimestamp(member.lastLoginAt)}</td>
       <td className="px-5 py-4 text-right">
         {isRemoved ? (
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-muted">
             Removed {formatStaffTimestamp(member.removedAt)}
           </span>
         ) : isSelf ? (
-          <span className="text-xs text-slate-400" title="You can't remove yourself.">
+          <span className="text-xs text-muted" title="You can't remove yourself.">
             —
           </span>
         ) : confirmingRemove ? (
@@ -209,10 +207,7 @@ export function StaffRow({
           </Button>
         )}
         {error !== null ? (
-          <p
-            role="alert"
-            className="mt-1 flex items-center justify-end gap-1 text-xs text-rose-700"
-          >
+          <p role="alert" className="mt-1 flex items-center justify-end gap-1 text-xs text-danger">
             <X aria-hidden="true" className="h-3 w-3" />
             {error}
           </p>

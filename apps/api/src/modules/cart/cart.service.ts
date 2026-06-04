@@ -260,14 +260,21 @@ export class CartService {
   /**
    * DELETE /v1/carts/:id. User-scoped delete — the WHERE in the repo
    * pairs id + userId in the same statement so the cross-user path
-   * matches zero rows without a separate find. Idempotent (204 either
-   * way) by design; cross-user / nonexistent / already-deleted are
-   * indistinguishable to the caller, which is correct.
+   * matches zero rows without a separate find. When zero rows match
+   * (cross-user, nonexistent, or already-deleted) we surface a 404
+   * rather than a 204: the caller never owned the row, and returning
+   * success would leak that the id is a valid cart belonging to someone
+   * else. The 404 is identical for "not yours" and "never existed", so
+   * the response still does not distinguish ownership-fail from
+   * existence-fail — the IDOR-safe shape used across the cart surface.
    */
   async delete(userId: string, cartId: string): Promise<void> {
     await this.db.transaction(async (tx) => {
       const scoped = this.reposFor(tx);
-      await scoped.carts.deleteByIdForUser(cartId, userId);
+      const deleted = await scoped.carts.deleteByIdForUser(cartId, userId);
+      if (!deleted) {
+        throw new NotFoundError('Cart', cartId);
+      }
     });
   }
 

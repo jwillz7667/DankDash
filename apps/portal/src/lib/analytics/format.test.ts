@@ -82,9 +82,9 @@ describe('deltaForBigger', () => {
 });
 
 describe('heatmapClass', () => {
-  it('returns the slate fallback for null / 0', () => {
-    expect(heatmapClass(null)).toContain('slate');
-    expect(heatmapClass(0)).toContain('slate');
+  it('returns the neutral surface fallback for null / 0', () => {
+    expect(heatmapClass(null)).toContain('bg-surface-subtle');
+    expect(heatmapClass(0)).toContain('bg-surface-subtle');
   });
 
   it('escalates through five moss steps', () => {

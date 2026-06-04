@@ -140,7 +140,7 @@ export function BrandCard({
             </div>
             <div
               aria-hidden="true"
-              className="h-10 w-10 rounded-lg border border-slate-200"
+              className="h-10 w-10 rounded-lg border border-outline"
               style={
                 swatchValid
                   ? { backgroundColor: color }
@@ -182,7 +182,7 @@ export function BrandCard({
             </div>
           </div>
 
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-muted">
             Image keys reference the asset's path in our object store. Upload UI ships in Phase 16;
             until then, paste the key your account manager provides.
           </p>
@@ -190,7 +190,7 @@ export function BrandCard({
           <div className="flex items-center justify-between gap-3">
             <div className="min-h-[1.25rem]">
               {error !== null ? (
-                <p role="alert" className="text-sm font-medium text-rose-700">
+                <p role="alert" className="text-sm font-medium text-danger">
                   {error}
                 </p>
               ) : success !== null ? (

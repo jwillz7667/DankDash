@@ -1,0 +1,31 @@
+# Forbid TODO / FIXME / XXX / HACK markers in shipped code. CLAUDE.md:
+# "Zero `// TODO` placeholders left behind. If you can't implement it,
+# the phase isn't done — write to BLOCKED.md with what you need."
+#
+# Migration files and generated artifacts are exempt because their
+# textual content is data, not code.
+
+rules:
+  - id: dankdash-no-todo-placeholder
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      TODO / FIXME / XXX / HACK markers leave broken contracts in the
+      tree. Land the change, or write to BLOCKED.md with what you need.
+    paths:
+      include:
+        - apps/
+        - packages/
+      exclude:
+        - "**/test/**"
+        - "**/tests/**"
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        - "**/*.spec.ts"
+        - "**/migrations/**"
+        - "**/generated/**"
+        - "**/dist/**"
+        - "**/build/**"
+        - "**/node_modules/**"
+    pattern-regex: '(?://|/\*)\s*(TODO|FIXME|XXX|HACK)\b'

@@ -50,11 +50,9 @@ export function IntegrationsCard({
       connected: posProvider === 'manual' ? true : hasPosCredentials,
       footer:
         posProvider === 'manual' ? (
-          <span className="text-xs text-slate-500">
-            Switch providers from your account manager.
-          </span>
+          <span className="text-xs text-muted">Switch providers from your account manager.</span>
         ) : (
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-muted">
             Last sync: {formatSyncTimestamp(posLastSyncedAt)}
           </span>
         ),
@@ -67,9 +65,9 @@ export function IntegrationsCard({
       connected: hasMetrcCredentials && metrcFacilityId !== null,
       footer:
         metrcFacilityId !== null ? (
-          <span className="font-mono text-xs text-slate-500">Facility {metrcFacilityId}</span>
+          <span className="font-mono text-xs text-muted">Facility {metrcFacilityId}</span>
         ) : (
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-muted">
             Configure your facility ID with your account manager.
           </span>
         ),
@@ -80,7 +78,7 @@ export function IntegrationsCard({
       subtitle: 'Compliant cannabis payments rail. Required for payout settlement.',
       connected: hasAeropayAccount,
       footer: (
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-muted">
           Onboarding link ships in Phase 18; until then, set up via your account manager.
         </span>
       ),
@@ -98,7 +96,7 @@ export function IntegrationsCard({
           </CardSubtitle>
         </div>
       </CardHeader>
-      <CardBody className="divide-y divide-slate-100">
+      <CardBody className="divide-y divide-outline-subtle">
         {rows.map((row, idx) => (
           <IntegrationRow key={idx} {...row} />
         ))}
@@ -111,12 +109,12 @@ function IntegrationRow({ icon, title, subtitle, connected, footer }: RowSpec): 
   const tone: BadgeTone = connected ? 'success' : 'neutral';
   return (
     <div className="flex items-start gap-3 py-4 first:pt-0 last:pb-0">
-      <div className="flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-slate-50 text-slate-700">
+      <div className="flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-surface-muted text-secondary">
         {icon}
       </div>
       <div className="flex-1">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold tracking-tight text-slate-900">{title}</h3>
+          <h3 className="text-sm font-semibold tracking-tight text-foreground">{title}</h3>
           <Badge tone={tone}>
             {connected ? (
               <>
@@ -131,7 +129,7 @@ function IntegrationRow({ icon, title, subtitle, connected, footer }: RowSpec): 
             )}
           </Badge>
         </div>
-        <p className="text-sm text-slate-500">{subtitle}</p>
+        <p className="text-sm text-muted">{subtitle}</p>
         {footer !== undefined ? <div className="mt-1">{footer}</div> : null}
       </div>
     </div>

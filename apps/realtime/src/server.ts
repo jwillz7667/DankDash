@@ -130,6 +130,8 @@ export async function buildServer(options: BuildServerOptions): Promise<Realtime
     io,
     logger: options.logger,
     group: options.env.REALTIME_CONSUMER_GROUP,
+    blockMs: options.env.REALTIME_STREAM_BLOCK_MS,
+    recoverIdleMs: options.env.REALTIME_STREAM_RECOVER_IDLE_MS,
     ...(options.env.REALTIME_CONSUMER_NAME !== undefined
       ? { consumerName: options.env.REALTIME_CONSUMER_NAME }
       : {}),

@@ -52,7 +52,7 @@ export function AcceptingOrdersCard({
             className={
               isAcceptingOrders
                 ? 'flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-moss-50 text-moss-700'
-                : 'flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-amber-50 text-amber-700'
+                : 'flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-warning-soft text-warning'
             }
           >
             {isAcceptingOrders ? (
@@ -62,16 +62,16 @@ export function AcceptingOrdersCard({
             )}
           </div>
           <div>
-            <h2 className="text-base font-semibold tracking-tight text-slate-900">
+            <h2 className="text-base font-semibold tracking-tight text-foreground">
               {isAcceptingOrders ? 'Accepting orders' : 'Paused'}
             </h2>
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-muted">
               {isAcceptingOrders
                 ? 'Customers can place orders right now. Pause if you need to stop intake without ending an in-flight queue.'
                 : "No new orders are being accepted. In-flight orders continue normally. Resume when you're ready."}
             </p>
             {error !== null ? (
-              <p role="alert" className="mt-1 text-xs font-medium text-rose-700">
+              <p role="alert" className="mt-1 text-xs font-medium text-danger">
                 {error}
               </p>
             ) : null}

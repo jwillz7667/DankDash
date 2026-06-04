@@ -1,0 +1,26 @@
+# ZAP rule tuning file. Format: <rule-id>\t<threshold>\t<comment>
+#
+# Threshold values:
+#   IGNORE — never report this rule
+#   FAIL   — escalate to FAIL severity regardless of confidence
+#   WARN   — default; report at the rule's own severity
+#   INFO   — downgrade to informational
+#
+# Add entries with a date + reason so we can audit suppressions. Stale
+# suppressions should be removed; un-dated entries are rejected at PR
+# review.
+
+# ----------------------------------------------------------------------
+# Defaults — JSON APIs do not need an HTML CSP header. Helmet has CSP
+# disabled at apps/api/src/main.ts:62-65 with a justification comment.
+# ZAP's CSP scanner flags every response; downgrade to informational so
+# real findings are not buried.
+# ----------------------------------------------------------------------
+10038	INFO	(2026-05-21) CSP missing — API ships JSON; CSP not applicable.
+10063	INFO	(2026-05-21) Permissions Policy missing — JSON API only.
+
+# ----------------------------------------------------------------------
+# X-Powered-By header — Fastify does not emit this by default; keep
+# WARN so a regression is caught if a future middleware reintroduces it.
+# ----------------------------------------------------------------------
+# (no entry — default WARN is correct)

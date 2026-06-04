@@ -26,10 +26,19 @@ import {
 } from '@dankdash/aeropay';
 import { stableUuid } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../../src/modules/payments/tokens.js';
 import { buildTestApp } from '../helpers/build-app.js';
-import { SEED_IDS, bearer, getPool, seedFixtures, signTokenFor } from './setup.js';
+import {
+  SEED_IDS,
+  bearer,
+  freezeToBusinessHours,
+  getPool,
+  resetRateLimit,
+  restoreClock,
+  seedFixtures,
+  signTokenFor,
+} from './setup.js';
 
 const ALICE_ADDRESS_ID = stableUuid('address', 'addr-alice-home');
 const ALICE_PAYMENT_METHOD_ID = stableUuid('payment-method', 'pm-alice');
@@ -177,11 +186,22 @@ describe('/v1/payment-methods/aeropay/webhook — Phase 6.8 lifecycle', () => {
   });
 
   beforeEach(async () => {
+    // Each case drives a real checkout (compliance-gated) before exercising
+    // the webhook; pin the clock inside MN sale hours for determinism. The
+    // webhook tolerance check uses the same in-process (frozen) clock and
+    // the test builds `created_at` under it too, so they stay coherent.
+    freezeToBusinessHours();
     await seedFixtures();
     await force24HourHours();
+    // Frozen clock => static rate-limit window; clear between tests.
+    resetRateLimit(app);
     aeropay.createCalls.length = 0;
     aeropay.nextStatus = 'initiated';
     aeropay.nextThrow = null;
+  });
+
+  afterEach(() => {
+    restoreClock();
   });
 
   it('full lifecycle: checkout → payment.authorized → payment.settled → balanced distribution ledger', async () => {

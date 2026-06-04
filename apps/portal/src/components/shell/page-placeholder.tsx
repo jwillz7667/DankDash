@@ -25,8 +25,8 @@ export function PagePlaceholder({
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1.5">
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">{title}</h1>
-          <p className="max-w-2xl text-sm text-slate-500">{description}</p>
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">{title}</h1>
+          <p className="max-w-2xl text-sm text-muted">{description}</p>
         </div>
         <Badge tone="accent">Ships in {phase}</Badge>
       </header>
@@ -37,8 +37,8 @@ export function PagePlaceholder({
               ∎
             </span>
           </div>
-          <h2 className="text-base font-semibold tracking-tight text-slate-900">Coming soon</h2>
-          <div className="mx-auto max-w-md text-sm leading-relaxed text-slate-500">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">Coming soon</h2>
+          <div className="mx-auto max-w-md text-sm leading-relaxed text-muted">
             {children ?? (
               <p>
                 This surface lands in {phase}. Phase 13 stands up the auth shell, navigation, and

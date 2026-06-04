@@ -167,7 +167,7 @@ export function OrderDetailDrawer({
     <div className="fixed inset-0 z-40" data-testid="order-detail-drawer-root">
       <button
         type="button"
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-surface-inverse/40 backdrop-blur-sm"
         aria-label="Close order detail"
         onClick={onClose}
         data-testid="order-detail-backdrop"
@@ -179,14 +179,14 @@ export function OrderDetailDrawer({
         data-testid="order-detail-drawer"
         className={cn(
           'absolute right-0 top-0 flex h-full w-full max-w-md flex-col',
-          'border-l border-slate-200 bg-white shadow-2xl',
+          'border-l border-outline bg-surface shadow-2xl',
         )}
       >
         <DrawerHeader load={load} onClose={onClose} />
         <div className="flex-1 overflow-y-auto px-6 py-5">
           {load.kind === 'loading' && (
             <div className="flex flex-1 items-center justify-center py-12">
-              <Loader2 aria-hidden="true" className="h-6 w-6 animate-spin text-slate-400" />
+              <Loader2 aria-hidden="true" className="h-6 w-6 animate-spin text-muted" />
               <span className="sr-only">Loading order…</span>
             </div>
           )}
@@ -256,11 +256,11 @@ function DrawerHeader({
   const title = load.kind === 'loaded' ? `#${load.detail.shortCode}` : 'Order';
   const status = load.kind === 'loaded' ? load.detail.status : null;
   return (
-    <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-6 py-4">
+    <header className="flex items-start justify-between gap-3 border-b border-outline px-6 py-4">
       <div className="min-w-0 space-y-1">
         <h2
           id="order-detail-title"
-          className="font-tabular text-lg font-semibold tracking-tight text-slate-900"
+          className="font-tabular text-lg font-semibold tracking-tight text-foreground"
         >
           {title}
         </h2>
@@ -274,7 +274,7 @@ function DrawerHeader({
         type="button"
         onClick={onClose}
         aria-label="Close"
-        className="-mt-1 flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500"
+        className="-mt-1 flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-surface-subtle hover:text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500"
         data-testid="order-detail-close"
       >
         <X aria-hidden="true" className="h-5 w-5" />
@@ -301,8 +301,8 @@ function DrawerBody({
 function MoneyBreakdown({ detail }: { readonly detail: VendorOrderDetail }): ReactNode {
   return (
     <section aria-label="Order totals" className="space-y-2">
-      <h3 className="text-2xs font-semibold uppercase tracking-wider text-slate-500">Totals</h3>
-      <dl className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50/40">
+      <h3 className="text-2xs font-semibold uppercase tracking-wider text-muted">Totals</h3>
+      <dl className="divide-y divide-outline-subtle rounded-xl border border-outline bg-surface-muted/40">
         <Line label="Subtotal" cents={detail.subtotalCents} />
         <Line label="Cannabis tax" cents={detail.cannabisTaxCents} />
         <Line label="Sales tax" cents={detail.salesTaxCents} />
@@ -328,11 +328,11 @@ function Line({
     <div
       className={cn(
         'flex items-center justify-between px-4 py-2.5',
-        emphasized && 'bg-white font-semibold text-slate-900',
+        emphasized && 'bg-surface font-semibold text-foreground',
       )}
     >
-      <dt className={cn('text-slate-600', emphasized && 'text-slate-900')}>{label}</dt>
-      <dd className="font-tabular text-slate-900">{formatMoney(cents)}</dd>
+      <dt className={cn('text-secondary', emphasized && 'text-foreground')}>{label}</dt>
+      <dd className="font-tabular text-foreground">{formatMoney(cents)}</dd>
     </div>
   );
 }
@@ -350,12 +350,12 @@ function Timeline({
   });
   return (
     <section aria-label="Order timeline" className="space-y-2">
-      <h3 className="text-2xs font-semibold uppercase tracking-wider text-slate-500">Timeline</h3>
-      <ol className="space-y-1.5 rounded-xl border border-slate-200 bg-white p-4">
+      <h3 className="text-2xs font-semibold uppercase tracking-wider text-muted">Timeline</h3>
+      <ol className="space-y-1.5 rounded-xl border border-outline bg-surface p-4">
         {entries.map((entry) => (
           <li key={entry.key} className="flex items-center justify-between text-sm">
-            <span className="text-slate-600">{entry.label}</span>
-            <span className="font-tabular text-slate-500" title={entry.at}>
+            <span className="text-secondary">{entry.label}</span>
+            <span className="font-tabular text-muted" title={entry.at}>
               {formatRelativeTime(entry.at, now)}
             </span>
           </li>
@@ -374,11 +374,11 @@ function DrawerErrorState({
 }): ReactNode {
   return (
     <div className="flex flex-col items-center gap-3 py-8 text-center" role="alert">
-      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-rose-50 text-rose-700">
+      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-danger-soft text-danger">
         <AlertTriangle aria-hidden="true" className="h-5 w-5" />
       </div>
-      <p className="text-sm font-medium text-slate-900">Couldn't load the order</p>
-      <p className="text-xs text-slate-500">{message}</p>
+      <p className="text-sm font-medium text-foreground">Couldn't load the order</p>
+      <p className="text-xs text-muted">{message}</p>
       <Button variant="secondary" size="sm" onClick={onRetry} data-testid="order-detail-retry">
         Try again
       </Button>
@@ -424,11 +424,11 @@ function DrawerFooter({
     return null;
   }
   return (
-    <footer className="border-t border-slate-200 bg-slate-50/40 px-6 py-4">
+    <footer className="border-t border-outline bg-surface-muted/40 px-6 py-4">
       {actionError !== null && (
         <p
           role="alert"
-          className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+          className="mb-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger"
           data-testid="order-detail-action-error"
         >
           {actionError}
@@ -438,7 +438,7 @@ function DrawerFooter({
         <div className="space-y-3">
           <label
             htmlFor="order-detail-reject-reason"
-            className="block text-xs font-semibold uppercase tracking-wider text-slate-600"
+            className="block text-xs font-semibold uppercase tracking-wider text-secondary"
           >
             Reason for rejection
           </label>
@@ -452,7 +452,7 @@ function DrawerFooter({
             rows={3}
             maxLength={500}
             placeholder="e.g. Out of stock on the requested SKU"
-            className="w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 shadow-sm focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-100"
+            className="w-full rounded-lg border border-outline bg-surface p-3 text-sm text-foreground shadow-sm focus:border-moss-500 focus:outline-none focus:ring-2 focus:ring-moss-100"
           />
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={onRejectCancel} disabled={pending !== null}>

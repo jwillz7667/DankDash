@@ -33,7 +33,7 @@ export interface StatCardProps {
 const TREND_CLASSES: Record<StatTrend, string> = {
   up: 'text-moss-700',
   down: 'text-ember',
-  flat: 'text-slate-500',
+  flat: 'text-muted',
 };
 
 const TREND_GLYPH: Record<StatTrend, string> = {
@@ -59,7 +59,7 @@ export function StatCard({
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm',
+        'relative overflow-hidden rounded-2xl border border-outline bg-surface p-6 shadow-sm',
         'transition-shadow duration-200 ease-out hover:shadow-md',
         className,
       )}
@@ -71,7 +71,7 @@ export function StatCard({
         />
       ) : null}
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-wider text-slate-500">{label}</p>
+        <p className="text-xs font-medium uppercase tracking-wider text-muted">{label}</p>
         {icon !== undefined ? (
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-moss-50 text-moss-700">
             {icon}
@@ -79,9 +79,9 @@ export function StatCard({
         ) : null}
       </div>
       <div className="mt-4 flex items-baseline gap-2 font-tabular">
-        <span className="text-3xl font-semibold tracking-tight text-slate-900">{value}</span>
+        <span className="text-3xl font-semibold tracking-tight text-foreground">{value}</span>
         {suffix !== undefined ? (
-          <span className="text-sm font-medium text-slate-400">{suffix}</span>
+          <span className="text-sm font-medium text-muted">{suffix}</span>
         ) : null}
       </div>
       {(delta !== undefined || trend !== undefined) && (
@@ -89,7 +89,7 @@ export function StatCard({
           {trend !== undefined ? (
             <span className={cn('font-tabular', TREND_CLASSES[trend])}>{TREND_GLYPH[trend]}</span>
           ) : null}
-          {delta !== undefined ? <span className="text-slate-500">{delta}</span> : null}
+          {delta !== undefined ? <span className="text-muted">{delta}</span> : null}
         </div>
       )}
     </div>

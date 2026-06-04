@@ -1,0 +1,128 @@
+name: load-test
+
+# Phase 21 hardening gate. Manually dispatched by an engineer cutting
+# a release; not on every PR (the staging environment is shared and
+# load tests are expensive).
+#
+# The job runs a single k6 scenario against the chosen target and
+# uploads the JSON report as a workflow artifact. Thresholds in each
+# scenario script are authoritative — k6 exits non-zero on a violation
+# and the job fails accordingly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "API target environment"
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - localhost
+      scenario:
+        description: "k6 scenario to run"
+        required: true
+        type: choice
+        default: browse-dispensary
+        options:
+          - browse-dispensary
+          - checkout-burst
+          - driver-gps
+          - vendor-realtime
+      duration_s:
+        description: "Hold duration (seconds)"
+        required: false
+        type: string
+        default: "300"
+
+concurrency:
+  # Only one load test against staging at a time — otherwise the
+  # second run measures the noise from the first.
+  group: load-test-${{ inputs.target }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  k6:
+    name: k6 ${{ inputs.scenario }} → ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SCENARIO: ${{ inputs.scenario }}
+      DURATION_S: ${{ inputs.duration_s }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target URLs
+        id: target
+        # Untrusted inputs go through env, not direct ${{...}} interpolation
+        # (semgrep: yaml.github-actions.security.run-shell-injection).
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ "${TARGET}" = "staging" ]; then
+            echo "api_base_url=https://api.staging.dankdash.com" >> "$GITHUB_OUTPUT"
+            echo "realtime_url=https://realtime.staging.dankdash.com" >> "$GITHUB_OUTPUT"
+          else
+            echo "api_base_url=http://localhost:3000" >> "$GITHUB_OUTPUT"
+            echo "realtime_url=http://localhost:3001" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+          k6 version
+
+      - name: Smoke-test API target is reachable
+        run: |
+          curl --fail-with-body --connect-timeout 5 --max-time 15 \
+            "${{ steps.target.outputs.api_base_url }}/health"
+
+      - name: Run k6 scenario
+        # SCENARIO comes from the workflow-level env (top of jobs.k6.env);
+        # k6 reads it as $SCENARIO so the operator-supplied choice cannot
+        # be smuggled into the shell as a metacharacter
+        # (semgrep: yaml.github-actions.security.run-shell-injection).
+        env:
+          API_BASE_URL: ${{ steps.target.outputs.api_base_url }}
+          REALTIME_URL: ${{ steps.target.outputs.realtime_url }}
+          LOADTEST_PASSWORD: ${{ secrets.LOADTEST_PASSWORD }}
+        run: |
+          mkdir -p loadtest/reports
+          cd loadtest
+          k6 run \
+            --out "json=reports/${SCENARIO}.json" \
+            --summary-export "reports/${SCENARIO}-summary.json" \
+            "scenarios/${SCENARIO}.js"
+
+      - name: Upload k6 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-${{ inputs.scenario }}-${{ inputs.target }}-${{ github.run_id }}
+          path: loadtest/reports/
+          retention-days: 30
+
+      - name: Render summary to job log
+        if: always()
+        # See note on the k6 step above — operator-supplied inputs are
+        # passed through env, never spliced into the run: body directly
+        # (semgrep: yaml.github-actions.security.run-shell-injection).
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ -f "loadtest/reports/${SCENARIO}-summary.json" ]; then
+            echo "## k6 summary — ${SCENARIO} → ${TARGET}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "loadtest/reports/${SCENARIO}-summary.json" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

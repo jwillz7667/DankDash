@@ -55,13 +55,13 @@ function NoDispensaryContext(): ReactNode {
   return (
     <Card>
       <CardBody className="space-y-3 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-warning-soft text-warning">
           <AlertTriangle aria-hidden="true" className="h-5 w-5" />
         </div>
-        <h2 className="text-base font-semibold tracking-tight text-slate-900">
+        <h2 className="text-base font-semibold tracking-tight text-foreground">
           No dispensary context
         </h2>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted">
           Compliance settings are scoped to an active dispensary. Accept your invitation or contact
           your owner to grant access.
         </p>
@@ -81,13 +81,13 @@ function SettingsFetchError({
   return (
     <Card>
       <CardBody className="space-y-3 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-700">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-danger-soft text-danger">
           <AlertTriangle aria-hidden="true" className="h-5 w-5" />
         </div>
-        <h2 className="text-base font-semibold tracking-tight text-slate-900">
+        <h2 className="text-base font-semibold tracking-tight text-foreground">
           Couldn't load compliance posture
         </h2>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-muted">
           We couldn't load compliance info for {storeName}. Refresh the page; if it keeps failing,
           ping DankDash support.
         </p>

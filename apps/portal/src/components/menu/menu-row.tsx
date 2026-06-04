@@ -102,14 +102,14 @@ export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps)
     <tr
       data-testid="menu-row"
       data-listing-id={listing.id}
-      className="border-b border-slate-100 align-middle last:border-0"
+      className="border-b border-outline-subtle align-middle last:border-0"
     >
       <td className="py-3 pl-5 pr-3">
         <div className="flex items-center gap-3">
           <ProductThumb listing={listing} />
           <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-2">
-              <p className="truncate text-sm font-semibold text-slate-900">
+              <p className="truncate text-sm font-semibold text-foreground">
                 {listing.product.brand} — {listing.product.name}
               </p>
               {productOutOfCatalog ? (
@@ -118,16 +118,16 @@ export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps)
                 </Badge>
               ) : null}
             </div>
-            <p className="truncate text-xs text-slate-500">
+            <p className="truncate text-xs text-muted">
               <span className="inline-flex items-center gap-1">
                 <Tag aria-hidden="true" className="h-3 w-3" />
                 {listing.sku}
               </span>
-              <span className="mx-1.5 text-slate-300">·</span>
+              <span className="mx-1.5 text-muted">·</span>
               <span className="capitalize">{listing.product.productType}</span>
               {listing.product.strainType !== null ? (
                 <>
-                  <span className="mx-1.5 text-slate-300">·</span>
+                  <span className="mx-1.5 text-muted">·</span>
                   <span className="capitalize">{listing.product.strainType}</span>
                 </>
               ) : null}
@@ -212,7 +212,7 @@ export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps)
             {formatSyncedLabel(listing.lastSyncedAt, clock)}
           </Badge>
           {listing.metrcPackageTag !== null ? (
-            <span className="mt-1 font-mono text-2xs text-slate-500" title="Metrc package tag">
+            <span className="mt-1 font-mono text-2xs text-muted" title="Metrc package tag">
               {listing.metrcPackageTag}
             </span>
           ) : null}
@@ -235,7 +235,7 @@ export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps)
           </Button>
         ) : null}
         {error !== null ? (
-          <p role="alert" className="mt-1 text-xs text-rose-700">
+          <p role="alert" className="mt-1 text-xs text-danger">
             {error}
           </p>
         ) : null}
@@ -249,7 +249,7 @@ function ProductThumb({ listing }: { readonly listing: VendorListingWithProduct 
   if (firstImage === undefined) {
     return (
       <div
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-2xs font-medium uppercase tracking-widest text-slate-400"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-subtle text-2xs font-medium uppercase tracking-widest text-muted"
         aria-hidden="true"
       >
         {listing.product.brand.slice(0, 2)}
@@ -258,7 +258,7 @@ function ProductThumb({ listing }: { readonly listing: VendorListingWithProduct 
   }
   return (
     <div
-      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100"
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-subtle"
       aria-hidden="true"
     >
       <img src={firstImage} alt="" className="h-10 w-10 rounded-lg object-cover" loading="lazy" />
@@ -321,7 +321,7 @@ function EditableCell({
         onClick={onEdit}
         data-field={field}
         aria-label={`${inputAriaLabel}, current value ${display}`}
-        className="rounded px-2 py-1 text-sm font-medium text-slate-900 hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500"
+        className="rounded px-2 py-1 text-sm font-medium text-foreground hover:bg-surface-subtle focus-visible:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500"
       >
         {display}
       </button>
@@ -338,7 +338,7 @@ function EditableCell({
         {prefix !== undefined ? (
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-slate-400"
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-muted"
           >
             {prefix}
           </span>
@@ -370,7 +370,7 @@ function EditableCell({
         type="submit"
         disabled={busy}
         aria-label={`Save ${field}`}
-        className="rounded p-1 text-emerald-700 hover:bg-emerald-50 focus-visible:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 disabled:opacity-50"
+        className="rounded p-1 text-success hover:bg-success-soft focus-visible:bg-success-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 disabled:opacity-50"
       >
         {busy ? (
           <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
@@ -383,7 +383,7 @@ function EditableCell({
         onClick={onCancel}
         disabled={busy}
         aria-label={`Cancel ${field} edit`}
-        className="rounded p-1 text-slate-500 hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 disabled:opacity-50"
+        className="rounded p-1 text-muted hover:bg-surface-subtle focus-visible:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 disabled:opacity-50"
       >
         <X aria-hidden="true" className="h-4 w-4" />
       </button>
@@ -407,12 +407,12 @@ function ActiveToggle({ isActive, busy, onToggle }: ActiveToggleProps): ReactNod
       onClick={onToggle}
       disabled={busy}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 disabled:opacity-50 ${
-        isActive ? 'bg-moss-500' : 'bg-slate-300'
+        isActive ? 'bg-moss-500' : 'bg-outline-strong'
       }`}
     >
       <span
         aria-hidden="true"
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+        className={`inline-block h-4 w-4 transform rounded-full bg-surface shadow transition-transform ${
           isActive ? 'translate-x-4' : 'translate-x-0.5'
         }`}
       />

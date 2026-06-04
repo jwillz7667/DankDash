@@ -18,6 +18,7 @@ import { AuthController } from './auth.controller.js';
 import { AuthService, type AuthServiceConfig } from './auth.service.js';
 import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
 import { RolesGuard } from './guards/roles.guard.js';
+import { CheckoutHandoffModule } from './handoff/checkout-handoff.module.js';
 import { AuthJwtModule } from './jwt/jwt.module.js';
 import { JwtService } from './jwt/jwt.service.js';
 import { RefreshTokenService } from './jwt/refresh-token.service.js';
@@ -52,9 +53,9 @@ const authServiceProvider: FactoryProvider<AuthService> = {
 };
 
 @Module({
-  imports: [PasswordModule, AuthJwtModule, MfaModule],
+  imports: [PasswordModule, AuthJwtModule, MfaModule, CheckoutHandoffModule],
   controllers: [AuthController],
   providers: [authServiceProvider, JwtAuthGuard, RolesGuard],
-  exports: [AuthService, JwtAuthGuard, RolesGuard, MfaModule, AuthJwtModule],
+  exports: [AuthService, JwtAuthGuard, RolesGuard, MfaModule, AuthJwtModule, CheckoutHandoffModule],
 })
 export class AuthModule {}

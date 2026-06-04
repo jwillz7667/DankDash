@@ -27,7 +27,7 @@ export function AnalyticsTabs(): ReactNode {
   const qs = searchParams.toString();
 
   return (
-    <nav aria-label="Analytics sections" className="border-b border-slate-200">
+    <nav aria-label="Analytics sections" className="border-b border-outline">
       <ul className="-mb-px flex items-center gap-1">
         {TABS.map((tab) => {
           const active = pathname.startsWith(tab.href);
@@ -41,8 +41,8 @@ export function AnalyticsTabs(): ReactNode {
                   'inline-flex h-10 items-center border-b-2 px-4 text-sm font-medium transition-colors duration-150 ease-out',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-1',
                   active
-                    ? 'border-moss-500 text-slate-900'
-                    : 'border-transparent text-slate-600 hover:text-slate-900',
+                    ? 'border-moss-500 text-foreground'
+                    : 'border-transparent text-secondary hover:text-foreground',
                 )}
               >
                 {tab.label}

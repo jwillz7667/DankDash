@@ -70,18 +70,18 @@ export function QueueColumn({
   return (
     <section
       aria-label={`${column.label} column`}
-      className="flex h-full flex-col rounded-2xl border border-slate-200 bg-slate-50/50"
+      className="flex h-full flex-col rounded-2xl border border-outline bg-surface-muted/50"
       data-column-key={column.key}
     >
-      <header className="flex items-baseline justify-between gap-2 border-b border-slate-200 px-4 py-3">
+      <header className="flex items-baseline justify-between gap-2 border-b border-outline px-4 py-3">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold tracking-tight text-slate-900">{column.label}</h3>
+            <h3 className="text-sm font-semibold tracking-tight text-foreground">{column.label}</h3>
             <Badge tone={column.tone} aria-label={`${orders.length.toString()} orders`}>
               {orders.length}
             </Badge>
           </div>
-          <p className="text-xs text-slate-500">{column.helper}</p>
+          <p className="text-xs text-muted">{column.helper}</p>
         </div>
       </header>
       <div
@@ -96,7 +96,7 @@ export function QueueColumn({
         data-drop-active={isActiveDropTarget ? 'true' : undefined}
       >
         {orders.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs text-slate-400">
+          <p className="rounded-xl border border-dashed border-outline bg-surface px-3 py-6 text-center text-xs text-muted">
             No orders.
           </p>
         ) : (
