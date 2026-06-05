@@ -8,26 +8,24 @@ import DankDashNetwork
 /// post-auth into one of two surfaces:
 ///
 ///   1. `bootstrapping` — keychain probe on launch.
-///   2. `ageGate` — under-21 hard gate (Minn. Stat. § 342.27); same UX
-///      guard as the consumer app, kept here too because the driver
-///      target is a distinct binary and a fresh install could land
-///      under-age users.
-///   3. `auth` — login / sign-up / forgot-password sub-flow (reuses
+///   2. `auth` — login / sign-up / forgot-password sub-flow (reuses
 ///      ``LoginFeature`` / ``SignUpFeature`` / ``ForgotPasswordFeature``
-///      verbatim).
-///   4. `loadingDriver` — short-lived: post-auth, fetch the driver
+///      verbatim). Drivers are vetted employees onboarded through KYC,
+///      so — unlike the consumer app — there is **no** under-21 age
+///      gate ahead of sign-in; a fresh launch lands straight on login.
+///   3. `loadingDriver` — short-lived: post-auth, fetch the driver
 ///      self-projection via ``DriverAppAPIClient/getMe`` so we know
 ///      whether to land on onboarding or the shift home. Re-runs on
 ///      bootstrap when a session is restored from keychain.
-///   5. `onboarding` — driver record absent (404 on `getMe`) OR present
+///   4. `onboarding` — driver record absent (404 on `getMe`) OR present
 ///      but background check not yet passed → render
 ///      ``DriverOnboardingFeature``. Listens for the
 ///      `.onboardingComplete(Driver)` delegate to advance once an admin
 ///      flips the background-check timestamp.
-///   6. `shift` — driver record exists and background check passed →
+///   5. `shift` — driver record exists and background check passed →
 ///      ``DriverShiftFeature`` (the map + online/offline + earnings
 ///      home).
-///   7. `earnings` — pushed from ``DriverShiftFeature``'s earnings-card
+///   6. `earnings` — pushed from ``DriverShiftFeature``'s earnings-card
 ///      tap; rendered as a child of `shift` so a sign-out flush still
 ///      reaches it.
 ///
@@ -42,7 +40,6 @@ public struct DriverRootFeature: Sendable {
   @ObservableState
   public struct State: Equatable, Sendable {
     public var screen: Screen
-    public var ageGate: AgeGateFeature.State
     public var login: LoginFeature.State
     public var signUp: SignUpFeature.State
     public var forgotPassword: ForgotPasswordFeature.State?
@@ -67,7 +64,6 @@ public struct DriverRootFeature: Sendable {
 
     public enum Screen: Equatable, Sendable {
       case bootstrapping
-      case ageGate
       case auth
       case loadingDriver
       case onboarding
@@ -86,7 +82,6 @@ public struct DriverRootFeature: Sendable {
 
     public init(
       screen: Screen = .bootstrapping,
-      ageGate: AgeGateFeature.State = .init(),
       login: LoginFeature.State = .init(),
       signUp: SignUpFeature.State = .init(),
       forgotPassword: ForgotPasswordFeature.State? = nil,
@@ -103,7 +98,6 @@ public struct DriverRootFeature: Sendable {
       pendingDeepLinkURL: URL? = nil
     ) {
       self.screen = screen
-      self.ageGate = ageGate
       self.login = login
       self.signUp = signUp
       self.forgotPassword = forgotPassword
@@ -125,7 +119,6 @@ public struct DriverRootFeature: Sendable {
     case onAppear
     case bootstrapResolved(hasSession: Bool)
 
-    case ageGate(AgeGateFeature.Action)
     case authLoginScreenSelected
     case authSignUpScreenSelected
     case authForgotPasswordTapped
@@ -170,10 +163,6 @@ public struct DriverRootFeature: Sendable {
   }
 
   public var body: some ReducerOf<Self> {
-    Scope(state: \.ageGate, action: \.ageGate) {
-      AgeGateFeature()
-    }
-
     Scope(state: \.login, action: \.login) {
       LoginFeature()
     }
@@ -195,9 +184,11 @@ public struct DriverRootFeature: Sendable {
       case .onAppear:
         guard case .bootstrapping = state.screen else { return .none }
         return .run { send in
-          let access = await tokens.loadAccess()
-          let refresh = await tokens.loadRefresh()
-          let hasSession = access != nil && refresh != nil
+          // Presence probe only — must not decrypt the biometric refresh
+          // token at launch (that triggers Face ID and, without
+          // NSFaceIDUsageDescription, a TCC crash). The refresh token is
+          // decrypted later, on the 401-refresh path that needs its bytes.
+          let hasSession = await tokens.hasSession()
           await send(.bootstrapResolved(hasSession: hasSession))
         }
 
@@ -206,14 +197,9 @@ public struct DriverRootFeature: Sendable {
           state.screen = .loadingDriver
           return loadDriver()
         }
-        state.screen = .ageGate
-        return .none
-
-      case .ageGate(.delegate(.passed)):
+        // No age gate on the driver app — vetted employees go straight
+        // to sign-in.
         state.screen = .auth
-        return .none
-
-      case .ageGate:
         return .none
 
       case .authLoginScreenSelected:
