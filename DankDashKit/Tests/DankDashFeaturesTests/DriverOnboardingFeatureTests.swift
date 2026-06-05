@@ -358,6 +358,69 @@ final class DriverOnboardingFeatureTests: XCTestCase {
     // No state change — pendingPollError stays nil.
   }
 
+  // MARK: - Pending-driver re-entry
+
+  func test_init_withPendingDriver_landsOnPendingStep() {
+    // The root reducer hands in a not-yet-cleared driver when
+    // `GET /v1/driver/me` returns one; the feature must resume on the
+    // pending screen, not the welcome step.
+    XCTAssertEqual(
+      DriverOnboardingFeature.State(driver: Self.pendingDriver()).step,
+      .pending
+    )
+  }
+
+  func test_init_withoutDriver_landsOnWelcomeStep() {
+    XCTAssertEqual(DriverOnboardingFeature.State().step, .welcome)
+  }
+
+  func test_init_explicitStepWinsOverDriverDerivation() {
+    let state = DriverOnboardingFeature.State(step: .review, driver: Self.pendingDriver())
+    XCTAssertEqual(state.step, .review)
+  }
+
+  func test_onAppear_pendingDriver_skipsHydrationPollsImmediatelyAndCompletesOnApproval() async {
+    let pending = Self.pendingDriver()
+    let passed = Self.passedDriver()
+    let clock = TestClock()
+    let calls = Locker<Int>(value: 0)
+
+    let store = TestStore(initialState: DriverOnboardingFeature.State(driver: pending)) {
+      DriverOnboardingFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      // draftApplicationDraftStoreClient stays `.unimplemented`: the
+      // pending re-entry branch must NOT read the draft store. If it did,
+      // the unimplemented client would trip the test.
+      $0.driverAppAPIClient = DriverAppAPIClient(
+        getMe: {
+          let attempt = await calls.incrementAndGet()
+          return attempt == 1 ? pending : passed
+        },
+        getCurrentRoute: { throw DriverAPIError.unimplemented("getCurrentRoute") },
+        getEarnings: { _ in throw DriverAPIError.unimplemented("getEarnings") },
+        getShifts: { throw DriverAPIError.unimplemented("getShifts") }
+      )
+      $0.continuousClock = clock
+    }
+
+    // Already on `.pending` from init; onAppear re-asserts it (no change)
+    // and kicks off an immediate poll plus the 30s loop.
+    await store.send(.onAppear)
+    await store.receive(\.pendingPollTriggered)
+    // First poll: still pending → no delegate, no state change (driver is
+    // the same value already in state).
+    await store.receive(\.pendingPollResponse.success)
+
+    // 30s later the loop fires again; admin has cleared the check.
+    await clock.advance(by: .seconds(30))
+    await store.receive(\.pendingPollTriggered)
+    await store.receive(\.pendingPollResponse.success) { $0.driver = passed }
+    await store.receive(\.delegate.onboardingComplete)
+
+    await store.finish()
+  }
+
   // MARK: - Hydration
 
   func test_onAppear_hydratesFromPersistedDraft() async {
@@ -496,6 +559,31 @@ final class DriverOnboardingFeatureTests: XCTestCase {
     )
   }
 
+  /// A submitted-but-not-yet-cleared driver: `backgroundCheckPassedAt`
+  /// is nil, so `isBackgroundCheckPassed` is false and the pending
+  /// screen keeps polling.
+  private static func pendingDriver() -> Driver {
+    Driver(
+      id: UUID(),
+      userId: UUID(),
+      vehicle: Vehicle(make: "Honda", model: "Civic", year: 2021, plate: "ABC123", color: "Blue"),
+      insuranceDocKey: nil,
+      insuranceExpiresAt: nil,
+      backgroundCheckPassedAt: nil,
+      backgroundCheckProviderRef: nil,
+      currentStatus: .offline,
+      lastStatusChangeAt: Date(timeIntervalSince1970: 1_700_000_000),
+      currentLocation: nil,
+      currentLocationUpdatedAt: nil,
+      currentOrderId: nil,
+      ratingAvg: nil,
+      ratingCount: 0,
+      totalDeliveries: 0,
+      createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+      updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+  }
+
   /// Sets the dependency clients to safe stubs so that an unintended
   /// effect call surfaces as a TestStore "unexpected action" instead of
   /// hitting the live binding.
@@ -527,4 +615,8 @@ private extension Locker where T == [DriverApplicationDraft] {
 
 private extension Locker where T == Int {
   func increment() { value += 1 }
+  func incrementAndGet() -> Int {
+    value += 1
+    return value
+  }
 }
