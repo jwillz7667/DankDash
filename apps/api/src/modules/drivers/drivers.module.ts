@@ -97,6 +97,12 @@ import {
   type DriverOffersScopedRepos,
   type DriverOffersScopedReposFactory,
 } from './offers/driver-offers.service.js';
+import { DriverOnboardingController } from './onboarding/driver-onboarding.controller.js';
+import {
+  DriverOnboardingService,
+  type DriverOnboardingScopedRepos,
+  type DriverOnboardingScopedReposFactory,
+} from './onboarding/driver-onboarding.service.js';
 import {
   LiveAeropayDriverPayoutGateway,
   StubAeropayDriverPayoutGateway,
@@ -175,6 +181,25 @@ const adminDriversServiceProvider: FactoryProvider<AdminDriversService> = {
     hasher: DocumentHasher,
   ): AdminDriversService =>
     new AdminDriversService(drivers, users, db, adminDriverReposFor, hasher),
+};
+
+const driverOnboardingReposFor: DriverOnboardingScopedReposFactory = (
+  db: Database,
+): DriverOnboardingScopedRepos => ({
+  drivers: new DriversRepository(db),
+  users: new UsersRepository(db),
+});
+
+const driverOnboardingServiceProvider: FactoryProvider<DriverOnboardingService> = {
+  provide: DriverOnboardingService,
+  inject: [DriversRepository, UsersRepository, DRIZZLE_DB, DOCUMENT_HASHER],
+  useFactory: (
+    drivers: DriversRepository,
+    users: UsersRepository,
+    db: Database,
+    hasher: DocumentHasher,
+  ): DriverOnboardingService =>
+    new DriverOnboardingService(drivers, users, db, driverOnboardingReposFor, hasher),
 };
 
 const driverShiftReposFor: DriverShiftScopedReposFactory = (
@@ -333,6 +358,7 @@ const providers: Provider[] = [
   dispensariesRepoProvider,
   ageVerificationsRepoProvider,
   adminDriversServiceProvider,
+  driverOnboardingServiceProvider,
   driverShiftServiceProvider,
   driverOffersServiceProvider,
   driverAppServiceProvider,
@@ -354,6 +380,7 @@ const providers: Provider[] = [
   ],
   controllers: [
     AdminDriversController,
+    DriverOnboardingController,
     DriverShiftController,
     DriverOffersController,
     DriverAppController,
@@ -365,6 +392,7 @@ const providers: Provider[] = [
   providers,
   exports: [
     AdminDriversService,
+    DriverOnboardingService,
     DriverShiftService,
     DriverOffersService,
     DriverAppService,
