@@ -22,11 +22,6 @@ struct RootView: View {
       case .bootstrapping:
         BootstrapView()
 
-      case .ageGate:
-        AgeGateView(
-          store: store.scope(state: \.ageGate, action: \.ageGate)
-        )
-
       case .auth:
         AuthFlowView(store: store)
 

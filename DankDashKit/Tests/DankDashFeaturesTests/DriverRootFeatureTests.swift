@@ -10,7 +10,7 @@ final class DriverRootFeatureTests: XCTestCase {
 
   // MARK: - Bootstrap
 
-  func test_onAppear_noSession_landsOnAgeGate() async {
+  func test_onAppear_noSession_landsOnAuth() async {
     let store = TestStore(initialState: DriverRootFeature.State()) {
       DriverRootFeature()
     } withDependencies: {
@@ -24,7 +24,7 @@ final class DriverRootFeatureTests: XCTestCase {
     }
     await store.send(.onAppear)
     await store.receive(\.bootstrapResolved) {
-      $0.screen = .ageGate
+      $0.screen = .auth
     }
   }
 
@@ -135,19 +135,6 @@ final class DriverRootFeatureTests: XCTestCase {
     await store.skipReceivedActions()
     XCTAssertEqual(store.state.screen, .loadingDriver, "real failure pins us on the loading screen so retry stays visible")
     XCTAssertEqual(store.state.driverLoadError, "Down for maintenance")
-  }
-
-  // MARK: - Age gate -> Auth
-
-  func test_ageGatePassed_routesToAuth() async {
-    let store = TestStore(initialState: DriverRootFeature.State(screen: .ageGate)) {
-      DriverRootFeature()
-    } withDependencies: {
-      Self.disableDependencies(&$0)
-    }
-    await store.send(.ageGate(.delegate(.passed))) {
-      $0.screen = .auth
-    }
   }
 
   // MARK: - Auth screen toggles
