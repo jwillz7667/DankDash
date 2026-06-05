@@ -57,7 +57,7 @@ public struct DriverOnboardingFeature: Sendable {
     public var pendingPollError: String?
 
     public init(
-      step: Step = .welcome,
+      step: Step? = nil,
       draft: DriverApplicationDraft = DriverApplicationDraft(),
       makeInput: String = "",
       modelInput: String = "",
@@ -73,7 +73,12 @@ public struct DriverOnboardingFeature: Sendable {
       driver: Driver? = nil,
       pendingPollError: String? = nil
     ) {
-      self.step = step
+      // A driver row already exists (the root reducer hands one in when
+      // `GET /v1/driver/me` returns a not-yet-cleared driver) → the
+      // application is already submitted, so land directly on the
+      // pending screen rather than the welcome step. An explicit `step`
+      // still wins, so the form steps and tests stay addressable.
+      self.step = step ?? (driver == nil ? .welcome : .pending)
       self.draft = draft
       self.makeInput = makeInput
       self.modelInput = modelInput
@@ -206,6 +211,19 @@ public struct DriverOnboardingFeature: Sendable {
     Reduce { state, action in
       switch action {
       case .onAppear:
+        // Re-entry with an already-submitted (pending) driver row: the
+        // form is behind us, so skip draft hydration entirely and resume
+        // on the pending screen. Poll once immediately — an admin may
+        // have cleared the background check while the app was closed —
+        // then keep the 30s loop running so the screen flips to the
+        // shift home the moment approval lands.
+        if state.driver != nil {
+          state.step = .pending
+          return .merge(
+            .send(.pendingPollTriggered),
+            pollingEffect()
+          )
+        }
         // Hydrate state from any persisted draft so a cold relaunch
         // resumes the user at the same step.
         return .run { send in
