@@ -8,6 +8,15 @@ import DankDashStorage
 public struct TokenStore: Sendable {
   public var loadAccess: @Sendable () async -> String?
   public var loadRefresh: @Sendable () async -> String?
+  /// Cheap "is a session stored?" probe consumed by the root reducers on
+  /// launch. It must **never** decrypt the biometric-protected refresh
+  /// token: doing so triggers a Face ID challenge on every cold start —
+  /// and a `SIGABRT` when `NSFaceIDUsageDescription` is absent (the cause
+  /// of the consumer launch crash). `live` backs this with a Keychain
+  /// presence query that matches attributes only; the biometric decrypt
+  /// is deferred to the genuine 401-refresh path that actually needs the
+  /// token's bytes.
+  public var hasSession: @Sendable () async -> Bool
   public var persist: @Sendable (TokenPairDTO) async -> Void
   public var clear: @Sendable () async -> Void
 
@@ -15,12 +24,22 @@ public struct TokenStore: Sendable {
     loadAccess: @Sendable @escaping () async -> String?,
     loadRefresh: @Sendable @escaping () async -> String?,
     persist: @Sendable @escaping (TokenPairDTO) async -> Void,
-    clear: @Sendable @escaping () async -> Void
+    clear: @Sendable @escaping () async -> Void,
+    hasSession: (@Sendable () async -> Bool)? = nil
   ) {
     self.loadAccess = loadAccess
     self.loadRefresh = loadRefresh
     self.persist = persist
     self.clear = clear
+    // When a caller doesn't supply an explicit probe (tests, the
+    // in-memory store), derive it from the token getters so existing
+    // semantics are preserved. `live` overrides this with a
+    // non-decrypting Keychain presence check.
+    self.hasSession = hasSession ?? {
+      let access = await loadAccess()
+      let refresh = await loadRefresh()
+      return access != nil && refresh != nil
+    }
   }
 }
 
@@ -47,6 +66,12 @@ public extension TokenStore {
       clear: {
         try? keychain.remove(account: AccountKey.access)
         try? keychain.remove(account: AccountKey.refresh)
+      },
+      hasSession: {
+        // Presence-only — never decrypts the biometric refresh token,
+        // so launch never triggers Face ID (or its TCC crash).
+        keychain.contains(account: AccountKey.access)
+          && keychain.contains(account: AccountKey.refresh)
       }
     )
   }

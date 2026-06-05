@@ -4,6 +4,8 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>DankDash uses your location to show dispensaries that deliver to you. We never share it with third parties.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>DankDash uses Face ID to unlock your securely stored sign-in so only you can resume your session.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
