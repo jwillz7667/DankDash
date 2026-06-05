@@ -132,9 +132,11 @@ public struct RootFeature: Sendable {
       case .onAppear:
         guard case .bootstrapping = state.screen else { return .none }
         return .run { send in
-          let access = await tokens.loadAccess()
-          let refresh = await tokens.loadRefresh()
-          let hasSession = access != nil && refresh != nil
+          // Presence probe only — must not decrypt the biometric refresh
+          // token at launch (that triggers Face ID and, without
+          // NSFaceIDUsageDescription, a TCC crash). The refresh token is
+          // decrypted later, on the 401-refresh path that needs its bytes.
+          let hasSession = await tokens.hasSession()
           await send(.bootstrapResolved(hasSession: hasSession))
         }
 

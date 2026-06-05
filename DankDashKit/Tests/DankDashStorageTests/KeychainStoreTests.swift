@@ -107,4 +107,19 @@ final class KeychainStoreTests: XCTestCase {
     XCTAssertFalse(KeychainError.unhandled(errSecAuthFailed).isItemNotFound)
     XCTAssertFalse(KeychainError.decodingFailed.isItemNotFound)
   }
+
+  func test_contains_falseWhenMissing() {
+    // Pure read — no SecItemAdd, so this never hits the entitlement skip
+    // path and always exercises the presence query.
+    XCTAssertFalse(store.contains(account: "never_set"))
+  }
+
+  func test_contains_trueAfterSet_thenFalseAfterRemove() throws {
+    _ = try skipIfKeychainUnavailable {
+      try store.setString("tok", forAccount: "access_token")
+      XCTAssertTrue(store.contains(account: "access_token"))
+      try store.remove(account: "access_token")
+      XCTAssertFalse(store.contains(account: "access_token"))
+    }
+  }
 }

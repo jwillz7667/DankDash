@@ -102,6 +102,28 @@ public struct KeychainStore: Sendable {
     }
   }
 
+  /// Reports whether an item exists for `account` **without decrypting it**.
+  ///
+  /// This is the launch-safe counterpart to `data(forAccount:)` for
+  /// biometric-protected items: returning the bytes forces a Face ID /
+  /// Touch ID challenge (and, absent `NSFaceIDUsageDescription`, a TCC
+  /// `SIGABRT`), but an existence match does not. The query omits every
+  /// `kSecReturn*` flag and passes a nil result pointer so `SecItemCopyMatching`
+  /// only matches attributes, and `kSecUseAuthenticationUI = kSecUseAuthenticationUISkip`
+  /// guarantees no authentication UI is presented even if the OS would
+  /// otherwise consider it. Use this for "is a session stored?" probes;
+  /// defer the decrypt to the moment the value is actually consumed.
+  public func contains(account: String) -> Bool {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
+    ]
+    return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+  }
+
   /// Removes the item. `errSecItemNotFound` is treated as success so the
   /// API is idempotent — call sites don't have to know whether the value
   /// was previously stored.
