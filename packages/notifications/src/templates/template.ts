@@ -88,6 +88,11 @@ export interface TemplatePayloads {
   'auth.id_verification_required': {
     readonly reason: string;
   };
+  'auth.password_reset': {
+    /** The single-use reset code, pre-formatted for display (e.g. `ABCDE-FGHJK`). */
+    readonly code: string;
+    readonly expiresInMinutes: number;
+  };
 }
 
 /**

@@ -12,6 +12,9 @@
  *                         TTL with versioned keys + explicit invalidation)
  *   - HealthModule       (k8s/Railway liveness + readiness probes, public)
  *   - AuthModule         (register, login, refresh, logout, MFA — mounted /v1)
+ *   - PasswordResetModule (forgot-password / reset-password — emails a
+ *                         single-use code via the NotificationDispatcher;
+ *                         standalone to avoid an Auth↔Notifications cycle)
  *   - IdentityModule     (/me + Persona KYC start + webhook — mounted /v1)
  *   - IdentityVerificationModule (Veriff client for driver-handoff ID scan — /v1/webhooks/veriff)
  *   - DispensariesModule (public dispensary list/read + admin CRUD — /v1)
@@ -62,6 +65,7 @@ import { ObservabilityModule } from './infrastructure/observability.module.js';
 import { RedisModule } from './infrastructure/redis.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
+import { PasswordResetModule } from './modules/auth/password-reset/password-reset.module.js';
 import { CartModule } from './modules/cart/cart.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module.js';
@@ -108,6 +112,7 @@ import { StaffModule } from './modules/staff/staff.module.js';
     CatalogCacheModule,
     HealthModule,
     AuthModule,
+    PasswordResetModule,
     IdentityModule,
     IdentityVerificationModule,
     DispensariesModule,

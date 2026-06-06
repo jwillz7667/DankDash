@@ -18,6 +18,18 @@ export const authWelcomeTemplate: Template<'auth.welcome'> = (payload) => {
   ];
 };
 
+export const authPasswordResetTemplate: Template<'auth.password_reset'> = (payload) => {
+  const subject = 'Your DankDash password reset code';
+  const text = `Hi,\n\nWe received a request to reset your DankDash password. Enter this code in the app to choose a new password:\n\n  ${payload.code}\n\nThis code expires in ${String(payload.expiresInMinutes)} minutes and can only be used once.\n\nIf you didn't ask to reset your password, you can safely ignore this email — your password won't change and no one can use this code without it. For your security, we never ask for this code by phone or text.\n\n— The DankDash team`;
+  return [
+    {
+      channel: 'email',
+      subject,
+      text,
+    },
+  ];
+};
+
 export const authIdVerificationRequiredTemplate: Template<'auth.id_verification_required'> = (
   payload,
 ) => {

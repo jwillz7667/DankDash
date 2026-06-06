@@ -56,7 +56,8 @@ export type NotificationTemplateKey =
   | 'vendor.metrc.reconciliation_discrepancy'
   // Account / onboarding.
   | 'auth.welcome'
-  | 'auth.id_verification_required';
+  | 'auth.id_verification_required'
+  | 'auth.password_reset';
 
 /**
  * Recipient envelope — every provider call needs at minimum a user id (for

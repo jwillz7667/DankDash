@@ -3,11 +3,14 @@ import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import { type GeoPoint } from '../schema/custom-types.js';
 import { parsePoint, pointToSql } from '../schema/geo.js';
 import {
+  passwordResetTokens,
   sessions,
+  type NewPasswordResetToken,
   type NewSession,
   type NewUser,
   type NewUserAddress,
   type NewUserIdDocument,
+  type PasswordResetToken,
   type Session,
   type User,
   type UserAddress,
@@ -356,6 +359,71 @@ export class SessionsRepository extends BaseRepository {
 
   async deleteExpired(now: Date): Promise<number> {
     const result = await this.db.delete(sessions).where(lt(sessions.expiresAt, now));
+    return result.count;
+  }
+}
+
+export class PasswordResetTokensRepository extends BaseRepository {
+  async create(
+    input: Omit<NewPasswordResetToken, 'id'> & { readonly id?: string },
+  ): Promise<PasswordResetToken> {
+    const [row] = await this.db
+      .insert(passwordResetTokens)
+      .values({ ...input, id: input.id ?? newId() })
+      .returning();
+    if (row === undefined)
+      throw new RepositoryError('password_reset_tokens insert returned no row');
+    return row;
+  }
+
+  /**
+   * Looks up a token by the SHA-256 of the presented code. Returns the row
+   * regardless of `used_at` / `expires_at` — the service inspects those to
+   * choose a precise error. The lookup is keyed by the secret hash, so
+   * returning expired/used rows leaks nothing.
+   */
+  async findByCodeHash(codeHash: Uint8Array): Promise<PasswordResetToken | null> {
+    const [row] = await this.db
+      .select()
+      .from(passwordResetTokens)
+      .where(eq(passwordResetTokens.codeHash, codeHash))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Atomically consumes a token. The `used_at IS NULL` guard makes this the
+   * single-use chokepoint: if two requests race on the same code, exactly one
+   * UPDATE matches and the other gets `false`. Returns whether this call was
+   * the one to consume it.
+   */
+  async markUsed(id: string, usedAt = new Date()): Promise<boolean> {
+    const rows = await this.db
+      .update(passwordResetTokens)
+      .set({ usedAt })
+      .where(and(eq(passwordResetTokens.id, id), isNull(passwordResetTokens.usedAt)))
+      .returning({ id: passwordResetTokens.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Stamps `used_at` on every still-active token for a user. Called when a
+   * fresh reset is requested so previously emailed codes are immediately
+   * dead, and after a successful reset to sweep any siblings. Returns the
+   * number of tokens invalidated.
+   */
+  async invalidateAllActiveForUser(userId: string, at = new Date()): Promise<number> {
+    const result = await this.db
+      .update(passwordResetTokens)
+      .set({ usedAt: at })
+      .where(and(eq(passwordResetTokens.userId, userId), isNull(passwordResetTokens.usedAt)));
+    return result.count;
+  }
+
+  async deleteExpired(now: Date): Promise<number> {
+    const result = await this.db
+      .delete(passwordResetTokens)
+      .where(lt(passwordResetTokens.expiresAt, now));
     return result.count;
   }
 }

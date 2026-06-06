@@ -93,6 +93,8 @@ describe('TEMPLATES registry', () => {
       'auth.welcome': () => renderTemplate('auth.welcome', { firstName: 'Sam' }),
       'auth.id_verification_required': () =>
         renderTemplate('auth.id_verification_required', { reason: 'document expired' }),
+      'auth.password_reset': () =>
+        renderTemplate('auth.password_reset', { code: 'ABCDE-FGHJK', expiresInMinutes: 15 }),
     };
     for (const [key, run] of Object.entries(samples)) {
       const rendered = run() as ReadonlyArray<unknown>;
@@ -345,6 +347,21 @@ describe('auth templates', () => {
     const email = rendered[1];
     if (email?.channel !== 'email') throw new TypeError('expected email');
     expect(email.text).toContain('document expired');
+  });
+
+  it('auth.password_reset renders email-only with the code and expiry, never push/sms', () => {
+    const rendered = renderTemplate('auth.password_reset', {
+      code: 'ABCDE-FGHJK',
+      expiresInMinutes: 15,
+    });
+    // Email only: a reset code must not fan out to a lock-screen push or SMS.
+    expect(rendered.map((r) => r.channel)).toEqual(['email']);
+    const email = rendered[0];
+    if (email?.channel !== 'email') throw new TypeError('expected email');
+    expect(email.subject).toBe('Your DankDash password reset code');
+    expect(email.text).toContain('ABCDE-FGHJK');
+    expect(email.text).toContain('15 minutes');
+    expect(email.text).toContain("If you didn't ask to reset");
   });
 });
 
