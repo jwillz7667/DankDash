@@ -15,18 +15,40 @@
  */
 import {
   type Database,
+  type DispensariesRepository,
+  type DriversRepository,
   type Order,
+  type OrderEventsRepository,
+  type OrderItemsRepository,
   type OrdersRepository,
   type OrderStatus,
+  type UsersRepository,
   type VendorQueueOrderRow,
 } from '@dankdash/db';
 import { OrderError } from '@dankdash/orders';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
+import { type OrderResponse } from '../checkout/dto/index.js';
+import {
+  projectCustomerDispensary,
+  projectCustomerDropoff,
+  projectCustomerEvent,
+  projectCustomerOrder,
+  projectDriverPublicProfile,
+} from './customer-order-detail.projection.js';
+import {
+  type CustomerOrderDetailResponse,
+  type DriverPublicProfile,
+} from './dto/customer-order-detail.dto.js';
 import type { RateOrderRequest } from './dto/index.js';
 
 export interface OrdersScopedRepos {
   readonly orders: OrdersRepository;
+  readonly orderItems: OrderItemsRepository;
+  readonly orderEvents: OrderEventsRepository;
+  readonly users: UsersRepository;
+  readonly dispensaries: DispensariesRepository;
+  readonly drivers: DriversRepository;
 }
 
 export type OrdersScopedReposFactory = (db: Database) => OrdersScopedRepos;
@@ -50,6 +72,68 @@ export class OrdersService {
       throw OrderError.notFound(orderId);
     }
     return order;
+  }
+
+  /**
+   * GET /v1/orders/:id — the consumer tracking projection. After the
+   * ownership check (cross-user → 404, no leak) it hydrates the order's
+   * items + events, the dispensary pickup point, and — only when a
+   * driver is assigned — the privacy-minimal driver card. The dropoff
+   * point is read from the order's own address snapshot, so no extra
+   * read is needed for it.
+   *
+   * A missing dispensary row is impossible under the `onDelete:
+   * 'restrict'` FK but is mapped to 404 (not 500) so a half-formed order
+   * never surfaces a partial projection to the client.
+   */
+  async getDetailForUser(userId: string, orderId: string): Promise<CustomerOrderDetailResponse> {
+    const repos = this.reposFactory(this.db);
+    const order = await repos.orders.findById(orderId);
+    if (order?.userId !== userId) {
+      throw OrderError.notFound(orderId);
+    }
+
+    const [items, events, dispensary, driver] = await Promise.all([
+      repos.orderItems.listForOrder(order.id),
+      repos.orderEvents.listForOrder(order.id),
+      repos.dispensaries.findById(order.dispensaryId),
+      this.loadDriverProfile(repos, order.driverId),
+    ]);
+    if (dispensary === null) {
+      throw OrderError.notFound(orderId);
+    }
+
+    return {
+      order: projectCustomerOrder(order, items),
+      events: events.map(projectCustomerEvent),
+      driver,
+      dispensary: projectCustomerDispensary(dispensary),
+      dropoff: projectCustomerDropoff(order),
+    };
+  }
+
+  /**
+   * Resolves the driver card for `orders.driver_id` (a `users.id`).
+   * Joins the user row (name + phone) and the driver row (vehicle
+   * fields) in parallel. Returns `null` when no driver is assigned, or
+   * when the user row has vanished — the consumer simply shows no card
+   * rather than a half-resolved one.
+   */
+  private async loadDriverProfile(
+    repos: OrdersScopedRepos,
+    driverUserId: string | null,
+  ): Promise<DriverPublicProfile | null> {
+    if (driverUserId === null) {
+      return null;
+    }
+    const [driverUser, driverRow] = await Promise.all([
+      repos.users.findById(driverUserId),
+      repos.drivers.findByUserId(driverUserId),
+    ]);
+    if (driverUser === null) {
+      return null;
+    }
+    return projectDriverPublicProfile(driverUser, driverRow);
   }
 
   async listForDispensary(
@@ -120,5 +204,24 @@ export class OrdersService {
       }
       return updated;
     });
+  }
+
+  /**
+   * Records the rating (see `recordRating`) and returns the flat
+   * checkout-shaped order projection — the same shape the iOS
+   * `rateOrder` client decodes and the tracking reducer refreshes its
+   * order slice from. Items are read after the rating tx commits; the
+   * rating write does not touch line items, so a post-commit read is
+   * consistent.
+   */
+  async rateForUser(
+    userId: string,
+    orderId: string,
+    req: RateOrderRequest,
+  ): Promise<OrderResponse> {
+    const order = await this.recordRating(userId, orderId, req);
+    const repos = this.reposFactory(this.db);
+    const items = await repos.orderItems.listForOrder(order.id);
+    return projectCustomerOrder(order, items);
   }
 }

@@ -28,13 +28,22 @@
  *     we do not import it directly to avoid stacking two copies of the
  *     DispensaryStaffRepository provider.
  */
-import { OrdersRepository, type Database } from '@dankdash/db';
+import {
+  DispensariesRepository,
+  DriversRepository,
+  OrderEventsRepository,
+  OrderItemsRepository,
+  OrdersRepository,
+  UsersRepository,
+  type Database,
+} from '@dankdash/db';
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { ListingsModule } from '../listings/listings.module.js';
 import { CustomerOrdersController } from './customer-orders.controller.js';
+import { OrderDispatchQueueListener } from './order-dispatch-queue.listener.js';
 import {
   OrderTransitionService,
   type OrderScopedReposFactory,
@@ -49,6 +58,11 @@ import { VendorOrdersController } from './vendor-orders.controller.js';
 
 const ordersReposFactory: OrdersScopedReposFactory = (db: Database): OrdersScopedRepos => ({
   orders: new OrdersRepository(db),
+  orderItems: new OrderItemsRepository(db),
+  orderEvents: new OrderEventsRepository(db),
+  users: new UsersRepository(db),
+  dispensaries: new DispensariesRepository(db),
+  drivers: new DriversRepository(db),
 });
 
 const ordersServiceProvider: FactoryProvider<OrdersService> = {
@@ -68,10 +82,27 @@ const orderTransitionServiceProvider: FactoryProvider<OrderTransitionService> = 
     new OrderTransitionService(db, transitionReposFactory, events),
 };
 
+// Auto-dispatch: bridges `ready_for_pickup` → `awaiting_driver` via a
+// system `DISPATCH_QUEUE` event so the dispatch worker can offer the job.
+// See order-dispatch-queue.listener.ts for the re-entrancy / idempotency
+// contract. Constructed with the same OrderTransitionService singleton the
+// controllers use — the transition opens its own tx, so the listener firing
+// post-commit is safe.
+const orderDispatchQueueListenerProvider: FactoryProvider<OrderDispatchQueueListener> = {
+  provide: OrderDispatchQueueListener,
+  inject: [OrderTransitionService],
+  useFactory: (transitions: OrderTransitionService): OrderDispatchQueueListener =>
+    new OrderDispatchQueueListener({ transitions }),
+};
+
 @Module({
   imports: [AuthModule, ListingsModule],
   controllers: [CustomerOrdersController, VendorOrdersController],
-  providers: [ordersServiceProvider, orderTransitionServiceProvider],
+  providers: [
+    ordersServiceProvider,
+    orderTransitionServiceProvider,
+    orderDispatchQueueListenerProvider,
+  ],
   exports: [OrdersService, OrderTransitionService],
 })
 export class OrdersModule {}

@@ -35,12 +35,13 @@ import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
+import { type OrderResponse } from '../checkout/dto/index.js';
+import { type CustomerOrderDetailResponse } from './dto/customer-order-detail.dto.js';
 import {
   CancelOrderRequestDto,
   ListOrdersQueryDto,
   RateOrderRequestDto,
   type ListOrdersResponse,
-  type OrderResponse,
   type TransitionResponse,
 } from './dto/index.js';
 import { OrderTransitionService } from './order-transition.service.js';
@@ -72,9 +73,8 @@ export class CustomerOrdersController {
   async get(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<OrderResponse> {
-    const order = await this.orders.findForUser(user.userId, id);
-    return projectOrder(order);
+  ): Promise<CustomerOrderDetailResponse> {
+    return this.orders.getDetailForUser(user.userId, id);
   }
 
   @Post(':id/cancel')
@@ -116,7 +116,6 @@ export class CustomerOrdersController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: RateOrderRequestDto,
   ): Promise<OrderResponse> {
-    const order = await this.orders.recordRating(user.userId, id, body);
-    return projectOrder(order);
+    return this.orders.rateForUser(user.userId, id, body);
   }
 }
