@@ -81,6 +81,17 @@ struct AppEnvironment {
     dependencies.backgroundLocationClient = .live
     dependencies.batteryMonitorClient = .live
 
+    // Delivery-scoped realtime: publishes the driver's live location to
+    // the `/driver` Socket.io namespace (the consumer's tracking map
+    // consumes it) and observes `order:status_changed` so the vendor
+    // handoff reconciles the active-route UI without polling. Shares the
+    // same auth coordinator as `apiClient`, so a reconnect pulls a
+    // freshly-refreshed token.
+    dependencies.driverRealtimeClient = .live(
+      baseURL: realtimeBaseURL,
+      accessToken: { [interceptor] in try await interceptor.accessToken() }
+    )
+
     // I/O surfaces — file picker for onboarding documents,
     // notifications for offer pushes (Phase 20 wires the offer-receipt
     // side; the registration path itself lives in the app delegate).

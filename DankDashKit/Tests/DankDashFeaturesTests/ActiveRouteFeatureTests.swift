@@ -7,12 +7,17 @@ import DankDashNetwork
 
 /// Reducer coverage for the driver active-route screen.
 ///
-/// The reducer fans out THREE concurrent effects on `.onAppear`: a
-/// route fetch, a location stream subscription, and (when both arrive)
-/// a directions calc. We use `exhaustivity = .off` for the merge
-/// orderings and assert end-state explicitly. The `BackgroundLocationClient.test`
-/// factory replays a fixed coordinate list then closes the stream, so
-/// each test deterministically controls how many GPS samples land.
+/// The reducer fans out FOUR concurrent effects on `.onAppear`: a route
+/// fetch, a location-stream subscription, a `/driver` socket
+/// status-change subscription, and (when both route + a fix arrive) a
+/// directions calc — plus a 15s handoff poll while it sits on the
+/// handoff-wait card. We use `exhaustivity = .off` for the merge
+/// orderings and assert end-state explicitly. The
+/// `BackgroundLocationClient.test` factory replays a fixed coordinate
+/// list then closes the stream, so each test deterministically controls
+/// how many GPS samples land. `continuousClock` is a `TestClock` that is
+/// never advanced, so the handoff poll suspends quietly and is torn down
+/// with `.onDisappear`.
 @MainActor
 final class ActiveRouteFeatureTests: XCTestCase {
 
@@ -31,13 +36,11 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
+      $0.driverOrdersAPIClient = Self.ordersClient(
         getOrder: { id in
           await getOrderCalls.append(id)
           return initialRoute
-        },
-        pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+        }
       )
       $0.directionsClient = DirectionsClient(
         calculateRoute: { from, to, transport in
@@ -84,10 +87,8 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
-        getOrder: { _ in throw APIError.transport(NSError(domain: "URLSession", code: -1009)) },
-        pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        getOrder: { _ in throw APIError.transport(NSError(domain: "URLSession", code: -1009)) }
       )
       $0.backgroundLocationClient = .test(status: .authorizedAlways, coordinates: [])
     }
@@ -103,18 +104,13 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertNil(store.state.directions)
   }
 
-  func test_onAppear_deepLinkAfterPickupConfirmed_landsOnDropoffPhase() async {
+  /// Deep-linking onto the dropoff leg (the driver has already departed):
+  /// the server `order.status` is `en_route_dropoff`, so the screen must
+  /// reseed onto the dropoff phase and route to the CUSTOMER, not the
+  /// dispensary.
+  func test_onAppear_deepLinkOnDropoffLeg_routesToCustomer() async {
     let orderId = Self.orderId
-    let pickupEvent = OrderEvent(
-      id: UUID(uuidString: "00000000-0000-0000-0000-0000000000aa")!,
-      orderId: orderId,
-      eventType: "order_pickup_confirmed",
-      actorUserId: nil,
-      actorRole: "driver",
-      payload: .null,
-      occurredAt: Self.referenceDate
-    )
-    let route = Self.activeRoute(events: [pickupEvent])
+    let route = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
     let directions = Self.fixedDirections()
     let calculateCalls = Locker<[CalculateCall]>(value: [])
 
@@ -124,11 +120,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
-        getOrder: { _ in route },
-        pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
-      )
+      $0.driverOrdersAPIClient = Self.ordersClient(getOrder: { _ in route })
       $0.directionsClient = DirectionsClient(
         calculateRoute: { from, to, transport in
           await calculateCalls.append(CalculateCall(from: from, to: to, transport: transport))
@@ -149,7 +141,35 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
     XCTAssertEqual(store.state.phase, .enRouteToDropoff)
     let calculated = await calculateCalls.value
-    XCTAssertEqual(calculated.first?.to, Self.dropoffLocation, "second-launch should route to dropoff, not dispensary")
+    XCTAssertEqual(calculated.first?.to, Self.dropoffLocation, "dropoff leg should route to the customer, not the dispensary")
+  }
+
+  /// Deep-linking onto the handoff-wait leg (`en_route_pickup`): the
+  /// screen reseeds onto `.awaitingHandoff` and starts the poll fallback.
+  func test_onAppear_deepLinkOnHandoffWait_landsOnAwaitingHandoff() async {
+    let orderId = Self.orderId
+    let route = Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true)
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(orderId: orderId)
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(getOrder: { _ in route })
+      $0.backgroundLocationClient = .test(status: .authorizedAlways, coordinates: [])
+    }
+    store.exhaustivity = .off
+
+    await store.send(.onAppear)
+    await store.skipReceivedActions()
+
+    XCTAssertEqual(store.state.phase, .awaitingHandoff)
+    XCTAssertNil(store.state.directions)
+
+    // Tear down the handoff poll (TestClock never fires it).
+    await store.send(.onDisappear)
+    await store.finish()
   }
 
   // MARK: - Live location stream
@@ -171,11 +191,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
-        getOrder: { _ in initialRoute },
-        pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
-      )
+      $0.driverOrdersAPIClient = Self.ordersClient(getOrder: { _ in initialRoute })
       $0.directionsClient = DirectionsClient(
         calculateRoute: { _, _, _ in directions },
         liveSteps: { _, _ in AsyncStream { $0.finish() } }
@@ -215,11 +231,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
-        getOrder: { _ in initialRoute },
-        pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
-      )
+      $0.driverOrdersAPIClient = Self.ordersClient(getOrder: { _ in initialRoute })
       $0.directionsClient = DirectionsClient(
         calculateRoute: { from, to, transport in
           await calculateCalls.append(CalculateCall(from: from, to: to, transport: transport))
@@ -241,16 +253,45 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertEqual(calculated.first?.from, Self.driverStart)
   }
 
+  /// Every GPS fix is fanned to the customer's live map via the `/driver`
+  /// socket publisher — even with no route/directions loaded yet.
+  func test_locationStreamYielded_publishesFixToRealtime() async {
+    let orderId = Self.orderId
+    let publishedCoords = Locker<[Coordinate]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(orderId: orderId, isLoadingRoute: false)
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = DriverRealtimeClient(
+        publishLocation: { coord in await publishedCoords.append(coord) },
+        events: { AsyncStream { $0.finish() } },
+        disconnect: { }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.locationStreamYielded(Self.driverStart))
+    await store.finish()
+
+    let coords = await publishedCoords.value
+    XCTAssertEqual(coords, [Self.driverStart])
+    XCTAssertEqual(store.state.driverLocation, Self.driverStart)
+  }
+
   // MARK: - Confirm Pickup
 
-  func test_confirmPickup_happyPath_flipsLegAndRefetchesDirections() async {
+  /// Pickup-confirm reaches `en_route_pickup` — the bag is NOT in the car
+  /// until the vendor confirms the physical handoff. The reducer parks on
+  /// the handoff-wait card, drops the dispensary directions, and starts
+  /// the poll fallback. No dropoff directions are calculated yet.
+  func test_confirmPickup_happyPath_landsOnHandoffWait() async {
     let orderId = Self.orderId
     let initialRoute = Self.activeRoute()
     let pickupResponse = Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true)
     let toPickupDirections = Self.fixedDirections()
-    let toDropoffDirections = Self.fixedDirections(
-      stepInstruction: "Turn LEFT on Lake Street"
-    )
     let pickupCalls = Locker<[PickupCall]>(value: [])
     let calculateCalls = Locker<[CalculateCall]>(value: [])
 
@@ -268,18 +309,17 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
-        getOrder: { _ in throw DriverAPIError.unimplemented("getOrder") },
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        getOrder: { _ in pickupResponse },
         pickupConfirm: { id, body in
           await pickupCalls.append(PickupCall(orderId: id, hasLocation: body.location != nil))
           return pickupResponse
-        },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+        }
       )
       $0.directionsClient = DirectionsClient(
         calculateRoute: { from, to, transport in
           await calculateCalls.append(CalculateCall(from: from, to: to, transport: transport))
-          return toDropoffDirections
+          return Self.fixedDirections()
         },
         liveSteps: { _, _ in AsyncStream { $0.finish() } }
       )
@@ -290,11 +330,11 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
     await store.send(.confirmPickupTapped)
     await store.skipReceivedActions()
-    await store.finish()
 
-    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
+    XCTAssertEqual(store.state.phase, .awaitingHandoff)
     XCTAssertEqual(store.state.route, pickupResponse)
-    XCTAssertEqual(store.state.directions, toDropoffDirections)
+    XCTAssertNil(store.state.directions)
+    XCTAssertNil(store.state.currentStep)
     XCTAssertFalse(store.state.confirmPickupInFlight)
     XCTAssertNil(store.state.errorBanner)
 
@@ -303,10 +343,13 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertEqual(recordedPickup.first?.orderId, orderId)
     XCTAssertTrue(recordedPickup.first?.hasLocation ?? false)
 
+    // No navigation directions are calculated on pickup-confirm anymore —
+    // routing resumes only after the handoff + Start Trip.
     let calculated = await calculateCalls.value
-    XCTAssertEqual(calculated.count, 1)
-    XCTAssertEqual(calculated.first?.from, Self.driverStart)
-    XCTAssertEqual(calculated.first?.to, Self.dropoffLocation)
+    XCTAssertTrue(calculated.isEmpty, "no directions should be calculated while waiting for handoff")
+
+    await store.send(.onDisappear)
+    await store.finish()
   }
 
   func test_confirmPickup_409StateConflict_refetchesInsteadOfErrorBanner() async {
@@ -327,7 +370,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
+      $0.driverOrdersAPIClient = Self.ordersClient(
         getOrder: { id in
           await getOrderCalls.append(id)
           return refetched
@@ -337,8 +380,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
             status: 409,
             envelope: Self.envelope(code: "ORDER_STATE_INVALID")
           )
-        },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+        }
       )
       $0.directionsClient = DirectionsClient(
         calculateRoute: { _, _, _ in Self.fixedDirections() },
@@ -351,13 +393,16 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
     await store.send(.confirmPickupTapped)
     await store.skipReceivedActions()
-    await store.finish()
 
     XCTAssertFalse(store.state.confirmPickupInFlight)
     XCTAssertNil(store.state.errorBanner, "409 ORDER_STATE_INVALID should refetch, not banner")
     XCTAssertEqual(store.state.route, refetched)
+    XCTAssertEqual(store.state.phase, .awaitingHandoff)
     let fetchedIds = await getOrderCalls.value
     XCTAssertEqual(fetchedIds, [orderId])
+
+    await store.send(.onDisappear)
+    await store.finish()
   }
 
   func test_confirmPickup_500_setsErrorBannerKeepsPhase() async {
@@ -375,15 +420,13 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
-        getOrder: { _ in throw DriverAPIError.unimplemented("getOrder") },
+      $0.driverOrdersAPIClient = Self.ordersClient(
         pickupConfirm: { _, _ in
           throw APIError.server(
             status: 500,
             envelope: Self.envelope(code: "INTERNAL_ERROR", message: "boom")
           )
-        },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+        }
       )
       $0.backgroundLocationClient = .test(status: .authorizedAlways, coordinates: [])
       $0.date = .constant(Self.referenceDate)
@@ -440,17 +483,40 @@ final class ActiveRouteFeatureTests: XCTestCase {
     await store.send(.confirmPickupTapped)
   }
 
-  // MARK: - Arrived
+  // MARK: - Server status reconcile (handoff)
 
-  func test_arrivedTapped_atDropoffPhase_emitsRequestedIdScanDelegate() async {
+  /// The vendor confirms the physical handoff in their portal →
+  /// `picked_up` fans out over the `/driver` socket → the reducer
+  /// advances off the handoff-wait card to "ready to depart" and stops
+  /// polling.
+  func test_serverStatusObserved_pickedUp_advancesToReadyToDepart() async {
     let orderId = Self.orderId
-    let route = Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true)
-
     let store = TestStore(
       initialState: ActiveRouteFeature.State(
         orderId: orderId,
-        route: route,
-        driverLocation: Self.dropoffLocation,
+        route: Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true),
+        phase: .awaitingHandoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.serverStatusObserved(.pickedUp)) {
+      $0.phase = .readyToDepart
+    }
+  }
+
+  /// A status we've already passed (server lag, duplicate poll) never
+  /// drags the optimistic UI backwards.
+  func test_serverStatusObserved_staleStatus_isNoOp() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
         phase: .enRouteToDropoff,
         isLoadingRoute: false
       )
@@ -460,10 +526,314 @@ final class ActiveRouteFeatureTests: XCTestCase {
       Self.disableDependencies(&$0)
     }
 
-    await store.send(.arrivedTapped) {
-      $0.phase = .awaitingIdScan
+    // `.enRoutePickup` maps to `.awaitingHandoff` (rank 1) which is behind
+    // `.enRouteToDropoff` (rank 3) → ignored.
+    await store.send(.serverStatusObserved(.enRoutePickup))
+  }
+
+  /// A pre-dispatch / cancel status has no delivery leg and is ignored.
+  func test_serverStatusObserved_nonLegStatus_isNoOp() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true),
+        phase: .awaitingHandoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
     }
+
+    await store.send(.serverStatusObserved(.canceled))
+  }
+
+  /// Server jumped the order straight onto the dropoff leg (depart
+  /// confirmed elsewhere / lost response): the reducer advances and
+  /// recalculates directions to the customer.
+  func test_serverStatusObserved_jumpToDropoff_recalcsDirections() async {
+    let orderId = Self.orderId
+    let directions = Self.fixedDirections()
+    let calculateCalls = Locker<[CalculateCall]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+        driverLocation: Self.dispensaryLocation,
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.directionsClient = DirectionsClient(
+        calculateRoute: { from, to, transport in
+          await calculateCalls.append(CalculateCall(from: from, to: to, transport: transport))
+          return directions
+        },
+        liveSteps: { _, _ in AsyncStream { $0.finish() } }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.serverStatusObserved(.enRouteDropoff))
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
+    let calculated = await calculateCalls.value
+    XCTAssertEqual(calculated.count, 1)
+    XCTAssertEqual(calculated.first?.to, Self.dropoffLocation)
+  }
+
+  // MARK: - Depart
+
+  /// Start Trip at `picked_up` → POST `depart` → `en_route_dropoff`, and
+  /// directions are recalculated to the customer from the current fix.
+  func test_departTapped_happyPath_routesToCustomer() async {
+    let orderId = Self.orderId
+    let pickedUpRoute = Self.activeRoute(status: .pickedUp, hasPickupEvent: true)
+    let departedRoute = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let departCalls = Locker<[PickupCall]>(value: [])
+    let calculateCalls = Locker<[CalculateCall]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: pickedUpRoute,
+        driverLocation: Self.dispensaryLocation,
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        depart: { id, body in
+          await departCalls.append(PickupCall(orderId: id, hasLocation: body.location != nil))
+          return departedRoute
+        }
+      )
+      $0.directionsClient = DirectionsClient(
+        calculateRoute: { from, to, transport in
+          await calculateCalls.append(CalculateCall(from: from, to: to, transport: transport))
+          return Self.fixedDirections()
+        },
+        liveSteps: { _, _ in AsyncStream { $0.finish() } }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.departTapped)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
+    XCTAssertEqual(store.state.route, departedRoute)
+    XCTAssertFalse(store.state.departInFlight)
+    XCTAssertNil(store.state.errorBanner)
+
+    let recordedDepart = await departCalls.value
+    XCTAssertEqual(recordedDepart.count, 1)
+    XCTAssertEqual(recordedDepart.first?.orderId, orderId)
+    XCTAssertTrue(recordedDepart.first?.hasLocation ?? false)
+
+    let calculated = await calculateCalls.value
+    XCTAssertEqual(calculated.count, 1)
+    XCTAssertEqual(calculated.first?.from, Self.dispensaryLocation)
+    XCTAssertEqual(calculated.first?.to, Self.dropoffLocation)
+  }
+
+  func test_departTapped_409StateConflict_refetches() async {
+    let orderId = Self.orderId
+    let pickedUpRoute = Self.activeRoute(status: .pickedUp, hasPickupEvent: true)
+    let refetched = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let getOrderCalls = Locker<[UUID]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: pickedUpRoute,
+        driverLocation: Self.dispensaryLocation,
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        getOrder: { id in
+          await getOrderCalls.append(id)
+          return refetched
+        },
+        depart: { _, _ in
+          throw APIError.server(status: 409, envelope: Self.envelope(code: "ORDER_STATE_INVALID"))
+        }
+      )
+      $0.directionsClient = DirectionsClient(
+        calculateRoute: { _, _, _ in Self.fixedDirections() },
+        liveSteps: { _, _ in AsyncStream { $0.finish() } }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.departTapped)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertFalse(store.state.departInFlight)
+    XCTAssertNil(store.state.errorBanner, "409 should refetch, not banner")
+    XCTAssertEqual(store.state.route, refetched)
+    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
+    let fetchedIds = await getOrderCalls.value
+    XCTAssertEqual(fetchedIds, [orderId])
+  }
+
+  func test_departTapped_wrongPhase_isNoOp() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(),
+        driverLocation: Self.driverStart,
+        phase: .enRouteToPickup,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.date = .constant(Self.referenceDate)
+    }
+
+    await store.send(.departTapped)
+  }
+
+  // MARK: - Arrived
+
+  /// Tapping Arrived at `en_route_dropoff` POSTs `arrive` FIRST (reaching
+  /// `arrived_at_dropoff` server-side), then delegates to the ID scan with
+  /// the refreshed handoff payload. Jumping straight to the scan would 409
+  /// because the order is still pre-arrival.
+  func test_arrivedTapped_atDropoffPhase_postsArriveThenEmitsIdScanDelegate() async {
+    let orderId = Self.orderId
+    let enRouteDropoff = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let arrivedRoute = Self.activeRoute(status: .arrivedAtDropoff, hasPickupEvent: true)
+    let arriveCalls = Locker<[PickupCall]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: enRouteDropoff,
+        driverLocation: Self.dropoffLocation,
+        phase: .enRouteToDropoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        arrive: { id, body in
+          await arriveCalls.append(PickupCall(orderId: id, hasLocation: body.location != nil))
+          return arrivedRoute
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.arrivedTapped)
     await store.receive(\.delegate.requestedIdScan)
+    await store.finish()
+
+    XCTAssertEqual(store.state.phase, .awaitingIdScan)
+    XCTAssertEqual(store.state.route, arrivedRoute)
+    XCTAssertFalse(store.state.arriveInFlight)
+
+    let recordedArrive = await arriveCalls.value
+    XCTAssertEqual(recordedArrive.count, 1)
+    XCTAssertEqual(recordedArrive.first?.orderId, orderId)
+    XCTAssertTrue(recordedArrive.first?.hasLocation ?? false)
+  }
+
+  /// A 409 on arrive where the server is already at the scan gate
+  /// (double-tap / another device) recovers by proceeding to the ID scan
+  /// rather than stranding the driver on a card-less map.
+  func test_arrivedTapped_409AtScanGate_proceedsToScan() async {
+    let orderId = Self.orderId
+    let enRouteDropoff = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let alreadyArrived = Self.activeRoute(status: .arrivedAtDropoff, hasPickupEvent: true)
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: enRouteDropoff,
+        driverLocation: Self.dropoffLocation,
+        phase: .enRouteToDropoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        getOrder: { _ in alreadyArrived },
+        arrive: { _, _ in
+          throw APIError.server(status: 409, envelope: Self.envelope(code: "ORDER_STATE_INVALID"))
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.arrivedTapped)
+    await store.receive(\.delegate.requestedIdScan)
+    await store.finish()
+
+    XCTAssertEqual(store.state.phase, .awaitingIdScan)
+    XCTAssertFalse(store.state.arriveInFlight)
+    XCTAssertNil(store.state.errorBanner)
+  }
+
+  func test_arrivedTapped_500_setsErrorBannerKeepsPhase() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
+        driverLocation: Self.dropoffLocation,
+        phase: .enRouteToDropoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        arrive: { _, _ in
+          throw APIError.server(status: 500, envelope: Self.envelope(code: "INTERNAL_ERROR", message: "boom"))
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.arrivedTapped)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertFalse(store.state.arriveInFlight)
+    XCTAssertEqual(store.state.errorBanner, "boom")
+    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
   }
 
   func test_arrivedTapped_wrongPhase_isNoOp() async {
@@ -540,13 +910,11 @@ final class ActiveRouteFeatureTests: XCTestCase {
       ActiveRouteFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
-      $0.driverOrdersAPIClient = DriverOrdersAPIClient(
+      $0.driverOrdersAPIClient = Self.ordersClient(
         getOrder: { id in
           await getOrderCalls.append(id)
           return route
-        },
-        pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
-        deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+        }
       )
     }
     store.exhaustivity = .off
@@ -572,14 +940,35 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertEqual(ActiveRouteFeature.derivedInitialPhase(from: route), .enRouteToPickup)
   }
 
-  func test_derivedInitialPhase_pickupConfirmed_returnsEnRouteToDropoff() {
+  func test_derivedInitialPhase_enRoutePickup_returnsAwaitingHandoff() {
     let route = Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true)
+    XCTAssertEqual(ActiveRouteFeature.derivedInitialPhase(from: route), .awaitingHandoff)
+  }
+
+  func test_derivedInitialPhase_pickedUp_returnsReadyToDepart() {
+    let route = Self.activeRoute(status: .pickedUp, hasPickupEvent: true)
+    XCTAssertEqual(ActiveRouteFeature.derivedInitialPhase(from: route), .readyToDepart)
+  }
+
+  func test_derivedInitialPhase_enRouteDropoff_returnsEnRouteToDropoff() {
+    let route = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
     XCTAssertEqual(ActiveRouteFeature.derivedInitialPhase(from: route), .enRouteToDropoff)
   }
 
   func test_derivedInitialPhase_idScanPassed_returnsAwaitingIdScan() {
     let route = Self.activeRoute(
       status: .idScanPassed,
+      hasPickupEvent: true,
+      idScanPassed: true
+    )
+    XCTAssertEqual(ActiveRouteFeature.derivedInitialPhase(from: route), .awaitingIdScan)
+  }
+
+  /// Defensive pin: a passed ID scan whose status projection lagged still
+  /// lands at least on the scan gate, never back on a navigation leg.
+  func test_derivedInitialPhase_idScanPassedButStatusLagged_pinsScanGate() {
+    let route = Self.activeRoute(
+      status: .enRouteDropoff,
       hasPickupEvent: true,
       idScanPassed: true
     )
@@ -611,6 +1000,24 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertEqual(state.navigationTarget, Self.dropoffLocation)
   }
 
+  func test_navigationTarget_isNilWhenAwaitingHandoff() {
+    let state = ActiveRouteFeature.State(
+      orderId: Self.orderId,
+      route: Self.activeRoute(),
+      phase: .awaitingHandoff
+    )
+    XCTAssertNil(state.navigationTarget)
+  }
+
+  func test_navigationTarget_isNilWhenReadyToDepart() {
+    let state = ActiveRouteFeature.State(
+      orderId: Self.orderId,
+      route: Self.activeRoute(),
+      phase: .readyToDepart
+    )
+    XCTAssertNil(state.navigationTarget)
+  }
+
   func test_navigationTarget_isNilWhenAwaitingIdScan() {
     let state = ActiveRouteFeature.State(
       orderId: Self.orderId,
@@ -627,6 +1034,35 @@ final class ActiveRouteFeatureTests: XCTestCase {
       phase: .enRouteToDropoff
     )
     XCTAssertFalse(state.canConfirmPickup)
+  }
+
+  func test_canDepart_trueWhenReadyToDepartWithRoute() {
+    let state = ActiveRouteFeature.State(
+      orderId: Self.orderId,
+      route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+      phase: .readyToDepart
+    )
+    XCTAssertTrue(state.canDepart)
+  }
+
+  func test_canDepart_falseWhileDepartInFlight() {
+    let state = ActiveRouteFeature.State(
+      orderId: Self.orderId,
+      route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+      phase: .readyToDepart,
+      departInFlight: true
+    )
+    XCTAssertFalse(state.canDepart)
+  }
+
+  func test_canMarkArrived_falseWhileArriveInFlight() {
+    let state = ActiveRouteFeature.State(
+      orderId: Self.orderId,
+      route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
+      phase: .enRouteToDropoff,
+      arriveInFlight: true
+    )
+    XCTAssertFalse(state.canMarkArrived)
   }
 
   // MARK: - Step heuristic
@@ -712,6 +1148,26 @@ final class ActiveRouteFeatureTests: XCTestCase {
   nonisolated private static let dispensaryLocation = Coordinate(latitude: 44.9792, longitude: -93.2638)
   /// Minneapolis, downtown drop.
   nonisolated private static let dropoffLocation = Coordinate(latitude: 44.9836, longitude: -93.2667)
+
+  /// Builds a `DriverOrdersAPIClient` with all five closures defaulting to
+  /// `unimplemented`-style throws, overriding only the ones a test drives.
+  /// Keeps the per-test wiring focused on the transition under test while
+  /// a forgotten override still surfaces as a thrown error.
+  nonisolated private static func ordersClient(
+    getOrder: @Sendable @escaping (UUID) async throws -> ActiveRoute = { _ in throw DriverAPIError.unimplemented("getOrder") },
+    pickupConfirm: @Sendable @escaping (UUID, DriverPickupConfirmRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
+    depart: @Sendable @escaping (UUID, DriverDepartRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("depart") },
+    arrive: @Sendable @escaping (UUID, DriverArriveRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("arrive") },
+    deliveryConfirm: @Sendable @escaping (UUID, DriverDeliveryConfirmRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
+  ) -> DriverOrdersAPIClient {
+    DriverOrdersAPIClient(
+      getOrder: getOrder,
+      pickupConfirm: pickupConfirm,
+      depart: depart,
+      arrive: arrive,
+      deliveryConfirm: deliveryConfirm
+    )
+  }
 
   nonisolated private static func activeRoute(
     status: OrderStatus = .driverAssigned,
@@ -832,11 +1288,17 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
   /// Wires safe stubs across every dependency so a forgotten override
   /// surfaces as a TestStore "unexpected effect" rather than the live
-  /// binding being touched.
+  /// binding being touched. `continuousClock` is a `TestClock` that no
+  /// test advances, so the 15s handoff poll suspends and is torn down via
+  /// `.onDisappear`. `driverRealtimeClient` is `.unimplemented`: publish
+  /// is a no-op and the event stream finishes immediately, so the socket
+  /// subscription never hangs a `finish()`.
   static func disableDependencies(_ values: inout DependencyValues) {
     values.driverOrdersAPIClient = .unimplemented
+    values.driverRealtimeClient = .unimplemented
     values.directionsClient = .unimplemented
     values.backgroundLocationClient = .unimplemented
+    values.continuousClock = TestClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
   }
 }
@@ -861,6 +1323,10 @@ private actor Locker<T: Sendable> {
 
 private extension Locker where T == [UUID] {
   func append(_ id: UUID) { value.append(id) }
+}
+
+private extension Locker where T == [Coordinate] {
+  func append(_ coord: Coordinate) { value.append(coord) }
 }
 
 private extension Locker where T == [CalculateCall] {

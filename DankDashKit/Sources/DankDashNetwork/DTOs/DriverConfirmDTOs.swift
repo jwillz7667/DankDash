@@ -84,6 +84,53 @@ public struct DriverPickupConfirmRequestDTO: Encodable, Sendable, Equatable {
   }
 }
 
+/// Body for `POST /v1/driver/orders/:id/depart` (`picked_up →
+/// en_route_dropoff`). Same shape as pickup-confirm: a nullable
+/// `location` fix stamped at the moment the driver started the trip to
+/// the customer. The backend schema is `.strict()` + `.nullable()`, so
+/// the key is always present — explicit `null` when there is no fix.
+public struct DriverDepartRequestDTO: Encodable, Sendable, Equatable {
+  public let location: DriverLocationFixDTO?
+
+  public init(location: DriverLocationFixDTO?) {
+    self.location = location
+  }
+
+  private enum CodingKeys: String, CodingKey { case location }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    if let location {
+      try container.encode(location, forKey: .location)
+    } else {
+      try container.encodeNil(forKey: .location)
+    }
+  }
+}
+
+/// Body for `POST /v1/driver/orders/:id/arrive` (`en_route_dropoff →
+/// arrived_at_dropoff`). The captured fix is the geofence evidence that
+/// the driver actually reached the delivery address before the ID-scan
+/// gate opens. Same `.strict()` + `.nullable()` contract as depart.
+public struct DriverArriveRequestDTO: Encodable, Sendable, Equatable {
+  public let location: DriverLocationFixDTO?
+
+  public init(location: DriverLocationFixDTO?) {
+    self.location = location
+  }
+
+  private enum CodingKeys: String, CodingKey { case location }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    if let location {
+      try container.encode(location, forKey: .location)
+    } else {
+      try container.encodeNil(forKey: .location)
+    }
+  }
+}
+
 /// Body for `POST /v1/driver/orders/:id/delivery-confirm`. `notes` is
 /// the driver's free-text marker ("Left with concierge", "Took photo
 /// at door"); capped at 280 chars on the client to match the backend

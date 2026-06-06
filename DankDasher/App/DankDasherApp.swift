@@ -30,6 +30,7 @@ struct DankDasherApp: App {
 final class DankDasherAppDelegate: NSObject, UIApplicationDelegate {
   private let registrar = PushTokenRegistrar(
     deviceIdKey: "com.dankdash.driver.deviceId.fallback",
+    appVariant: .driver,
     apiClient: AppEnvironment.live.apiClient
   )
 

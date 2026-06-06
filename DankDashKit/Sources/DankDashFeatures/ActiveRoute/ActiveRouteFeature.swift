@@ -3,32 +3,41 @@ import ComposableArchitecture
 import DankDashDomain
 import DankDashNetwork
 
-/// Active-delivery route screen — drives the map + pickup/dropoff
-/// cards + turn-by-turn steps for one in-progress order. A peer to
-/// ``DispatchOfferFeature``; the parent (``DriverRootFeature``)
+/// Active-delivery route screen — drives the map + pickup/handoff/
+/// dropoff cards + turn-by-turn steps for one in-progress order. A peer
+/// to ``DispatchOfferFeature``; the parent (``DriverRootFeature``)
 /// presents it after the offer is accepted, hands it the new order's
 /// id, and consumes the delegate to push the ID-scan / delivery-
 /// complete screens at the right moments.
 ///
 /// Phase machine (local to the reducer, see ``LocalPhase``):
 ///
-///   `.enRouteToPickup` ─Confirm Pickup→ `.enRouteToDropoff`
-///   `.enRouteToDropoff` ─Arrived→ delegate(`.requestedIdScan`)
+///   `.enRouteToPickup`  ─Confirm Pickup (pickup-confirm)→ `.awaitingHandoff`
+///   `.awaitingHandoff`  ─vendor handoff (picked_up, observed)→ `.readyToDepart`
+///   `.readyToDepart`    ─Start Trip (depart)→ `.enRouteToDropoff`
+///   `.enRouteToDropoff` ─Arrived (arrive)→ `.awaitingIdScan` + delegate
+///   `.awaitingIdScan`   ─(ID scan + delivery-confirm, parent-driven)→ `.completed`
 ///
-/// The local phase is the source of truth for which card (pickup vs
-/// dropoff) is on screen — it diverges from the server status because
-/// the pickup-confirm POST advances status to `en_route_pickup` while
-/// the iOS UX semantically treats Confirm Pickup as "I have the bag,
-/// drive to drop." Deep-linking into an order reseeds the local phase
-/// from the events array (`order_pickup_confirmed` present → start at
-/// dropoff card).
+/// The driver chain has a hop the driver does NOT initiate: the vendor
+/// physically hands off the bag and marks it in their portal, which
+/// fires `DRIVER_PICKED_UP` server-side. The reducer learns about it two
+/// ways — a live `order:status_changed` on the shared `/driver` socket
+/// and a 15s poll fallback — both funneling through
+/// ``Action/serverStatusObserved`` with an advance-only, rank-based
+/// reconcile so a server hop never fights the optimistic local UI.
+///
+/// Deep-linking into an order reseeds the local phase from the server
+/// `order.status` (``derivedInitialPhase(from:)``), which is the single
+/// authority for where in the leg the driver actually is.
 @Reducer
 public struct ActiveRouteFeature: Sendable {
-  /// Which card / leg the driver is on RIGHT NOW from the UX's
-  /// perspective. Distinct from ``ActiveRoute/currentLeg`` (which is
-  /// the server-status projection) — see the comment above on why.
+  /// Which card / leg the driver is on RIGHT NOW. The `CaseIterable`
+  /// declaration order is also the monotonic delivery order — ``rank``
+  /// relies on it for advance-only reconciliation, so do not reorder.
   public enum LocalPhase: String, Sendable, Equatable, CaseIterable {
     case enRouteToPickup
+    case awaitingHandoff
+    case readyToDepart
     case enRouteToDropoff
     case awaitingIdScan
     case completed
@@ -45,6 +54,8 @@ public struct ActiveRouteFeature: Sendable {
     public var isLoadingRoute: Bool
     public var isCalculatingDirections: Bool
     public var confirmPickupInFlight: Bool
+    public var departInFlight: Bool
+    public var arriveInFlight: Bool
     public var errorBanner: String?
 
     public var id: UUID { orderId }
@@ -59,6 +70,8 @@ public struct ActiveRouteFeature: Sendable {
       isLoadingRoute: Bool = true,
       isCalculatingDirections: Bool = false,
       confirmPickupInFlight: Bool = false,
+      departInFlight: Bool = false,
+      arriveInFlight: Bool = false,
       errorBanner: String? = nil
     ) {
       self.orderId = orderId
@@ -70,19 +83,21 @@ public struct ActiveRouteFeature: Sendable {
       self.isLoadingRoute = isLoadingRoute
       self.isCalculatingDirections = isCalculatingDirections
       self.confirmPickupInFlight = confirmPickupInFlight
+      self.departInFlight = departInFlight
+      self.arriveInFlight = arriveInFlight
       self.errorBanner = errorBanner
     }
 
     /// The current navigation target — dispensary while heading to
-    /// pickup, dropoff while heading to drop. `nil` once handoff
-    /// starts (the map stays on the dropoff but there's no further
-    /// directions calc).
+    /// pickup, dropoff while heading to drop. `nil` while waiting at the
+    /// store, while parked ready to depart, and once the scan gate is
+    /// reached (no further directions calc).
     public var navigationTarget: Coordinate? {
       guard let route else { return nil }
       switch phase {
       case .enRouteToPickup: return route.dispensary.location
       case .enRouteToDropoff: return route.dropoff.location
-      case .awaitingIdScan, .completed: return nil
+      case .awaitingHandoff, .readyToDepart, .awaitingIdScan, .completed: return nil
       }
     }
 
@@ -90,8 +105,12 @@ public struct ActiveRouteFeature: Sendable {
       phase == .enRouteToPickup && !confirmPickupInFlight && route != nil
     }
 
+    public var canDepart: Bool {
+      phase == .readyToDepart && !departInFlight && route != nil
+    }
+
     public var canMarkArrived: Bool {
-      phase == .enRouteToDropoff && route != nil
+      phase == .enRouteToDropoff && !arriveInFlight && route != nil
     }
   }
 
@@ -104,10 +123,19 @@ public struct ActiveRouteFeature: Sendable {
     case directionsCalculated(Result<RouteDirections, RouteErrorBox>)
     case locationStreamYielded(Coordinate)
 
+    /// A status change for this order observed on the `/driver` socket or
+    /// the poll fallback. Reconciled advance-only against ``State/phase``.
+    case serverStatusObserved(OrderStatus)
+
     case confirmPickupTapped
     case confirmPickupResponse(Result<ActiveRoute, RouteErrorBox>)
 
+    case departTapped
+    case departResponse(Result<ActiveRoute, RouteErrorBox>)
+
     case arrivedTapped
+    case arriveResponse(Result<ActiveRoute, RouteErrorBox>)
+
     case backTapped
     case errorBannerDismissed
     case retryTapped
@@ -116,8 +144,9 @@ public struct ActiveRouteFeature: Sendable {
 
     @CasePathable
     public enum Delegate: Equatable, Sendable {
-      /// Driver tapped Arrived on the dropoff card — the parent should
-      /// push the ID scan screen with these inputs.
+      /// Driver reached the customer and the server recorded
+      /// `arrived_at_dropoff` — the parent should push the ID scan screen
+      /// with these inputs.
       case requestedIdScan(orderId: UUID, idScan: DeliveryHandoff)
       /// Driver backed out of the active route. The parent decides
       /// whether to confirm-dialog or pop straight back to the shift
@@ -131,11 +160,17 @@ public struct ActiveRouteFeature: Sendable {
     case locationStream
     case calculateDirections
     case confirmPickup
+    case depart
+    case arrive
+    case driverEvents
+    case handoffPoll
   }
 
   @Dependency(\.driverOrdersAPIClient) var ordersAPI
+  @Dependency(\.driverRealtimeClient) var driverRealtime
   @Dependency(\.directionsClient) var directionsClient
   @Dependency(\.backgroundLocationClient) var locationClient
+  @Dependency(\.continuousClock) var clock
   @Dependency(\.date.now) var now
 
   public init() {}
@@ -147,31 +182,48 @@ public struct ActiveRouteFeature: Sendable {
         let orderId = state.orderId
         state.isLoadingRoute = (state.route == nil)
         state.errorBanner = nil
-        return .merge(
+        var effects: [Effect<Action>] = [
           fetchRouteEffect(orderId: orderId),
-          streamLocationsEffect()
-        )
+          streamLocationsEffect(),
+          subscribeDriverEventsEffect(orderId: orderId)
+        ]
+        // If we re-appear already waiting on the vendor (deep-link /
+        // backgrounding), the socket may have missed the handoff event —
+        // start the poll fallback immediately.
+        if state.phase == .awaitingHandoff {
+          effects.append(startHandoffPollEffect(orderId: orderId))
+        }
+        return .merge(effects)
 
       case .onDisappear:
         return .merge(
           .cancel(id: CancelID.locationStream),
           .cancel(id: CancelID.calculateDirections),
           .cancel(id: CancelID.fetchRoute),
-          .cancel(id: CancelID.confirmPickup)
+          .cancel(id: CancelID.confirmPickup),
+          .cancel(id: CancelID.depart),
+          .cancel(id: CancelID.arrive),
+          .cancel(id: CancelID.driverEvents),
+          .cancel(id: CancelID.handoffPoll),
+          .run { [driverRealtime] _ in await driverRealtime.disconnect() }
         )
 
       case .routeFetched(.success(let route)):
         state.route = route
         state.isLoadingRoute = false
-        state.phase = Self.derivedInitialPhase(from: route)
-        // If the order already reached a terminal state on the server
-        // (delivered / canceled / etc.) the UI should pop straight to
-        // the parent — but for Phase 20 we still render the dropoff
-        // card briefly and let the parent decide.
-        if let driverLocation = state.driverLocation, state.directions == nil {
-          return calculateDirectionsEffect(from: driverLocation, route: route, phase: state.phase)
+        let phase = Self.derivedInitialPhase(from: route)
+        state.phase = phase
+        var effects: [Effect<Action>] = []
+        // Deep-linked straight into the handoff wait → start the poll
+        // fallback (the socket subscription started in onAppear handles
+        // the live path).
+        if phase == .awaitingHandoff {
+          effects.append(startHandoffPollEffect(orderId: state.orderId))
         }
-        return .none
+        if let driverLocation = state.driverLocation, state.directions == nil {
+          effects.append(calculateDirectionsEffect(from: driverLocation, route: route, phase: phase))
+        }
+        return effects.isEmpty ? .none : .merge(effects)
 
       case .routeFetched(.failure(let box)):
         state.isLoadingRoute = false
@@ -218,6 +270,11 @@ public struct ActiveRouteFeature: Sendable {
             state.currentStep = directions.steps[nextIdx]
           }
         }
+        // Fan every fix to the customer's live map via the `/driver`
+        // socket. The client + server both throttle to ~1Hz.
+        let publishEffect: Effect<Action> = .run { [driverRealtime] _ in
+          await driverRealtime.publishLocation(coord)
+        }
         // First location fix after the route arrived → request
         // directions. (If directions arrive first, the route-fetched
         // handler kicks them off instead.)
@@ -225,9 +282,38 @@ public struct ActiveRouteFeature: Sendable {
            let route = state.route,
            state.directions == nil,
            !state.isCalculatingDirections {
-          return calculateDirectionsEffect(from: coord, route: route, phase: state.phase)
+          return .merge(
+            publishEffect,
+            calculateDirectionsEffect(from: coord, route: route, phase: state.phase)
+          )
         }
-        return .none
+        return publishEffect
+
+      case .serverStatusObserved(let status):
+        // Advance-only reconcile: map the server status to a local phase
+        // and only move FORWARD. A status we've already passed (or a
+        // pre-dispatch / cancel status that has no leg) is a no-op so the
+        // socket and poll never fight the optimistic UI.
+        guard let mapped = Self.phase(forServerStatus: status) else { return .none }
+        guard Self.rank(mapped) > Self.rank(state.phase) else { return .none }
+        let previous = state.phase
+        state.phase = mapped
+        var effects: [Effect<Action>] = []
+        if previous == .awaitingHandoff {
+          // The vendor handoff landed — stop polling for it.
+          effects.append(.cancel(id: CancelID.handoffPoll))
+        }
+        // Server jumped us onto the dropoff leg without a local depart
+        // (e.g. depart confirmed on another device, or a lost response):
+        // recalc dropoff directions from the latest fix.
+        if mapped == .enRouteToDropoff,
+           let location = state.driverLocation,
+           let route = state.route {
+          state.directions = nil
+          state.currentStep = nil
+          effects.append(calculateDirectionsEffect(from: location, route: route, phase: .enRouteToDropoff))
+        }
+        return effects.isEmpty ? .none : .merge(effects)
 
       case .confirmPickupTapped:
         guard state.canConfirmPickup, let route = state.route else { return .none }
@@ -238,11 +324,7 @@ public struct ActiveRouteFeature: Sendable {
         let capturedAt = now
         return .run { [ordersAPI] send in
           let fix = location.map {
-            DriverLocationFixDTO(
-              coordinate: $0,
-              accuracyMeters: nil,
-              capturedAt: capturedAt
-            )
+            DriverLocationFixDTO(coordinate: $0, accuracyMeters: nil, capturedAt: capturedAt)
           }
           let body = DriverPickupConfirmRequestDTO(location: fix)
           do {
@@ -258,10 +340,58 @@ public struct ActiveRouteFeature: Sendable {
       case .confirmPickupResponse(.success(let updatedRoute)):
         state.confirmPickupInFlight = false
         state.route = updatedRoute
+        // Pickup-confirm only reaches `en_route_pickup`; the bag isn't in
+        // the car until the vendor confirms the handoff. Sit on the
+        // handoff card and start the poll fallback (the socket
+        // subscription started in onAppear handles the live path). Drop
+        // the dispensary-bound directions — no navigation while waiting.
+        state.phase = .awaitingHandoff
+        state.directions = nil
+        state.currentStep = nil
+        return startHandoffPollEffect(orderId: state.orderId)
+
+      case .confirmPickupResponse(.failure(let box)):
+        state.confirmPickupInFlight = false
+        if box.isStateConflict {
+          // The server says the order already moved past the pickup
+          // step — refetch and reconcile, do not error-banner.
+          return fetchRouteEffect(orderId: state.orderId)
+        }
+        state.errorBanner = box.userFacingMessage()
+        return .none
+
+      case .departTapped:
+        guard state.canDepart, let route = state.route else { return .none }
+        state.departInFlight = true
+        state.errorBanner = nil
+        let orderId = state.orderId
+        let location = state.driverLocation
+        let capturedAt = now
+        return .merge(
+          // The handoff has happened; stop polling for it before we move.
+          .cancel(id: CancelID.handoffPoll),
+          .run { [ordersAPI] send in
+            let fix = location.map {
+              DriverLocationFixDTO(coordinate: $0, accuracyMeters: nil, capturedAt: capturedAt)
+            }
+            let body = DriverDepartRequestDTO(location: fix)
+            do {
+              let updated = try await ordersAPI.depart(orderId, body)
+              await send(.departResponse(.success(updated)))
+            } catch {
+              await send(.departResponse(.failure(RouteErrorBox(error))))
+            }
+            _ = route
+          }
+          .cancellable(id: CancelID.depart, cancelInFlight: true)
+        )
+
+      case .departResponse(.success(let updatedRoute)):
+        state.departInFlight = false
+        state.route = updatedRoute
         state.phase = .enRouteToDropoff
-        // The leg flipped — the previous dispensary-bound directions
-        // are stale. Discard them and request a fresh dropoff route
-        // from the current location (if we have one).
+        // Fresh leg → discard the (absent) prior directions and route to
+        // the customer from the current fix.
         state.directions = nil
         state.currentStep = nil
         if let location = state.driverLocation {
@@ -269,21 +399,55 @@ public struct ActiveRouteFeature: Sendable {
         }
         return .none
 
-      case .confirmPickupResponse(.failure(let box)):
-        state.confirmPickupInFlight = false
+      case .departResponse(.failure(let box)):
+        state.departInFlight = false
         if box.isStateConflict {
-          // The server says the order already moved past the pickup
-          // step — refetch and reconcile, do not error-banner.
-          let orderId = state.orderId
-          return fetchRouteEffect(orderId: orderId)
+          // Order already past picked_up — refetch and reconcile.
+          return fetchRouteEffect(orderId: state.orderId)
         }
         state.errorBanner = box.userFacingMessage()
         return .none
 
       case .arrivedTapped:
         guard state.canMarkArrived, let route = state.route else { return .none }
+        state.arriveInFlight = true
+        state.errorBanner = nil
+        let orderId = state.orderId
+        let location = state.driverLocation
+        let capturedAt = now
+        return .run { [ordersAPI] send in
+          let fix = location.map {
+            DriverLocationFixDTO(coordinate: $0, accuracyMeters: nil, capturedAt: capturedAt)
+          }
+          let body = DriverArriveRequestDTO(location: fix)
+          do {
+            let updated = try await ordersAPI.arrive(orderId, body)
+            await send(.arriveResponse(.success(updated)))
+          } catch {
+            await send(.arriveResponse(.failure(RouteErrorBox(error))))
+          }
+          _ = route
+        }
+        .cancellable(id: CancelID.arrive, cancelInFlight: true)
+
+      case .arriveResponse(.success(let updatedRoute)):
+        // The server is now at `arrived_at_dropoff`; the ID-scan gate is
+        // open. Hand off to the parent with the refreshed handoff payload.
+        state.arriveInFlight = false
+        state.route = updatedRoute
         state.phase = .awaitingIdScan
-        return .send(.delegate(.requestedIdScan(orderId: state.orderId, idScan: route.idScan)))
+        return .send(.delegate(.requestedIdScan(orderId: state.orderId, idScan: updatedRoute.idScan)))
+
+      case .arriveResponse(.failure(let box)):
+        state.arriveInFlight = false
+        if box.isStateConflict {
+          // Already arrived (double-tap / another device) — refetch and,
+          // if the server is at the scan gate, proceed to ID scan rather
+          // than stranding the driver on a card-less map.
+          return arriveConflictRecoveryEffect(orderId: state.orderId)
+        }
+        state.errorBanner = box.userFacingMessage()
+        return .none
 
       case .backTapped:
         return .send(.delegate(.dismissed(orderId: state.orderId)))
@@ -327,6 +491,54 @@ public struct ActiveRouteFeature: Sendable {
     .cancellable(id: CancelID.locationStream, cancelInFlight: true)
   }
 
+  /// Subscribes to `order:status_changed` on the shared `/driver` socket
+  /// and funnels the changes for THIS order into ``serverStatusObserved``.
+  /// Other orders' changes (the driver room is shared across a shift) are
+  /// dropped here.
+  private func subscribeDriverEventsEffect(orderId: UUID) -> Effect<Action> {
+    .run { [driverRealtime] send in
+      for await change in await driverRealtime.events() {
+        guard change.orderId == orderId else { continue }
+        await send(.serverStatusObserved(change.status))
+      }
+    }
+    .cancellable(id: CancelID.driverEvents, cancelInFlight: true)
+  }
+
+  /// Poll fallback for the vendor handoff while the driver waits at the
+  /// store. The socket is the primary path; this covers a dropped socket
+  /// or a missed event. Cancelled the moment the handoff is observed.
+  private func startHandoffPollEffect(orderId: UUID) -> Effect<Action> {
+    .run { [ordersAPI, clock] send in
+      for await _ in clock.timer(interval: .seconds(15)) {
+        if let route = try? await ordersAPI.getOrder(orderId) {
+          await send(.serverStatusObserved(route.order.status))
+        }
+      }
+    }
+    .cancellable(id: CancelID.handoffPoll, cancelInFlight: true)
+  }
+
+  /// Recovery for a 409 on `arrive`: refetch, and if the server is at the
+  /// ID-scan gate, proceed to the scan (reusing the success path so the
+  /// delegate fires with the refreshed handoff). Otherwise reconcile the
+  /// leg without forcing the scan.
+  private func arriveConflictRecoveryEffect(orderId: UUID) -> Effect<Action> {
+    .run { [ordersAPI] send in
+      do {
+        let route = try await ordersAPI.getOrder(orderId)
+        if Self.isAtIdScanGate(route.order.status) {
+          await send(.arriveResponse(.success(route)))
+        } else {
+          await send(.routeFetched(.success(route)))
+        }
+      } catch {
+        await send(.routeFetched(.failure(RouteErrorBox(error))))
+      }
+    }
+    .cancellable(id: CancelID.arrive, cancelInFlight: true)
+  }
+
   private func calculateDirectionsEffect(
     from: Coordinate,
     route: ActiveRoute,
@@ -336,7 +548,7 @@ public struct ActiveRouteFeature: Sendable {
     switch phase {
     case .enRouteToPickup: target = route.dispensary.location
     case .enRouteToDropoff: target = route.dropoff.location
-    case .awaitingIdScan, .completed:
+    case .awaitingHandoff, .readyToDepart, .awaitingIdScan, .completed:
       return .none
     }
     return .run { [directionsClient] send in
@@ -352,17 +564,50 @@ public struct ActiveRouteFeature: Sendable {
 
   // MARK: - Phase derivation
 
-  /// On screen entry, seed the local phase from the events ledger so a
-  /// deep-link into an already-pickup-confirmed order lands on the
-  /// dropoff card. The `idScan.passed` branch covers re-launch after
-  /// ID scan completed but before delivery-confirm fired (rare; the
-  /// parent should ordinarily push DeliveryComplete in that case, but
-  /// this is the defensive fallback).
+  /// Maps a server `order.status` to the local delivery phase. Returns
+  /// `nil` for statuses with no active-route leg (pre-dispatch, cancel,
+  /// failure) — the caller treats those as no-ops.
+  static func phase(forServerStatus status: OrderStatus) -> LocalPhase? {
+    switch status {
+    case .driverAssigned: return .enRouteToPickup
+    case .enRoutePickup: return .awaitingHandoff
+    case .pickedUp: return .readyToDepart
+    case .enRouteDropoff: return .enRouteToDropoff
+    case .arrivedAtDropoff, .idScanPending, .idScanPassed: return .awaitingIdScan
+    case .delivered: return .completed
+    case .placed, .paymentFailed, .accepted, .rejected, .prepping,
+         .readyForPickup, .awaitingDriver, .idScanFailed, .returnedToStore,
+         .canceled, .disputed:
+      return nil
+    }
+  }
+
+  /// Position of a phase in the monotonic delivery order (its
+  /// `CaseIterable` index). Used to keep ``serverStatusObserved``
+  /// advance-only.
+  static func rank(_ phase: LocalPhase) -> Int {
+    LocalPhase.allCases.firstIndex(of: phase) ?? 0
+  }
+
+  /// Whether the server status is at the ID-scan gate (arrived through
+  /// scan-passed, but not yet delivered). Drives the arrive-409 recovery.
+  static func isAtIdScanGate(_ status: OrderStatus) -> Bool {
+    switch status {
+    case .arrivedAtDropoff, .idScanPending, .idScanPassed: return true
+    default: return false
+    }
+  }
+
+  /// On screen entry, seed the local phase from the authoritative server
+  /// `order.status` so a deep-link or relaunch lands on the correct card.
+  /// A passed ID scan defensively pins at least the scan gate even if the
+  /// status projection lagged the scan result.
   static func derivedInitialPhase(from route: ActiveRoute) -> LocalPhase {
-    if route.order.status == .delivered { return .completed }
-    if route.idScan.passed { return .awaitingIdScan }
-    let hasConfirmedPickup = route.events.contains { $0.eventType == "order_pickup_confirmed" }
-    return hasConfirmedPickup ? .enRouteToDropoff : .enRouteToPickup
+    let byStatus = phase(forServerStatus: route.order.status) ?? .enRouteToPickup
+    if route.idScan.passed, rank(byStatus) < rank(.awaitingIdScan) {
+      return .awaitingIdScan
+    }
+    return byStatus
   }
 }
 
