@@ -4,6 +4,8 @@
  *
  *   GET  /v1/driver/orders/:id                   — full handoff bundle
  *   POST /v1/driver/orders/:id/pickup-confirm    — driver_assigned → en_route_pickup
+ *   POST /v1/driver/orders/:id/depart            — picked_up → en_route_dropoff
+ *   POST /v1/driver/orders/:id/arrive            — en_route_dropoff → arrived_at_dropoff
  *   POST /v1/driver/orders/:id/delivery-confirm  — *_dropoff → delivered (ID-scan gated)
  *
  * Guards: JwtAuthGuard binds globally in main.ts so the request already
@@ -34,7 +36,9 @@ import {
   type DriverIdScanSessionResponse,
 } from '../../identity-verification/dto/index.js';
 import {
+  DriverArriveRequestDto,
   DriverDeliveryConfirmRequestDto,
+  DriverDepartRequestDto,
   DriverPickupConfirmRequestDto,
   type DriverOrderDetailResponse,
 } from '../dto/index.js';
@@ -68,6 +72,26 @@ export class DriverOrdersController {
     @Body() body: DriverPickupConfirmRequestDto,
   ): Promise<DriverOrderDetailResponse> {
     return this.driverOrders.confirmPickup(user.userId, id, body);
+  }
+
+  @Post(':id/depart')
+  @RateLimit({ name: 'driver-depart', tracker: 'user', limit: 60, windowMs: 60_000 })
+  depart(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: DriverDepartRequestDto,
+  ): Promise<DriverOrderDetailResponse> {
+    return this.driverOrders.confirmDeparture(user.userId, id, body);
+  }
+
+  @Post(':id/arrive')
+  @RateLimit({ name: 'driver-arrive', tracker: 'user', limit: 60, windowMs: 60_000 })
+  arrive(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: DriverArriveRequestDto,
+  ): Promise<DriverOrderDetailResponse> {
+    return this.driverOrders.confirmArrival(user.userId, id, body);
   }
 
   @Post(':id/delivery-confirm')

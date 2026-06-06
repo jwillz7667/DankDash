@@ -27,11 +27,17 @@ export {
   type DriverOrderDetailResponse,
 } from './driver-order-detail.dto.js';
 export {
+  DriverArriveRequestDto,
+  DriverArriveRequestSchema,
+  DriverDepartRequestDto,
+  DriverDepartRequestSchema,
   DriverDeliveryConfirmRequestDto,
   DriverDeliveryConfirmRequestSchema,
   DriverLocationFixSchema,
   DriverPickupConfirmRequestDto,
   DriverPickupConfirmRequestSchema,
+  type DriverArriveRequest,
+  type DriverDepartRequest,
   type DriverDeliveryConfirmRequest,
   type DriverLocationFix,
   type DriverPickupConfirmRequest,

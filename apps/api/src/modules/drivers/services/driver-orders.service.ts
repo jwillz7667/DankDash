@@ -56,8 +56,10 @@ import {
 import { type OrderEventResponse } from '../../orders/dto/index.js';
 import { OrderTransitionService } from '../../orders/order-transition.service.js';
 import type {
+  DriverArriveRequest,
   DriverCustomerSummary,
   DriverDeliveryConfirmRequest,
+  DriverDepartRequest,
   DriverDispensarySummary,
   DriverDropoffAddress,
   DriverIdScanState,
@@ -131,6 +133,68 @@ export class DriverOrdersService {
     await this.orderTransitions.transition({
       orderId,
       event: 'DRIVER_EN_ROUTE_PICKUP',
+      actor: { userId: driverUserId, role: 'driver' },
+      payload: { location: body.location },
+    });
+    const refreshed = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (refreshed === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    return this.hydrate(scoped, refreshed);
+  }
+
+  /**
+   * POST /v1/driver/orders/:id/depart. Transitions the order to
+   * `en_route_dropoff` — the driver has the bag and is leaving the
+   * dispensary for the customer. Allowed FROM-state is `picked_up`
+   * (or `en_route_dropoff` itself for an idempotent re-tap); anything
+   * else is 409 from the state machine.
+   */
+  async confirmDeparture(
+    driverUserId: string,
+    orderId: string,
+    body: DriverDepartRequest,
+  ): Promise<DriverOrderDetailResponse> {
+    const scoped = this.reposFor(this.db);
+    const order = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (order === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    await this.orderTransitions.transition({
+      orderId,
+      event: 'DRIVER_EN_ROUTE_DROPOFF',
+      actor: { userId: driverUserId, role: 'driver' },
+      payload: { location: body.location },
+    });
+    const refreshed = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (refreshed === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    return this.hydrate(scoped, refreshed);
+  }
+
+  /**
+   * POST /v1/driver/orders/:id/arrive. Transitions the order to
+   * `arrived_at_dropoff` — the driver reached the customer. The next
+   * legal step is the non-bypassable ID-scan session; arriving is what
+   * unblocks `id-scan-session` (which requires the order be at
+   * `arrived_at_dropoff`). Allowed FROM-state is `en_route_dropoff`
+   * (or `arrived_at_dropoff` itself for an idempotent re-tap); anything
+   * else is 409.
+   */
+  async confirmArrival(
+    driverUserId: string,
+    orderId: string,
+    body: DriverArriveRequest,
+  ): Promise<DriverOrderDetailResponse> {
+    const scoped = this.reposFor(this.db);
+    const order = await scoped.orders.findByIdForDriver(orderId, driverUserId);
+    if (order === null) {
+      throw new NotFoundError('Order', orderId);
+    }
+    await this.orderTransitions.transition({
+      orderId,
+      event: 'DRIVER_ARRIVED',
       actor: { userId: driverUserId, role: 'driver' },
       payload: { location: body.location },
     });
