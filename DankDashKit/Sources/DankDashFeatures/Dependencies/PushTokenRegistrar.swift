@@ -59,7 +59,10 @@ public final class PushTokenRegistrar {
       guard case .registered(let data) = update else { continue }
       let hex = data.map { String(format: "%02x", $0) }.joined()
       let body = RegisterDeviceRequestDTO(apnsToken: hex, deviceId: deviceId, appVariant: appVariant)
-      _ = try? await apiClient.send(NotificationsEndpoints.registerDevice(body: body))
+      // Best-effort: a failed registration is retried on the next APNs token
+      // update, so a transient transport/auth error here is intentionally
+      // dropped rather than surfaced to the UI.
+      try? await apiClient.sendIgnoringResponse(NotificationsEndpoints.registerDevice(body: body))
     }
   }
 

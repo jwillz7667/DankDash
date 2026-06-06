@@ -9,10 +9,13 @@ public enum NotificationsEndpoints {
   /// `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`
   /// callback. The server upserts the token keyed by
   /// `(user_id, device_id, app_variant)` and returns 201 with the stored
-  /// row; the client treats the result as fire-and-forget.
+  /// row, but the client never reads it — registration is fire-and-forget.
+  /// Typed `Endpoint<Void>` so the caller goes through
+  /// `APIClient.sendIgnoringResponse`, which only checks for a 2xx and
+  /// discards the body rather than decoding the non-empty JSON.
   public static func registerDevice(
     body: RegisterDeviceRequestDTO
-  ) -> Endpoint<EmptyResponse> {
+  ) -> Endpoint<Void> {
     Endpoint(
       method: .POST,
       path: "v1/me/push-tokens",
