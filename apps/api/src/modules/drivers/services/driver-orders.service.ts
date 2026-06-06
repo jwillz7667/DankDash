@@ -146,9 +146,12 @@ export class DriverOrdersService {
   /**
    * POST /v1/driver/orders/:id/depart. Transitions the order to
    * `en_route_dropoff` — the driver has the bag and is leaving the
-   * dispensary for the customer. Allowed FROM-state is `picked_up`
-   * (or `en_route_dropoff` itself for an idempotent re-tap); anything
-   * else is 409 from the state machine.
+   * dispensary for the customer. The only legal FROM-state is
+   * `picked_up`. The machine has no self-loop on `DRIVER_EN_ROUTE_DROPOFF`,
+   * so a re-tap once the order has already advanced is rejected as an
+   * invalid transition (`ORDER_INVALID_TRANSITION` → 422) — not silently
+   * idempotent. The client must guard against double-taps rather than
+   * rely on the server absorbing them.
    */
   async confirmDeparture(
     driverUserId: string,
@@ -178,9 +181,12 @@ export class DriverOrdersService {
    * `arrived_at_dropoff` — the driver reached the customer. The next
    * legal step is the non-bypassable ID-scan session; arriving is what
    * unblocks `id-scan-session` (which requires the order be at
-   * `arrived_at_dropoff`). Allowed FROM-state is `en_route_dropoff`
-   * (or `arrived_at_dropoff` itself for an idempotent re-tap); anything
-   * else is 409.
+   * `arrived_at_dropoff`). The only legal FROM-state is `en_route_dropoff`.
+   * The machine has no self-loop on `DRIVER_ARRIVED`, so a re-tap once the
+   * order has already advanced is rejected as an invalid transition
+   * (`ORDER_INVALID_TRANSITION` → 422) — not silently idempotent. The
+   * client must guard against double-taps rather than rely on the server
+   * absorbing them.
    */
   async confirmArrival(
     driverUserId: string,
