@@ -12,15 +12,29 @@ public struct AuthAPIClient: Sendable {
   public var login: @Sendable (LoginRequestDTO) async throws -> LoginResponseDTO
   public var register: @Sendable (RegisterRequestDTO) async throws -> RegisterResponseDTO
   public var verifyMfa: @Sendable (MfaVerifyRequestDTO) async throws -> MfaVerifyResponseDTO
+  public var forgotPassword: @Sendable (ForgotPasswordRequestDTO) async throws -> EmptyResponse
+  public var resetPassword: @Sendable (ResetPasswordRequestDTO) async throws -> EmptyResponse
 
+  // The two reset closures default to the same "not stubbed" throw as
+  // `.unimplemented`, so existing call sites that only exercise
+  // login/register/verifyMfa stay source-compatible while any test that
+  // touches the reset path fails loudly until it provides a real stub.
   public init(
     login: @Sendable @escaping (LoginRequestDTO) async throws -> LoginResponseDTO,
     register: @Sendable @escaping (RegisterRequestDTO) async throws -> RegisterResponseDTO,
-    verifyMfa: @Sendable @escaping (MfaVerifyRequestDTO) async throws -> MfaVerifyResponseDTO
+    verifyMfa: @Sendable @escaping (MfaVerifyRequestDTO) async throws -> MfaVerifyResponseDTO,
+    forgotPassword: @Sendable @escaping (ForgotPasswordRequestDTO) async throws -> EmptyResponse = {
+      _ in throw APIError.configuration("AuthAPIClient.forgotPassword not stubbed")
+    },
+    resetPassword: @Sendable @escaping (ResetPasswordRequestDTO) async throws -> EmptyResponse = {
+      _ in throw APIError.configuration("AuthAPIClient.resetPassword not stubbed")
+    }
   ) {
     self.login = login
     self.register = register
     self.verifyMfa = verifyMfa
+    self.forgotPassword = forgotPassword
+    self.resetPassword = resetPassword
   }
 }
 
@@ -37,6 +51,12 @@ public extension AuthAPIClient {
       },
       verifyMfa: { request in
         try await apiClient.send(AuthEndpoints.mfaVerify(request))
+      },
+      forgotPassword: { request in
+        try await apiClient.send(AuthEndpoints.forgotPassword(request))
+      },
+      resetPassword: { request in
+        try await apiClient.send(AuthEndpoints.resetPassword(request))
       }
     )
   }
@@ -46,7 +66,9 @@ public extension AuthAPIClient {
   static let unimplemented = AuthAPIClient(
     login: { _ in throw APIError.configuration("AuthAPIClient.login not stubbed") },
     register: { _ in throw APIError.configuration("AuthAPIClient.register not stubbed") },
-    verifyMfa: { _ in throw APIError.configuration("AuthAPIClient.verifyMfa not stubbed") }
+    verifyMfa: { _ in throw APIError.configuration("AuthAPIClient.verifyMfa not stubbed") },
+    forgotPassword: { _ in throw APIError.configuration("AuthAPIClient.forgotPassword not stubbed") },
+    resetPassword: { _ in throw APIError.configuration("AuthAPIClient.resetPassword not stubbed") }
   )
 }
 

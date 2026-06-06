@@ -158,3 +158,33 @@ public struct MfaVerifyResponseDTO: Decodable, Sendable, Equatable {
     self.tokens = tokens
   }
 }
+
+// MARK: - Password reset
+
+/// POST /v1/auth/forgot-password request body. The server answers 202 with no
+/// body regardless of whether the email maps to an account (enumeration-safe),
+/// so the client treats any success as "if that account exists, a code is on
+/// its way". `email` is sent lowercased to match the citext column the account
+/// was created against; the server also trims + lowercases defensively.
+public struct ForgotPasswordRequestDTO: Codable, Sendable, Equatable {
+  public let email: String
+
+  public init(email: String) {
+    self.email = email
+  }
+}
+
+/// POST /v1/auth/reset-password request body. `code` is the human-typed reset
+/// code from the email — the server normalizes confusable glyphs (O→0, I/L→1),
+/// case, and separators, so the client forwards it verbatim. `newPassword` is
+/// the plaintext the server argon2-hashes; the server re-validates the ≥12-char
+/// letter+digit policy. 204 No Content on success.
+public struct ResetPasswordRequestDTO: Codable, Sendable, Equatable {
+  public let code: String
+  public let newPassword: String
+
+  public init(code: String, newPassword: String) {
+    self.code = code
+    self.newPassword = newPassword
+  }
+}
