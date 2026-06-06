@@ -43,4 +43,20 @@ public enum OrdersEndpoints {
       requiresAuth: true
     )
   }
+
+  /// `POST /v1/orders/:id/rate`. Post-delivery rating; allowed only when
+  /// the order is `delivered` or `disputed` (the server rejects others).
+  /// Returns the full order projection (with `ratedAt` stamped), so the
+  /// tracking reducer can refresh its order slice from the response.
+  public static func rateOrder(
+    id: UUID,
+    body: OrderRatingRequestDTO
+  ) -> Endpoint<OrderResponseDTO> {
+    Endpoint(
+      method: .POST,
+      path: "v1/orders/\(id.uuidString.lowercased())/rate",
+      body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
 }

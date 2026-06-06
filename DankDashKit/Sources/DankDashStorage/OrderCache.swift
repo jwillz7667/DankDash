@@ -25,16 +25,37 @@ public struct CachedOrderDetail: Codable, Sendable, Equatable {
   public let driver: DriverPublicProfile?
   public let cachedAt: Date
 
+  /// Map-point snapshot, mirrored from the detail response so the
+  /// tracking screen can render ``LiveMapView`` instantly on cold start.
+  /// These are `Optional` (not the non-optional Domain shape) on purpose:
+  /// entries written by an older build predate these fields, and the
+  /// `decodeIfPresent` the synthesized `Codable` uses for `Optional`
+  /// lets those legacy files decode to `nil` rather than throwing. A
+  /// `nil` drop-off coordinate simply means "no map until the next
+  /// network refresh fills it in".
+  public let dispensaryName: String?
+  public let dispensaryCoordinate: Coordinate?
+  public let dropoffCoordinate: Coordinate?
+  public let dropoffLabel: String?
+
   public init(
     order: Order,
     events: [OrderEvent],
     driver: DriverPublicProfile?,
-    cachedAt: Date
+    cachedAt: Date,
+    dispensaryName: String? = nil,
+    dispensaryCoordinate: Coordinate? = nil,
+    dropoffCoordinate: Coordinate? = nil,
+    dropoffLabel: String? = nil
   ) {
     self.order = order
     self.events = events
     self.driver = driver
     self.cachedAt = cachedAt
+    self.dispensaryName = dispensaryName
+    self.dispensaryCoordinate = dispensaryCoordinate
+    self.dropoffCoordinate = dropoffCoordinate
+    self.dropoffLabel = dropoffLabel
   }
 
   /// Convenience freshness check. The tracking screen treats a cached

@@ -15,6 +15,10 @@ final class OrdersAPIClientTests: XCTestCase {
       try await client.getOrder(UUID()),
       expectedMatch: "getOrder"
     )
+    await assertThrows(
+      try await client.rateOrder(UUID(), OrderRatingInput(rating: 5)),
+      expectedMatch: "rateOrder"
+    )
   }
 
   func test_listOrdersQuery_defaultsAreStable() {
@@ -39,8 +43,20 @@ final class OrdersAPIClientTests: XCTestCase {
 
   func test_orderDetail_isEquatableValueType() {
     let order = makeStubOrder()
-    let detail = OrderDetail(order: order, events: [], driver: nil)
-    XCTAssertEqual(detail, OrderDetail(order: order, events: [], driver: nil))
+    let dispensaryCoordinate = Coordinate(latitude: 44.9778, longitude: -93.2650)
+    let dropoffCoordinate = Coordinate(latitude: 44.9483, longitude: -93.2920)
+    func makeDetail() -> OrderDetail {
+      OrderDetail(
+        order: order,
+        events: [],
+        driver: nil,
+        dispensaryName: "Green Thumb",
+        dispensaryCoordinate: dispensaryCoordinate,
+        dropoffCoordinate: dropoffCoordinate,
+        dropoffLabel: "123 Nicollet Ave"
+      )
+    }
+    XCTAssertEqual(makeDetail(), makeDetail())
   }
 
   func test_customClient_passesArgumentsThrough() async throws {
@@ -50,7 +66,8 @@ final class OrdersAPIClientTests: XCTestCase {
         await probe.set(query)
         return OrderListPage(items: [], nextCursor: nil)
       },
-      getOrder: { _ in throw OrdersAPIError.malformedPayload("Order") }
+      getOrder: { _ in throw OrdersAPIError.malformedPayload("Order") },
+      rateOrder: { _, _ in throw OrdersAPIError.malformedPayload("Order") }
     )
 
     let query = ListOrdersQuery(status: .active, limit: 25, cursor: "page-2")
@@ -59,6 +76,31 @@ final class OrdersAPIClientTests: XCTestCase {
     XCTAssertEqual(observed?.status, .active)
     XCTAssertEqual(observed?.limit, 25)
     XCTAssertEqual(observed?.cursor, "page-2")
+  }
+
+  func test_rateOrder_forwardsOrderIdAndInput() async throws {
+    let probe = Locker<(UUID, OrderRatingInput)?>(value: nil)
+    let stub = makeStubOrder()
+    let client = OrdersAPIClient(
+      listOrders: { _ in OrderListPage(items: [], nextCursor: nil) },
+      getOrder: { _ in throw OrdersAPIError.malformedPayload("Order") },
+      rateOrder: { id, input in
+        await probe.set((id, input))
+        return stub
+      }
+    )
+
+    let orderId = UUID()
+    let returned = try await client.rateOrder(
+      orderId,
+      OrderRatingInput(rating: 4, review: "Smooth delivery")
+    )
+    let observed = await probe.value
+    XCTAssertEqual(observed?.0, orderId)
+    XCTAssertEqual(observed?.1.rating, 4)
+    XCTAssertEqual(observed?.1.review, "Smooth delivery")
+    XCTAssertNil(observed?.1.driverRating)
+    XCTAssertEqual(returned, stub)
   }
 
   // MARK: - Helpers

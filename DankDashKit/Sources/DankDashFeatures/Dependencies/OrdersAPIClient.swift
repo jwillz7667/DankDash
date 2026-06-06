@@ -16,13 +16,45 @@ import DankDashNetwork
 public struct OrdersAPIClient: Sendable {
   public var listOrders: @Sendable (ListOrdersQuery) async throws -> OrderListPage
   public var getOrder: @Sendable (UUID) async throws -> OrderDetail
+  /// `POST /v1/orders/:id/rate`. Submits the post-delivery rating and
+  /// projects the returned order. Throws `OrdersAPIError.malformedPayload`
+  /// if the response order fails to project. The server upsert is
+  /// idempotent on the order row, so a retry after a transient failure is
+  /// safe.
+  public var rateOrder: @Sendable (UUID, OrderRatingInput) async throws -> Order
 
   public init(
     listOrders: @Sendable @escaping (ListOrdersQuery) async throws -> OrderListPage,
-    getOrder: @Sendable @escaping (UUID) async throws -> OrderDetail
+    getOrder: @Sendable @escaping (UUID) async throws -> OrderDetail,
+    rateOrder: @Sendable @escaping (UUID, OrderRatingInput) async throws -> Order
   ) {
     self.listOrders = listOrders
     self.getOrder = getOrder
+    self.rateOrder = rateOrder
+  }
+}
+
+/// Feature-facing input for ``OrdersAPIClient/rateOrder``. Mirrors the
+/// server's `RateOrderRequestSchema`: every field optional, at least one
+/// required. The consumer rating sheet populates `rating` + `review`; the
+/// per-party scores exist for a future richer sheet. Lives on the client
+/// (not the DTO) so the reducer state stays Domain-only.
+public struct OrderRatingInput: Sendable, Equatable {
+  public let rating: Int?
+  public let review: String?
+  public let driverRating: Int?
+  public let dispensaryRating: Int?
+
+  public init(
+    rating: Int? = nil,
+    review: String? = nil,
+    driverRating: Int? = nil,
+    dispensaryRating: Int? = nil
+  ) {
+    self.rating = rating
+    self.review = review
+    self.driverRating = driverRating
+    self.dispensaryRating = dispensaryRating
   }
 }
 
@@ -75,11 +107,33 @@ public struct OrderDetail: Sendable, Equatable {
   public let order: Order
   public let events: [OrderEvent]
   public let driver: DriverPublicProfile?
+  /// Display name of the pickup dispensary, used as the dispensary map
+  /// pin's title.
+  public let dispensaryName: String
+  /// Pickup pin coordinate (the dispensary's storefront).
+  public let dispensaryCoordinate: Coordinate
+  /// Drop-off pin coordinate (the customer's delivery address, frozen at
+  /// checkout). The map is gated on this being present in reducer state.
+  public let dropoffCoordinate: Coordinate
+  /// Human label for the drop-off pin (the address line-1).
+  public let dropoffLabel: String
 
-  public init(order: Order, events: [OrderEvent], driver: DriverPublicProfile?) {
+  public init(
+    order: Order,
+    events: [OrderEvent],
+    driver: DriverPublicProfile?,
+    dispensaryName: String,
+    dispensaryCoordinate: Coordinate,
+    dropoffCoordinate: Coordinate,
+    dropoffLabel: String
+  ) {
     self.order = order
     self.events = events
     self.driver = driver
+    self.dispensaryName = dispensaryName
+    self.dispensaryCoordinate = dispensaryCoordinate
+    self.dropoffCoordinate = dropoffCoordinate
+    self.dropoffLabel = dropoffLabel
   }
 }
 
@@ -108,8 +162,29 @@ public extension OrdersAPIClient {
         return OrderDetail(
           order: projection.order,
           events: projection.events,
-          driver: projection.driver
+          driver: projection.driver,
+          dispensaryName: projection.dispensaryName,
+          dispensaryCoordinate: projection.dispensaryCoordinate,
+          dropoffCoordinate: projection.dropoffCoordinate,
+          dropoffLabel: projection.dropoffLabel
         )
+      },
+      rateOrder: { id, input in
+        let dto = try await apiClient.send(
+          OrdersEndpoints.rateOrder(
+            id: id,
+            body: OrderRatingRequestDTO(
+              rating: input.rating,
+              review: input.review,
+              driverRating: input.driverRating,
+              dispensaryRating: input.dispensaryRating
+            )
+          )
+        )
+        guard let order = dto.toDomain() else {
+          throw OrdersAPIError.malformedPayload("Order")
+        }
+        return order
       }
     )
   }
@@ -117,7 +192,8 @@ public extension OrdersAPIClient {
   /// Test fixture that always throws.
   static let unimplemented = OrdersAPIClient(
     listOrders: { _ in throw OrdersAPIError.unimplemented("listOrders") },
-    getOrder: { _ in throw OrdersAPIError.unimplemented("getOrder") }
+    getOrder: { _ in throw OrdersAPIError.unimplemented("getOrder") },
+    rateOrder: { _, _ in throw OrdersAPIError.unimplemented("rateOrder") }
   )
 }
 

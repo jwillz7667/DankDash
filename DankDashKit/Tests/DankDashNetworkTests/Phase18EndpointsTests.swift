@@ -94,6 +94,28 @@ final class Phase18EndpointsTests: XCTestCase {
     XCTAssertEqual(endpoint.path, "v1/orders/0190b7a4-9c00-72f5-a6b0-1c6f77ce0400")
   }
 
+  func test_orders_rateTemplatesId_andEncodesOnlyPresentFields() throws {
+    let id = UUID(uuidString: "0190B7A4-9C00-72F5-A6B0-1C6F77CE0401")!
+    let endpoint = OrdersEndpoints.rateOrder(
+      id: id,
+      body: OrderRatingRequestDTO(rating: 5, review: "On time")
+    )
+
+    XCTAssertEqual(endpoint.method, .POST)
+    XCTAssertEqual(endpoint.path, "v1/orders/0190b7a4-9c00-72f5-a6b0-1c6f77ce0401/rate")
+    XCTAssertTrue(endpoint.requiresAuth)
+
+    let body = try XCTUnwrap(endpoint.body)
+    let json = try body.encode(using: JSONEncoder())
+    let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [String: Any])
+    XCTAssertEqual(payload["rating"] as? Int, 5)
+    XCTAssertEqual(payload["review"] as? String, "On time")
+    // nil fields must be omitted (not encoded as null) — the server's
+    // `.optional()` accepts absence, never an explicit null.
+    XCTAssertFalse(payload.keys.contains("driverRating"))
+    XCTAssertFalse(payload.keys.contains("dispensaryRating"))
+  }
+
   // MARK: - Addresses
 
   func test_addresses_list() {
@@ -127,10 +149,41 @@ final class Phase18EndpointsTests: XCTestCase {
   // MARK: - Notifications
 
   func test_notifications_registerDevice() throws {
-    let body = RegisterDeviceRequestDTO(apnsToken: "abc", deviceId: UUID())
+    let body = RegisterDeviceRequestDTO(apnsToken: "abc", deviceId: UUID(), appVariant: .consumer)
     let endpoint = NotificationsEndpoints.registerDevice(body: body)
     XCTAssertEqual(endpoint.method, .POST)
-    XCTAssertEqual(endpoint.path, "v1/notifications/register-device")
+    XCTAssertEqual(endpoint.path, "v1/me/push-tokens")
     XCTAssertTrue(endpoint.requiresAuth)
+  }
+
+  // MARK: - Password reset
+
+  func test_auth_forgotPasswordPostsEmailToV1Unauthenticated() throws {
+    let endpoint = AuthEndpoints.forgotPassword(ForgotPasswordRequestDTO(email: "you@dankdash.test"))
+
+    XCTAssertEqual(endpoint.method, .POST)
+    XCTAssertEqual(endpoint.path, "v1/auth/forgot-password")
+    XCTAssertFalse(endpoint.requiresAuth, "Reset entry point must be reachable without a session.")
+
+    let body = try XCTUnwrap(endpoint.body)
+    let json = try body.encode(using: JSONEncoder())
+    let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [String: String])
+    XCTAssertEqual(payload, ["email": "you@dankdash.test"])
+  }
+
+  func test_auth_resetPasswordPostsCodeAndNewPasswordUnauthenticated() throws {
+    let endpoint = AuthEndpoints.resetPassword(
+      ResetPasswordRequestDTO(code: "ABCD-EFGH-JKMN", newPassword: "brandnewpass12")
+    )
+
+    XCTAssertEqual(endpoint.method, .POST)
+    XCTAssertEqual(endpoint.path, "v1/auth/reset-password")
+    XCTAssertFalse(endpoint.requiresAuth, "The code is the only credential; no session is required.")
+
+    let body = try XCTUnwrap(endpoint.body)
+    let json = try body.encode(using: JSONEncoder())
+    let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [String: String])
+    XCTAssertEqual(payload["code"], "ABCD-EFGH-JKMN")
+    XCTAssertEqual(payload["newPassword"], "brandnewpass12")
   }
 }

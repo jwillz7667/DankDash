@@ -1,23 +1,21 @@
 import Foundation
 
-/// Notifications endpoint catalog. Phase 18 ships the device-token
-/// registration endpoint as a server-side stub (204 without persisting);
-/// Phase 19 lights up the APNs send pipeline, at which point the
-/// implementation switches to a `push_tokens` upsert without changing
-/// the wire contract or the iOS call site.
+/// Notifications endpoint catalog. Registers an APNs device token for the
+/// calling user so the backend's notification dispatcher can fan order /
+/// dispatch pushes to the right device + app variant.
 public enum NotificationsEndpoints {
-  /// `POST /v1/notifications/register-device`. The iOS client fires
-  /// this from `PushNotificationClient` on every
+  /// `POST /v1/me/push-tokens`. The iOS client fires this from
+  /// `PushTokenRegistrar` on every
   /// `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`
-  /// callback. Stub semantics in this phase: server validates the body
-  /// shape and returns 204; nothing is persisted. We still call it so
-  /// Phase 19 can flip the server without an iOS release.
+  /// callback. The server upserts the token keyed by
+  /// `(user_id, device_id, app_variant)` and returns 201 with the stored
+  /// row; the client treats the result as fire-and-forget.
   public static func registerDevice(
     body: RegisterDeviceRequestDTO
   ) -> Endpoint<EmptyResponse> {
     Endpoint(
       method: .POST,
-      path: "v1/notifications/register-device",
+      path: "v1/me/push-tokens",
       body: AnyEncodableBody(body),
       requiresAuth: true
     )

@@ -5,17 +5,16 @@ import DankDashDomain
 import DankDashFeatures
 
 /// Live tracking surface bound to ``OrderTrackingFeature``. Renders the
-/// status timeline, ETA banner, polling-fallback banner, error banner,
+/// status timeline, the live map (dispensary + drop-off + driver pins),
+/// the arrival banner, ETA banner, polling-fallback banner, error banner,
 /// and driver card. The reducer drives every refresh — this view layer
 /// only dispatches `.onAppear` / `.onDisappear` and lets the realtime
 /// stream + polling fallback push state in.
 ///
-/// Phase 18 note: the ``LiveMapView`` requires a customer-address
-/// coordinate that isn't carried on ``OrderTrackingFeature/State`` yet
-/// (the order detail response only exposes `deliveryAddressId`). The
-/// timeline + driver card + ETA cover the live-tracking DoD; the map
-/// lights up once a follow-up wires the address fetch through the
-/// reducer.
+/// The map appears once the reducer has the drop-off coordinate
+/// (``OrderTrackingFeature/State/mapVisible``), which arrives with the
+/// first `GET /v1/orders/:id` detail load. The driver pin lights up as
+/// soon as the first `driver:location` realtime ping is applied.
 struct OrderTrackingView: View {
   @Bindable var store: StoreOf<OrderTrackingFeature>
   @Dependency(\.urlOpenerClient) private var urlOpener
@@ -36,6 +35,14 @@ struct OrderTrackingView: View {
 
         if store.isPolling {
           pollingBanner
+        }
+
+        if let order = store.order, isArrival(order.status) {
+          arrivalBanner
+        }
+
+        if store.mapVisible, let dropoff = store.dropoffCoordinate {
+          liveMap(dropoff: dropoff)
         }
 
         if let order = store.order {
@@ -94,6 +101,79 @@ struct OrderTrackingView: View {
     .accessibilityLabel(
       "Order \(order.shortCode), \(OrderStatusPill.label(for: order.status)), total \(formatPrice(order.totalCents))"
     )
+  }
+
+  // MARK: - Live map
+
+  /// Drop-off-anchored live map. The customer pin is always present (the
+  /// map is gated on having its coordinate); the dispensary and driver
+  /// pins are conditional on their coordinates being known.
+  private func liveMap(dropoff: Coordinate) -> some View {
+    LiveMapView(
+      dispensary: dispensaryPin,
+      customer: LiveMapView.Pin(
+        id: "customer",
+        kind: .customer,
+        coordinate: dropoff,
+        title: store.dropoffLabel ?? "Delivery address"
+      ),
+      driver: driverPin
+    )
+    .frame(height: 240)
+    .accessibilityElement(children: .ignore)
+    .accessibilityAddTraits(.updatesFrequently)
+  }
+
+  private var dispensaryPin: LiveMapView.Pin? {
+    guard let coordinate = store.dispensaryCoordinate else { return nil }
+    return LiveMapView.Pin(
+      id: "dispensary",
+      kind: .dispensary,
+      coordinate: coordinate,
+      title: store.dispensaryName ?? "Dispensary"
+    )
+  }
+
+  private var driverPin: LiveMapView.Pin? {
+    guard let coordinate = store.driverCoordinate else { return nil }
+    return LiveMapView.Pin(
+      id: "driver",
+      kind: .driver,
+      coordinate: coordinate,
+      title: store.driver?.displayName ?? "Driver"
+    )
+  }
+
+  // MARK: - Arrival banner
+
+  /// True for the two states where the driver is physically at the
+  /// drop-off: `arrived_at_dropoff` (just pulled up) and `id_scan_pending`
+  /// (running the mandatory handoff ID check). Both prompt the customer
+  /// to be ready with their ID.
+  private func isArrival(_ status: OrderStatus) -> Bool {
+    status == .arrivedAtDropoff || status == .idScanPending
+  }
+
+  private var arrivalBanner: some View {
+    HStack(alignment: .top, spacing: DankSpacing.sm) {
+      Image(systemName: "figure.wave")
+        .foregroundStyle(DankColor.Semantic.success)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: DankSpacing.xxs) {
+        Text("Your driver has arrived")
+          .font(DankFont.body.weight(.semibold))
+          .foregroundStyle(DankColor.Text.primary)
+        Text("Have your ID ready — the driver verifies it at handoff.")
+          .font(DankFont.bodySmall)
+          .foregroundStyle(DankColor.Text.secondary)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(DankSpacing.md)
+    .background(DankColor.Semantic.success.opacity(0.12))
+    .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Your driver has arrived. Have your ID ready — the driver verifies it at handoff.")
   }
 
   // MARK: - ETA

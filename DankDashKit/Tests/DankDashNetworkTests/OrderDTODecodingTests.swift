@@ -107,7 +107,9 @@ final class OrderDTODecodingTests: XCTestCase {
           "occurredAt": "2026-05-20T13:12:00.000Z"
         }
       ],
-      "driver": null
+      "driver": null,
+      "dispensary": \(Self.dispensaryJSON),
+      "dropoff": \(Self.dropoffJSON)
     }
     """.data(using: .utf8)!
     let dto = try decoder.decode(OrderDetailResponseDTO.self, from: json)
@@ -125,7 +127,9 @@ final class OrderDTODecodingTests: XCTestCase {
     {
       "order": \(Self.orderJSON.replacingOccurrences(of: "\"status\": \"placed\"", with: "\"status\": \"unknown\"")),
       "events": [],
-      "driver": null
+      "driver": null,
+      "dispensary": \(Self.dispensaryJSON),
+      "dropoff": \(Self.dropoffJSON)
     }
     """.data(using: .utf8)!
     let dto = try decoder.decode(OrderDetailResponseDTO.self, from: json)
@@ -146,12 +150,63 @@ final class OrderDTODecodingTests: XCTestCase {
         "avatarKey": null,
         "vehicleSummary": "Silver Civic",
         "maskedPhone": "+1•••-•••-1212"
-      }
+      },
+      "dispensary": \(Self.dispensaryJSON),
+      "dropoff": \(Self.dropoffJSON)
     }
     """.data(using: .utf8)!
     let dto = try decoder.decode(OrderDetailResponseDTO.self, from: json)
     let domain = try XCTUnwrap(dto.toDomain())
     XCTAssertEqual(domain.driver?.displayName, "Alex P.")
+  }
+
+  func test_orderDetail_decodesMapPointsAndFlattensCoordinates() throws {
+    let json = """
+    {
+      "order": \(Self.orderJSON),
+      "events": [],
+      "driver": null,
+      "dispensary": \(Self.dispensaryJSON),
+      "dropoff": \(Self.dropoffJSON)
+    }
+    """.data(using: .utf8)!
+    let dto = try decoder.decode(OrderDetailResponseDTO.self, from: json)
+    let domain = try XCTUnwrap(dto.toDomain())
+
+    XCTAssertEqual(domain.dispensaryName, "Green Thumb Dispensary")
+    XCTAssertEqual(domain.dispensaryCoordinate.latitude, 44.9778, accuracy: 0.00001)
+    XCTAssertEqual(domain.dispensaryCoordinate.longitude, -93.2650, accuracy: 0.00001)
+    XCTAssertEqual(domain.dropoffCoordinate.latitude, 44.9483, accuracy: 0.00001)
+    XCTAssertEqual(domain.dropoffCoordinate.longitude, -93.2920, accuracy: 0.00001)
+    // The drop-off pin's human label is the address line-1.
+    XCTAssertEqual(domain.dropoffLabel, "123 Nicollet Ave")
+  }
+
+  func test_orderDetail_throwsWhenDispensaryMissing() {
+    // `dispensary` / `dropoff` are non-optional on the wire — a missing
+    // key is a server contract violation that must surface as a decode
+    // failure, not a silent nil that strands the map.
+    let json = """
+    {
+      "order": \(Self.orderJSON),
+      "events": [],
+      "driver": null,
+      "dropoff": \(Self.dropoffJSON)
+    }
+    """.data(using: .utf8)!
+    XCTAssertThrowsError(try decoder.decode(OrderDetailResponseDTO.self, from: json))
+  }
+
+  func test_orderDetail_throwsWhenDropoffMissing() {
+    let json = """
+    {
+      "order": \(Self.orderJSON),
+      "events": [],
+      "driver": null,
+      "dispensary": \(Self.dispensaryJSON)
+    }
+    """.data(using: .utf8)!
+    XCTAssertThrowsError(try decoder.decode(OrderDetailResponseDTO.self, from: json))
   }
 
   // MARK: - OrderListResponseDTO
@@ -263,6 +318,33 @@ final class OrderDTODecodingTests: XCTestCase {
     "statusChangedAt": "2026-05-20T13:10:00.000Z",
     "createdAt": "2026-05-20T13:10:00.000Z",
     "updatedAt": "2026-05-20T13:10:00.000Z"
+  }
+  """
+
+  /// Pickup-pin fixture. Coordinates arrive already unwrapped from the
+  /// PostGIS `[lng, lat]` GeoJSON as plain `Double`s — the server does the
+  /// unwrap so the consumer never parses geometry.
+  private static let dispensaryJSON = """
+  {
+    "id": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0001",
+    "name": "Green Thumb Dispensary",
+    "latitude": 44.9778,
+    "longitude": -93.2650
+  }
+  """
+
+  /// Drop-off-pin fixture — the customer's own delivery address, frozen at
+  /// checkout. `line2` / `instructions` are nullable on the wire.
+  private static let dropoffJSON = """
+  {
+    "latitude": 44.9483,
+    "longitude": -93.2920,
+    "line1": "123 Nicollet Ave",
+    "line2": "Apt 4",
+    "city": "Minneapolis",
+    "state": "MN",
+    "postalCode": "55403",
+    "instructions": "Ring buzzer 4"
   }
   """
 }

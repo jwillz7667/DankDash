@@ -209,6 +209,34 @@ final class APIClientTests: XCTestCase {
     }
   }
 
+  func test_emptyBody202_decodesAsEmptyResponse() async throws {
+    URLProtocolMock.handler = { request in
+      XCTAssertEqual(request.url?.path, "/v1/auth/forgot-password")
+      XCTAssertEqual(request.httpMethod, "POST")
+      XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+      let response = HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!
+      return (response, Data())  // 202 Accepted, no body
+    }
+
+    let result = try await client.send(
+      AuthEndpoints.forgotPassword(.init(email: "you@dankdash.test"))
+    )
+    XCTAssertEqual(result, EmptyResponse())
+  }
+
+  func test_noContent204_decodesAsEmptyResponse() async throws {
+    URLProtocolMock.handler = { request in
+      XCTAssertEqual(request.url?.path, "/v1/auth/reset-password")
+      let response = HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!
+      return (response, nil)  // 204 No Content — URLSession surfaces this as empty Data
+    }
+
+    let result = try await client.send(
+      AuthEndpoints.resetPassword(.init(code: "ABCD-EFGH-JKMN", newPassword: "brandnewpass12"))
+    )
+    XCTAssertEqual(result, EmptyResponse())
+  }
+
   // MARK: - Fixtures
 
   private static let userJSON = """

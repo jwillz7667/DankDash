@@ -5,24 +5,26 @@ import UIKit
 import DankDashNetwork
 
 /// Drives the APNs registration handshake and forwards every successful
-/// device-token update to `POST /v1/notifications/register-device`. Both
-/// the consumer and driver `UIApplicationDelegate` shims own one of
-/// these — they bootstrap on launch and forward the three APNs
-/// callbacks. Nothing else needs to import `UNUserNotificationCenter`
-/// or `UIApplication`.
+/// device-token update to `POST /v1/me/push-tokens`. Both the consumer
+/// and driver `UIApplicationDelegate` shims own one of these — they
+/// bootstrap on launch and forward the three APNs callbacks. Nothing
+/// else needs to import `UNUserNotificationCenter` or `UIApplication`.
 @MainActor
 public final class PushTokenRegistrar {
   private let deviceIdKey: String
+  private let appVariant: PushAppVariant
   private let apiClient: APIClient
   private let pushClient: PushNotificationClient
   private var forwardingTask: Task<Void, Never>?
 
   public init(
     deviceIdKey: String,
+    appVariant: PushAppVariant,
     apiClient: APIClient,
     pushClient: PushNotificationClient = .live
   ) {
     self.deviceIdKey = deviceIdKey
+    self.appVariant = appVariant
     self.apiClient = apiClient
     self.pushClient = pushClient
   }
@@ -56,7 +58,7 @@ public final class PushTokenRegistrar {
     for await update in pushClient.tokenUpdates() {
       guard case .registered(let data) = update else { continue }
       let hex = data.map { String(format: "%02x", $0) }.joined()
-      let body = RegisterDeviceRequestDTO(apnsToken: hex, deviceId: deviceId)
+      let body = RegisterDeviceRequestDTO(apnsToken: hex, deviceId: deviceId, appVariant: appVariant)
       _ = try? await apiClient.send(NotificationsEndpoints.registerDevice(body: body))
     }
   }

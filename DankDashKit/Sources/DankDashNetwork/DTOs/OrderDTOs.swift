@@ -183,6 +183,37 @@ public extension OrderResponseDTO {
   }
 }
 
+/// Request body for `POST /v1/orders/:id/rate` (`RateOrderRequestSchema`).
+/// Every field is optional, but the server requires **at least one** to
+/// be present (`.strict()` + `.refine`). All four are `Optional`, so the
+/// synthesized `Encodable` uses `encodeIfPresent` and a `nil` field is
+/// omitted entirely rather than serialized as `null` — the server's
+/// `.optional()` (which accepts absence, not `null`) depends on that.
+///
+/// `rating` is the customer's overall order rating; `review` is free
+/// text (1–2000 chars server-side); `driverRating` / `dispensaryRating`
+/// are the optional per-party scores. Scores are 1–5; the consumer sheet
+/// only collects `rating` + `review`, but the wire shape carries all
+/// four so a richer sheet doesn't need a new DTO.
+public struct OrderRatingRequestDTO: Encodable, Sendable, Equatable {
+  public let rating: Int?
+  public let review: String?
+  public let driverRating: Int?
+  public let dispensaryRating: Int?
+
+  public init(
+    rating: Int? = nil,
+    review: String? = nil,
+    driverRating: Int? = nil,
+    dispensaryRating: Int? = nil
+  ) {
+    self.rating = rating
+    self.review = review
+    self.driverRating = driverRating
+    self.dispensaryRating = dispensaryRating
+  }
+}
+
 /// Wire shape for `OrderEventResponseSchema`. `payload` is `AnyValue`
 /// because the shape varies per `eventType` — clients discriminate on
 /// `eventType` and read the keys they know about. Driver-location
@@ -240,22 +271,88 @@ public extension OrderEventResponseDTO {
   }
 }
 
-/// Wire shape for `OrderDetailResponseSchema` — the order-tracking
-/// screen's single-call refresh shape (order + events + optional
-/// driver). The events array is server-sorted ASC by `occurredAt`.
+/// Pickup pin — the dispensary the order is coming FROM. Mirrors
+/// `CustomerOrderDispensarySchema`. Coordinates arrive as plain
+/// `Double`s already unwrapped from the PostGIS `[lng, lat]` GeoJSON on
+/// the server, so no decimal-string parsing is needed here (unlike
+/// money / weights, which flow as strings). The consumer needs only the
+/// display name + point; the full street address lives on the
+/// driver-side detail.
+public struct OrderDispensarySummaryDTO: Decodable, Sendable, Equatable {
+  public let id: String
+  public let name: String
+  public let latitude: Double
+  public let longitude: Double
+
+  public init(id: String, name: String, latitude: Double, longitude: Double) {
+    self.id = id
+    self.name = name
+    self.latitude = latitude
+    self.longitude = longitude
+  }
+}
+
+/// Drop-off pin — the customer's OWN delivery address, frozen at
+/// checkout. Mirrors `CustomerOrderDropoffSchema`. `line1` doubles as
+/// the map label on the consumer side. `line2` / `instructions` are
+/// nullable on the wire and decode straight to `Optional`.
+public struct OrderDropoffSummaryDTO: Decodable, Sendable, Equatable {
+  public let latitude: Double
+  public let longitude: Double
+  public let line1: String
+  public let line2: String?
+  public let city: String
+  public let state: String
+  public let postalCode: String
+  public let instructions: String?
+
+  public init(
+    latitude: Double,
+    longitude: Double,
+    line1: String,
+    line2: String?,
+    city: String,
+    state: String,
+    postalCode: String,
+    instructions: String?
+  ) {
+    self.latitude = latitude
+    self.longitude = longitude
+    self.line1 = line1
+    self.line2 = line2
+    self.city = city
+    self.state = state
+    self.postalCode = postalCode
+    self.instructions = instructions
+  }
+}
+
+/// Wire shape for `CustomerOrderDetailResponseSchema` — the
+/// order-tracking screen's single-call refresh shape (order + events +
+/// optional driver + the two map points). The events array is
+/// server-sorted ASC by `occurredAt`. `dispensary` and `dropoff` are
+/// always present on the wire (the server projects both unconditionally),
+/// so they decode as non-optional — a missing key is a contract
+/// violation that should surface as a decode failure, not a silent nil.
 public struct OrderDetailResponseDTO: Decodable, Sendable, Equatable {
   public let order: OrderResponseDTO
   public let events: [OrderEventResponseDTO]
   public let driver: DriverPublicProfileDTO?
+  public let dispensary: OrderDispensarySummaryDTO
+  public let dropoff: OrderDropoffSummaryDTO
 
   public init(
     order: OrderResponseDTO,
     events: [OrderEventResponseDTO],
-    driver: DriverPublicProfileDTO?
+    driver: DriverPublicProfileDTO?,
+    dispensary: OrderDispensarySummaryDTO,
+    dropoff: OrderDropoffSummaryDTO
   ) {
     self.order = order
     self.events = events
     self.driver = driver
+    self.dispensary = dispensary
+    self.dropoff = dropoff
   }
 }
 
@@ -270,21 +367,54 @@ public extension OrderDetailResponseDTO {
     guard let parsedOrder = order.toDomain() else { return nil }
     let parsedEvents = events.compactMap { $0.toDomain() }
     let parsedDriver = driver?.toDomain()
-    return Domain(order: parsedOrder, events: parsedEvents, driver: parsedDriver)
+    return Domain(
+      order: parsedOrder,
+      events: parsedEvents,
+      driver: parsedDriver,
+      dispensaryName: dispensary.name,
+      dispensaryCoordinate: Coordinate(
+        latitude: dispensary.latitude,
+        longitude: dispensary.longitude
+      ),
+      dropoffCoordinate: Coordinate(
+        latitude: dropoff.latitude,
+        longitude: dropoff.longitude
+      ),
+      dropoffLabel: dropoff.line1
+    )
   }
 
   /// Domain projection of the detail response. Lives on the DTO because
-  /// the three values together are not a stand-alone Domain type — the
-  /// reducer needs them as separate slices and never wraps them again.
+  /// the values together are not a stand-alone Domain type — the reducer
+  /// needs them as separate slices and never wraps them again. The two
+  /// map points are flattened to a name + ``Coordinate`` each (plus the
+  /// drop-off label) because that's the exact shape ``LiveMapView.Pin``
+  /// consumes; the full street address is dropped on the consumer side.
   struct Domain: Sendable, Equatable {
     public let order: Order
     public let events: [OrderEvent]
     public let driver: DriverPublicProfile?
+    public let dispensaryName: String
+    public let dispensaryCoordinate: Coordinate
+    public let dropoffCoordinate: Coordinate
+    public let dropoffLabel: String
 
-    public init(order: Order, events: [OrderEvent], driver: DriverPublicProfile?) {
+    public init(
+      order: Order,
+      events: [OrderEvent],
+      driver: DriverPublicProfile?,
+      dispensaryName: String,
+      dispensaryCoordinate: Coordinate,
+      dropoffCoordinate: Coordinate,
+      dropoffLabel: String
+    ) {
       self.order = order
       self.events = events
       self.driver = driver
+      self.dispensaryName = dispensaryName
+      self.dispensaryCoordinate = dispensaryCoordinate
+      self.dropoffCoordinate = dropoffCoordinate
+      self.dropoffLabel = dropoffLabel
     }
   }
 }
