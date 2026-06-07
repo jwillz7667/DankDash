@@ -99,6 +99,16 @@ export const dispensaryListings = pgTable(
     priceCents: integer('price_cents').notNull(),
     compareAtPriceCents: integer('compare_at_price_cents'),
     quantityAvailable: integer('quantity_available').notNull().default(0),
+    // Per-listing image override. When non-empty, the public menu renders
+    // these R2 object keys instead of the shared `products.image_keys`; an
+    // empty array falls back to the canonical product photos. This lets a
+    // vendor upload its own shots of the product it carries without mutating
+    // the global catalog (which is admin-owned). Keys live under the
+    // dispensary's own prefix — see VendorListingUploadsService.
+    imageKeys: text('image_keys')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
     metrcPackageTag: text('metrc_package_tag'),
     lastSyncedAt: timestamp('last_synced_at', { withTimezone: true, mode: 'date' }),
     isActive: boolean('is_active').notNull().default(true),

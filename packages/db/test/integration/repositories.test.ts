@@ -503,6 +503,21 @@ describe('repository coverage', () => {
         compareAtPriceCents: target.priceCents + 200,
       });
       expect(updated?.compareAtPriceCents).toBe(target.priceCents + 200);
+
+      // image_keys defaults to an empty array and round-trips a text[] override.
+      expect(byId?.imageKeys).toEqual([]);
+      const keys = [
+        `dispensaries/${MPLS}/listings/${newId()}.jpg`,
+        `dispensaries/${MPLS}/listings/${newId()}.webp`,
+      ];
+      const withImages = await listings.update(target.id, { imageKeys: keys });
+      expect(withImages?.imageKeys).toEqual(keys);
+      const reread = await listings.findById(target.id);
+      expect(reread?.imageKeys).toEqual(keys);
+
+      // Cleared back to empty so the shared seed stays neutral for other tests.
+      const cleared = await listings.update(target.id, { imageKeys: [] });
+      expect(cleared?.imageKeys).toEqual([]);
     });
   });
 
