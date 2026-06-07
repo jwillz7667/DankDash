@@ -172,6 +172,14 @@ public actor APIClient {
 
   private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
     if T.self == Data.self, let data = data as? T { return data }
+    // A 2xx with no body — HTTP 204, or a 202/200 that returns nothing — is a
+    // success, not a decode failure. `EmptyResponse` is the canonical "no
+    // content" type; synthesize it rather than feeding empty bytes to
+    // JSONDecoder, which would throw on the empty input. Any other type
+    // expecting a body still errors on an empty payload, which is correct.
+    if data.isEmpty, T.self == EmptyResponse.self, let empty = EmptyResponse() as? T {
+      return empty
+    }
     do {
       return try decoder.decode(T.self, from: data)
     } catch {

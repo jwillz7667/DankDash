@@ -55,6 +55,22 @@ public struct OrderTrackingFeature: Sendable {
     /// view side (1Hz max) — the reducer just stores the freshest value.
     public var driverCoordinate: Coordinate?
 
+    /// Pickup dispensary name — the dispensary map pin's title. Set from
+    /// the detail fetch (or cache); `nil` until the first load lands.
+    public var dispensaryName: String?
+
+    /// Pickup pin coordinate (the dispensary storefront).
+    public var dispensaryCoordinate: Coordinate?
+
+    /// Drop-off pin coordinate (the customer's delivery address, frozen
+    /// at checkout). The map is gated on this — ``mapVisible`` stays
+    /// false until it's populated by a detail fetch or a (recent) cache
+    /// hit.
+    public var dropoffCoordinate: Coordinate?
+
+    /// Human label for the drop-off pin (the address line-1).
+    public var dropoffLabel: String?
+
     /// Minutes remaining on the server's ETA estimate. The driver app +
     /// dispatch service computes it; the consumer surface just displays.
     public var etaMinutes: Int?
@@ -73,35 +89,87 @@ public struct OrderTrackingFeature: Sendable {
     /// observes via the matching delegate; tests assert directly.
     public var ratingDue: Bool
 
+    /// Star rating the user has selected in the sheet (0 = none). Lives
+    /// in reducer state (not the View) so the submit effect can read it
+    /// and tests can drive it deterministically.
+    public var rating: Int
+
+    /// Optional free-text review backing the sheet's comment field.
+    public var ratingComment: String
+
+    /// True while the rate request is in flight — drives the sheet's
+    /// spinner and disables re-submission.
+    public var isSubmittingRating: Bool
+
+    /// Set once a rating has been accepted by the server this session.
+    /// Suppresses re-prompting via the post-delivery timer on a later
+    /// `.onAppear`, so a user who already rated isn't asked again.
+    public var ratingSubmitted: Bool
+
+    /// Rating-submit failure message, shown inline in the sheet. Distinct
+    /// from ``error`` (the live-tracking banner) because the sheet covers
+    /// that banner — a failed submit must report where the user is looking.
+    public var ratingError: String?
+
     public init(
       orderId: UUID,
       order: Order? = nil,
       events: [OrderEvent] = [],
       driver: DriverPublicProfile? = nil,
       driverCoordinate: Coordinate? = nil,
+      dispensaryName: String? = nil,
+      dispensaryCoordinate: Coordinate? = nil,
+      dropoffCoordinate: Coordinate? = nil,
+      dropoffLabel: String? = nil,
       etaMinutes: Int? = nil,
       isLoading: Bool = false,
       error: String? = nil,
       isPolling: Bool = false,
-      ratingDue: Bool = false
+      ratingDue: Bool = false,
+      rating: Int = 0,
+      ratingComment: String = "",
+      isSubmittingRating: Bool = false,
+      ratingSubmitted: Bool = false,
+      ratingError: String? = nil
     ) {
       self.orderId = orderId
       self.order = order
       self.events = events
       self.driver = driver
       self.driverCoordinate = driverCoordinate
+      self.dispensaryName = dispensaryName
+      self.dispensaryCoordinate = dispensaryCoordinate
+      self.dropoffCoordinate = dropoffCoordinate
+      self.dropoffLabel = dropoffLabel
       self.etaMinutes = etaMinutes
       self.isLoading = isLoading
       self.error = error
       self.isPolling = isPolling
       self.ratingDue = ratingDue
+      self.rating = rating
+      self.ratingComment = ratingComment
+      self.isSubmittingRating = isSubmittingRating
+      self.ratingSubmitted = ratingSubmitted
+      self.ratingError = ratingError
     }
 
-    /// True iff a driver is assigned and the order isn't in a terminal
-    /// state. The view conditionally renders ``LiveMapView`` on this.
+    /// True when the sheet has enough to submit: at least one star and no
+    /// in-flight request. Mirrors the design component's `canSubmit`.
+    public var canSubmitRating: Bool {
+      rating > 0 && !isSubmittingRating
+    }
+
+    /// True once we know where the order is going (the drop-off
+    /// coordinate) and it isn't in a terminal state. The view renders
+    /// ``LiveMapView`` on this — the customer pin shows from the first
+    /// detail load, the dispensary pin whenever its coordinate is known,
+    /// and the driver pin appears once a `driver:location` ping arrives.
+    /// Gating on the drop-off (rather than `driver != nil`) means the map
+    /// is up before a driver is even assigned, which is the more useful
+    /// "here's your delivery" affordance.
     public var mapVisible: Bool {
       guard let order, !order.status.isTerminal else { return false }
-      return driver != nil
+      return dropoffCoordinate != nil
     }
   }
 
@@ -121,6 +189,11 @@ public struct OrderTrackingFeature: Sendable {
 
     case ratingTimerFired
     case dismissRatingSheet
+
+    case ratingChanged(Int)
+    case ratingCommentChanged(String)
+    case submitRatingTapped
+    case ratingSubmitted(Result<Order, EquatableError>)
 
     case delegate(Delegate)
 
@@ -145,6 +218,8 @@ public struct OrderTrackingFeature: Sendable {
     case subscription
     case polling
     case ratingTimer
+    case ratingSubmit
+    case driverRefetch
   }
 
   public var body: some ReducerOf<Self> {
@@ -176,7 +251,9 @@ public struct OrderTrackingFeature: Sendable {
         return .merge(
           .cancel(id: CancelID.subscription),
           .cancel(id: CancelID.polling),
-          .cancel(id: CancelID.ratingTimer)
+          .cancel(id: CancelID.ratingTimer),
+          .cancel(id: CancelID.ratingSubmit),
+          .cancel(id: CancelID.driverRefetch)
         )
 
       case .cachedDetailLoaded(let cached):
@@ -187,6 +264,12 @@ public struct OrderTrackingFeature: Sendable {
         state.order = cached.order
         state.events = cached.events
         state.driver = cached.driver
+        // Coords are optional on the cache (legacy entries predate them);
+        // a `nil` drop-off just means the map waits for the network load.
+        state.dispensaryName = cached.dispensaryName
+        state.dispensaryCoordinate = cached.dispensaryCoordinate
+        state.dropoffCoordinate = cached.dropoffCoordinate
+        state.dropoffLabel = cached.dropoffLabel
         return .none
 
       case .detailLoaded(.success(let detail)):
@@ -195,6 +278,10 @@ public struct OrderTrackingFeature: Sendable {
         state.order = detail.order
         state.events = detail.events
         state.driver = detail.driver
+        state.dispensaryName = detail.dispensaryName
+        state.dispensaryCoordinate = detail.dispensaryCoordinate
+        state.dropoffCoordinate = detail.dropoffCoordinate
+        state.dropoffLabel = detail.dropoffLabel
         let orderId = state.orderId
         let cacheTimestamp = now
         var effects: [Effect<Action>] = [
@@ -204,7 +291,11 @@ public struct OrderTrackingFeature: Sendable {
                 order: detail.order,
                 events: detail.events,
                 driver: detail.driver,
-                cachedAt: cacheTimestamp
+                cachedAt: cacheTimestamp,
+                dispensaryName: detail.dispensaryName,
+                dispensaryCoordinate: detail.dispensaryCoordinate,
+                dropoffCoordinate: detail.dropoffCoordinate,
+                dropoffLabel: detail.dropoffLabel
               ),
               orderId
             )
@@ -249,7 +340,59 @@ public struct OrderTrackingFeature: Sendable {
 
       case .dismissRatingSheet:
         state.ratingDue = false
+        state.ratingError = nil
+        return .merge(
+          .cancel(id: CancelID.ratingTimer),
+          .cancel(id: CancelID.ratingSubmit)
+        )
+
+      case .ratingChanged(let value):
+        // Clamp to the server's 1–5 range; 0 means "not yet rated".
+        state.rating = min(max(value, 0), 5)
+        return .none
+
+      case .ratingCommentChanged(let comment):
+        state.ratingComment = comment
+        return .none
+
+      case .submitRatingTapped:
+        guard state.canSubmitRating, state.order != nil else { return .none }
+        state.isSubmittingRating = true
+        // Rating failures use their own channel (`ratingError`, shown in
+        // the sheet) so they don't collide with the tracking banner's
+        // `error`, which sits behind the sheet.
+        state.ratingError = nil
+        let orderId = state.orderId
+        let trimmedReview = state.ratingComment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let input = OrderRatingInput(
+          rating: state.rating,
+          review: trimmedReview.isEmpty ? nil : trimmedReview
+        )
+        return .run { [ordersAPIClient] send in
+          do {
+            let order = try await ordersAPIClient.rateOrder(orderId, input)
+            await send(.ratingSubmitted(.success(order)))
+          } catch {
+            await send(.ratingSubmitted(.failure(EquatableError(error))))
+          }
+        }.cancellable(id: CancelID.ratingSubmit, cancelInFlight: true)
+
+      case .ratingSubmitted(.success(let order)):
+        state.isSubmittingRating = false
+        state.ratingSubmitted = true
+        state.ratingError = nil
+        state.order = order
+        // Dismiss the sheet and retire the prompt for this session.
+        state.ratingDue = false
         return .cancel(id: CancelID.ratingTimer)
+
+      case .ratingSubmitted(.failure(let err)):
+        // Keep the sheet open with the failure surfaced inline so the
+        // user can retry; the submit button re-enables once
+        // `isSubmittingRating` clears.
+        state.isSubmittingRating = false
+        state.ratingError = err.message
+        return .none
 
       case .delegate:
         return .none
@@ -324,7 +467,52 @@ public struct OrderTrackingFeature: Sendable {
     if statusDidChange, let timer = ratingTimerEffectIfNeeded(state: state) {
       effects.append(timer)
     }
+    // Self-heal a missing driver: if a `status_changed` event advanced us
+    // into a driver-bearing state but we never received the
+    // `driver_assigned` profile event (so `state.driver` is still nil),
+    // pull the detail once to fill the driver card + map driver pin.
+    if statusDidChange,
+       state.driver == nil,
+       let status = state.order?.status,
+       Self.expectsDriver(status) {
+      effects.append(driverRefetchEffect(orderId: state.orderId))
+    }
     return effects.isEmpty ? .none : .merge(effects)
+  }
+
+  /// Statuses at or past driver assignment — once the order reaches one
+  /// of these a driver profile should exist on the order. Used to decide
+  /// whether a `status_changed` that arrived without a paired
+  /// `driver_assigned` event warrants a self-healing re-fetch.
+  /// `idScanFailed` is in the set because it's only reachable from
+  /// `idScanPending`, where a driver is present at the door.
+  private static func expectsDriver(_ status: OrderStatus) -> Bool {
+    switch status {
+    case .driverAssigned, .enRoutePickup, .pickedUp, .enRouteDropoff,
+         .arrivedAtDropoff, .idScanPending, .idScanPassed, .idScanFailed,
+         .delivered:
+      return true
+    case .placed, .paymentFailed, .accepted, .rejected, .prepping,
+         .readyForPickup, .awaitingDriver, .returnedToStore, .canceled,
+         .disputed:
+      return false
+    }
+  }
+
+  /// One-shot detail re-fetch that self-heals a missing driver profile.
+  /// Routes through the same `.detailLoaded(.success)` path as the
+  /// initial load, so the driver card + map pins + coords fill in.
+  /// `cancelInFlight: true` collapses rapid status bumps into a single
+  /// fetch. Best-effort: a failure here leaves the existing UI intact (we
+  /// only push on success) so a transient error never raises the tracking
+  /// banner over otherwise-fine data — the realtime stream / polling
+  /// fallback covers retries.
+  private func driverRefetchEffect(orderId: UUID) -> Effect<Action> {
+    .run { [ordersAPIClient] send in
+      if let detail = try? await ordersAPIClient.getOrder(orderId) {
+        await send(.detailLoaded(.success(detail)))
+      }
+    }.cancellable(id: CancelID.driverRefetch, cancelInFlight: true)
   }
 
   /// Returns a 5-minute `clock.sleep` effect when the current order is
@@ -333,7 +521,11 @@ public struct OrderTrackingFeature: Sendable {
   /// `.cancellable(id:, cancelInFlight: true)` guarantees only one
   /// timer at a time.
   private func ratingTimerEffectIfNeeded(state: State) -> Effect<Action>? {
-    guard state.order?.status == .delivered, !state.ratingDue else { return nil }
+    guard
+      state.order?.status == .delivered,
+      !state.ratingDue,
+      !state.ratingSubmitted
+    else { return nil }
     return .run { [clock] send in
       try? await clock.sleep(for: .seconds(300))
       await send(.ratingTimerFired)

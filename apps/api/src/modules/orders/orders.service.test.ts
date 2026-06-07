@@ -7,10 +7,20 @@
  */
 import {
   type Database,
+  type Dispensary,
+  type DispensariesRepository,
+  type Driver,
+  type DriversRepository,
   type NewOrder,
   type Order,
+  type OrderEvent,
+  type OrderEventsRepository,
+  type OrderItem,
+  type OrderItemsRepository,
   type OrdersRepository,
   type OrderStatus,
+  type User,
+  type UsersRepository,
   type VendorQueueOrderRow,
 } from '@dankdash/db';
 import { OrderError } from '@dankdash/orders';
@@ -26,8 +36,27 @@ const OTHER_USER_ID = '01935f3d-0000-7000-8000-0000000000ff';
 const DISPENSARY_ID = '01935f3d-0000-7000-8000-000000000010';
 const OTHER_DISPENSARY_ID = '01935f3d-0000-7000-8000-0000000000fe';
 const ORDER_ID = '01935f3d-0000-7000-8000-000000001001';
+const DRIVER_USER_ID = '01935f3d-0000-7000-8000-000000000201';
+const DRIVER_ID = '01935f3d-0000-7000-8000-000000000202';
+const ADDRESS_ID = '01935f3d-0000-7000-8000-000000000060';
+const LISTING_ID = '01935f3d-0000-7000-8000-000000000150';
+const ITEM_ID = '01935f3d-0000-7000-8000-000000000160';
+const EVENT_ID = '01935f3d-0000-7000-8000-000000000170';
 
 const PINNED_NOW = new Date('2026-05-18T19:00:00.000Z');
+
+const SAMPLE_SNAPSHOT = {
+  id: ADDRESS_ID,
+  label: 'Home',
+  line1: '345 Park Ave',
+  line2: 'Apt 4B',
+  city: 'St Paul',
+  region: 'MN',
+  postalCode: '55102',
+  country: 'US',
+  location: { type: 'Point' as const, coordinates: [-93.094, 44.953] as const },
+  deliveryInstructions: 'Leave with doorman',
+};
 
 function makeOrder(overrides: Partial<Order> = {}): Order {
   return {
@@ -80,6 +109,185 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     updatedAt: PINNED_NOW,
     ...overrides,
   };
+}
+
+function makeDriverUser(overrides: Partial<User> = {}): User {
+  return {
+    id: DRIVER_USER_ID,
+    email: 'driver@example.com',
+    phone: '+16125554321',
+    passwordHash: 'argon2id$placeholder',
+    role: 'driver',
+    status: 'active',
+    firstName: 'Sam',
+    lastName: 'Jenkins',
+    dateOfBirth: '1992-03-04',
+    kycVerifiedAt: new Date('2025-06-01T12:00:00.000Z'),
+    kycProvider: 'veriff',
+    kycProviderRef: 'veriff-ref-driver',
+    mfaEnabled: false,
+    mfaSecretEnc: null,
+    lastLoginAt: null,
+    createdAt: new Date('2025-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2025-01-01T00:00:00.000Z'),
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+function makeDriver(overrides: Partial<Driver> = {}): Driver {
+  return {
+    id: DRIVER_ID,
+    userId: DRIVER_USER_ID,
+    licenseNumberHash: new Uint8Array([1, 2, 3]),
+    vehicleMake: 'Toyota',
+    vehicleModel: 'Prius',
+    vehicleYear: 2021,
+    vehiclePlate: 'ABC-1234',
+    vehicleColor: 'Silver',
+    insuranceDocKey: null,
+    insuranceExpiresAt: null,
+    backgroundCheckPassedAt: null,
+    backgroundCheckProviderRef: null,
+    currentStatus: 'en_route_dropoff',
+    lastStatusChangeAt: PINNED_NOW,
+    currentLocation: { type: 'Point', coordinates: [-93.2, 44.96] },
+    currentLocationUpdatedAt: PINNED_NOW,
+    currentOrderId: ORDER_ID,
+    ratingAvg: '4.90',
+    ratingCount: 42,
+    totalDeliveries: 128,
+    createdAt: new Date('2025-01-01T00:00:00.000Z'),
+    updatedAt: PINNED_NOW,
+    ...overrides,
+  };
+}
+
+function makeDispensary(overrides: Partial<Dispensary> = {}): Dispensary {
+  return {
+    id: DISPENSARY_ID,
+    legalName: 'Twin Cities Cannabis Co.',
+    dba: 'TC Cannabis',
+    licenseNumber: 'OCM-12345',
+    licenseType: 'retailer',
+    licenseIssuedAt: '2024-01-01',
+    licenseExpiresAt: '2028-01-01',
+    metrcFacilityId: null,
+    metrcApiKeyEnc: null,
+    posProvider: 'manual',
+    posCredentialsEnc: null,
+    posLastSyncedAt: null,
+    addressLine1: '12 Main St',
+    addressLine2: null,
+    city: 'Minneapolis',
+    region: 'MN',
+    postalCode: '55401',
+    location: { type: 'Point', coordinates: [-93.265, 44.978] },
+    deliveryPolygon: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [-93.3, 44.9],
+          [-93.2, 44.9],
+          [-93.2, 45.0],
+          [-93.3, 45.0],
+          [-93.3, 44.9],
+        ],
+      ],
+    },
+    hoursJson: {},
+    phone: '+16125550100',
+    email: 'orders@tc.example',
+    logoImageKey: null,
+    heroImageKey: null,
+    brandColorHex: null,
+    aeropayAccountRef: null,
+    isAcceptingOrders: true,
+    ratingAvg: null,
+    ratingCount: 0,
+    status: 'active',
+    createdAt: new Date('2024-06-01T00:00:00.000Z'),
+    updatedAt: new Date('2024-06-01T00:00:00.000Z'),
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+function makeOrderItem(overrides: Partial<OrderItem> = {}): OrderItem {
+  return {
+    id: ITEM_ID,
+    orderId: ORDER_ID,
+    listingId: LISTING_ID,
+    productSnapshot: { name: 'Blue Dream 3.5g', category: 'flower' },
+    metrcPackageTag: '1A4FF0100000022000000123',
+    quantity: 2,
+    unitPriceCents: 2500,
+    lineSubtotalCents: 5000,
+    thcMgTotal: '450.000',
+    cbdMgTotal: '12.000',
+    weightGramsTotal: '7.000',
+    cannabisTaxCents: 500,
+    salesTaxCents: 300,
+    createdAt: PINNED_NOW,
+    ...overrides,
+  };
+}
+
+function makeOrderEvent(overrides: Partial<OrderEvent> = {}): OrderEvent {
+  return {
+    id: EVENT_ID,
+    orderId: ORDER_ID,
+    eventType: 'DRIVER_EN_ROUTE_DROPOFF',
+    actorUserId: DRIVER_USER_ID,
+    actorRole: 'driver',
+    payload: { location: { latitude: 44.96, longitude: -93.2 } },
+    occurredAt: PINNED_NOW,
+    ...overrides,
+  };
+}
+
+class FakeOrderItemsRepo implements Pick<OrderItemsRepository, 'listForOrder'> {
+  public rows: OrderItem[] = [];
+  listForOrder(orderId: string): Promise<readonly OrderItem[]> {
+    return Promise.resolve(this.rows.filter((r) => r.orderId === orderId));
+  }
+}
+
+class FakeOrderEventsRepo implements Pick<OrderEventsRepository, 'listForOrder'> {
+  public rows: OrderEvent[] = [];
+  listForOrder(orderId: string): Promise<readonly OrderEvent[]> {
+    return Promise.resolve(this.rows.filter((r) => r.orderId === orderId));
+  }
+}
+
+class FakeUsersRepo implements Pick<UsersRepository, 'findById'> {
+  public rows = new Map<string, User>();
+  seed(row: User): void {
+    this.rows.set(row.id, row);
+  }
+  findById(id: string): Promise<User | null> {
+    return Promise.resolve(this.rows.get(id) ?? null);
+  }
+}
+
+class FakeDispensariesRepo implements Pick<DispensariesRepository, 'findById'> {
+  public rows = new Map<string, Dispensary>();
+  seed(row: Dispensary): void {
+    this.rows.set(row.id, row);
+  }
+  findById(id: string): Promise<Dispensary | null> {
+    return Promise.resolve(this.rows.get(id) ?? null);
+  }
+}
+
+class FakeDriversRepo implements Pick<DriversRepository, 'findByUserId'> {
+  public rows = new Map<string, Driver>();
+  seed(row: Driver): void {
+    this.rows.set(row.userId, row);
+  }
+  findByUserId(userId: string): Promise<Driver | null> {
+    return Promise.resolve(this.rows.get(userId) ?? null);
+  }
 }
 
 class FakeOrdersRepo implements Pick<
@@ -169,12 +377,41 @@ function makeStubDb(): Database {
   } as unknown as Database;
 }
 
-function makeService(initial: Order[] = []): { service: OrdersService; repo: FakeOrdersRepo } {
+interface ServiceRig {
+  readonly service: OrdersService;
+  readonly repo: FakeOrdersRepo;
+  readonly items: FakeOrderItemsRepo;
+  readonly events: FakeOrderEventsRepo;
+  readonly users: FakeUsersRepo;
+  readonly dispensaries: FakeDispensariesRepo;
+  readonly drivers: FakeDriversRepo;
+}
+
+function makeService(initial: Order[] = []): ServiceRig {
   const repo = new FakeOrdersRepo(initial);
-  const reposFactory: OrdersScopedReposFactory = (): OrdersScopedRepos => ({
+  const items = new FakeOrderItemsRepo();
+  const events = new FakeOrderEventsRepo();
+  const users = new FakeUsersRepo();
+  const dispensaries = new FakeDispensariesRepo();
+  const drivers = new FakeDriversRepo();
+  const scoped: OrdersScopedRepos = {
     orders: repo as unknown as OrdersRepository,
-  });
-  return { service: new OrdersService(makeStubDb(), reposFactory), repo };
+    orderItems: items as unknown as OrderItemsRepository,
+    orderEvents: events as unknown as OrderEventsRepository,
+    users: users as unknown as UsersRepository,
+    dispensaries: dispensaries as unknown as DispensariesRepository,
+    drivers: drivers as unknown as DriversRepository,
+  };
+  const reposFactory: OrdersScopedReposFactory = (): OrdersScopedRepos => scoped;
+  return {
+    service: new OrdersService(makeStubDb(), reposFactory),
+    repo,
+    items,
+    events,
+    users,
+    dispensaries,
+    drivers,
+  };
 }
 
 describe('OrdersService', () => {
@@ -384,6 +621,130 @@ describe('OrdersService', () => {
       await expect(service.recordRating(USER_ID, ORDER_ID, { rating: 5 })).rejects.toBeInstanceOf(
         OrderError,
       );
+    });
+  });
+
+  describe('getDetailForUser', () => {
+    function seedDetail(rig: ServiceRig, orderOverrides: Partial<Order> = {}): void {
+      rig.repo.rows.set(
+        ORDER_ID,
+        makeOrder({ deliveryAddressSnapshot: SAMPLE_SNAPSHOT, ...orderOverrides }),
+      );
+      rig.dispensaries.seed(makeDispensary());
+      rig.items.rows = [makeOrderItem()];
+      rig.events.rows = [makeOrderEvent()];
+    }
+
+    it('returns the flat order, events, dispensary + dropoff pins, and a null driver when none is assigned', async () => {
+      const rig = makeService();
+      seedDetail(rig, { driverId: null, status: 'prepping' });
+
+      const detail = await rig.service.getDetailForUser(USER_ID, ORDER_ID);
+
+      expect(detail.order.id).toBe(ORDER_ID);
+      expect(detail.order.status).toBe('prepping');
+      expect(detail.order.items).toHaveLength(1);
+      expect(detail.events).toHaveLength(1);
+      expect(detail.driver).toBeNull();
+      expect(detail.dispensary).toEqual({
+        id: DISPENSARY_ID,
+        name: 'TC Cannabis',
+        latitude: 44.978,
+        longitude: -93.265,
+      });
+      expect(detail.dropoff).toEqual({
+        latitude: 44.953,
+        longitude: -93.094,
+        line1: '345 Park Ave',
+        line2: 'Apt 4B',
+        city: 'St Paul',
+        state: 'MN',
+        postalCode: '55102',
+        instructions: 'Leave with doorman',
+      });
+    });
+
+    it('resolves the privacy-minimal driver card once a driver is assigned', async () => {
+      const rig = makeService();
+      seedDetail(rig, { driverId: DRIVER_USER_ID, status: 'en_route_dropoff' });
+      rig.users.seed(makeDriverUser());
+      rig.drivers.seed(makeDriver());
+
+      const detail = await rig.service.getDetailForUser(USER_ID, ORDER_ID);
+
+      expect(detail.driver).toEqual({
+        id: DRIVER_ID,
+        displayName: 'Sam J.',
+        avatarKey: null,
+        vehicleSummary: 'Silver 2021 Toyota Prius',
+        maskedPhone: '••• ••• 4321',
+      });
+    });
+
+    it('returns a null driver when the driver user row has vanished', async () => {
+      const rig = makeService();
+      seedDetail(rig, { driverId: DRIVER_USER_ID });
+      // users not seeded → loadDriverProfile returns null
+      rig.drivers.seed(makeDriver());
+
+      const detail = await rig.service.getDetailForUser(USER_ID, ORDER_ID);
+
+      expect(detail.driver).toBeNull();
+    });
+
+    it('surfaces 404 when the order belongs to another user (no leak)', async () => {
+      const rig = makeService();
+      seedDetail(rig, { userId: OTHER_USER_ID });
+
+      await expect(rig.service.getDetailForUser(USER_ID, ORDER_ID)).rejects.toMatchObject({
+        code: 'ORDER_NOT_FOUND',
+        statusCode: 404,
+      });
+    });
+
+    it('surfaces 404 when the dispensary row is missing (no partial projection)', async () => {
+      const rig = makeService();
+      rig.repo.rows.set(ORDER_ID, makeOrder({ deliveryAddressSnapshot: SAMPLE_SNAPSHOT }));
+      rig.items.rows = [makeOrderItem()];
+      rig.events.rows = [makeOrderEvent()];
+      // dispensary not seeded
+
+      await expect(rig.service.getDetailForUser(USER_ID, ORDER_ID)).rejects.toMatchObject({
+        code: 'ORDER_NOT_FOUND',
+        statusCode: 404,
+      });
+    });
+  });
+
+  describe('rateForUser', () => {
+    it('records the rating and returns the flat order projection with items + ratedAt stamped', async () => {
+      const rig = makeService();
+      rig.repo.rows.set(ORDER_ID, makeOrder({ status: 'delivered' }));
+      rig.items.rows = [makeOrderItem()];
+
+      const order = await rig.service.rateForUser(USER_ID, ORDER_ID, {
+        rating: 5,
+        review: 'great',
+      });
+
+      expect(order.id).toBe(ORDER_ID);
+      expect(order.status).toBe('delivered');
+      expect(order.items).toHaveLength(1);
+      expect(rig.repo.lastUpdatePatch).toEqual({
+        ratedAt: PINNED_NOW,
+        customerRating: 5,
+        customerReview: 'great',
+      });
+    });
+
+    it('surfaces 404 for another user’s order without recording a rating', async () => {
+      const rig = makeService();
+      rig.repo.rows.set(ORDER_ID, makeOrder({ userId: OTHER_USER_ID, status: 'delivered' }));
+
+      await expect(rig.service.rateForUser(USER_ID, ORDER_ID, { rating: 5 })).rejects.toMatchObject(
+        { code: 'ORDER_NOT_FOUND' },
+      );
+      expect(rig.repo.lastUpdatePatch).toBeNull();
     });
   });
 });

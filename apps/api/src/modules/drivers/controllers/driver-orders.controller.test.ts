@@ -32,7 +32,9 @@ import type {
   DriverIdScanSessionResponse,
 } from '../../identity-verification/dto/index.js';
 import type {
+  DriverArriveRequest,
   DriverDeliveryConfirmRequest,
+  DriverDepartRequest,
   DriverOrderDetailResponse,
   DriverPickupConfirmRequest,
 } from '../dto/index.js';
@@ -142,6 +144,16 @@ class FakeDriverOrdersService {
     orderId: string;
     body: DriverDeliveryConfirmRequest;
   }[] = [];
+  public departCalls: {
+    driverUserId: string;
+    orderId: string;
+    body: DriverDepartRequest;
+  }[] = [];
+  public arriveCalls: {
+    driverUserId: string;
+    orderId: string;
+    body: DriverArriveRequest;
+  }[] = [];
 
   getForDriver = (driverUserId: string, orderId: string): Promise<DriverOrderDetailResponse> => {
     this.getCalls.push({ driverUserId, orderId });
@@ -154,6 +166,24 @@ class FakeDriverOrdersService {
     body: DriverPickupConfirmRequest,
   ): Promise<DriverOrderDetailResponse> => {
     this.pickupCalls.push({ driverUserId, orderId, body });
+    return Promise.resolve(DETAIL);
+  };
+
+  confirmDeparture = (
+    driverUserId: string,
+    orderId: string,
+    body: DriverDepartRequest,
+  ): Promise<DriverOrderDetailResponse> => {
+    this.departCalls.push({ driverUserId, orderId, body });
+    return Promise.resolve(DETAIL);
+  };
+
+  confirmArrival = (
+    driverUserId: string,
+    orderId: string,
+    body: DriverArriveRequest,
+  ): Promise<DriverOrderDetailResponse> => {
+    this.arriveCalls.push({ driverUserId, orderId, body });
     return Promise.resolve(DETAIL);
   };
 
@@ -252,6 +282,30 @@ describe('DriverOrdersController', () => {
     await controller.pickupConfirm(PRINCIPAL, ORDER_ID, body);
 
     expect(service.pickupCalls[0]?.body).toEqual({ location: null });
+  });
+
+  it('POST /:id/depart forwards the principal userId, path param, and body', async () => {
+    const { controller, service } = makeController();
+    const body: DriverDepartRequest = { location: PICKUP_BODY.location };
+
+    const result = await controller.depart(PRINCIPAL, ORDER_ID, body);
+
+    expect(result).toBe(DETAIL);
+    expect(service.departCalls).toEqual([
+      { driverUserId: DRIVER_USER_ID, orderId: ORDER_ID, body },
+    ]);
+  });
+
+  it('POST /:id/arrive forwards the principal userId, path param, and body', async () => {
+    const { controller, service } = makeController();
+    const body: DriverArriveRequest = { location: DELIVERY_BODY.location };
+
+    const result = await controller.arrive(PRINCIPAL, ORDER_ID, body);
+
+    expect(result).toBe(DETAIL);
+    expect(service.arriveCalls).toEqual([
+      { driverUserId: DRIVER_USER_ID, orderId: ORDER_ID, body },
+    ]);
   });
 
   it('POST /:id/delivery-confirm forwards the principal userId, path param, and body', async () => {

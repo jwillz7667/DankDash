@@ -1,41 +1,84 @@
 import Foundation
 import ComposableArchitecture
 import DankDashDomain
+import DankDashNetwork
 
-/// Forgot-password flow. The backend reset endpoint isn't part of the
-/// Phase 16 verified contract (it lands with the full account-management
-/// surface in Phase 17). The reducer is wired with the form validation
-/// and submission UX so the view layer can ship today; on submit it
-/// surfaces a generic "check your email" confirmation without making a
-/// network call, deferring the actual request to a follow-up phase.
+/// Two-step password reset against the backend reset surface:
+///
+///   1. `.request` — the user enters their account email; `submitTapped`
+///      calls `POST /v1/auth/forgot-password`. The server always answers 202
+///      (enumeration-safe), so on any success we advance to `.redeem` and ask
+///      the user to check their email for a code. We never confirm or deny
+///      that the address is registered.
+///   2. `.redeem` — the user enters the emailed code plus a new password;
+///      `resetTapped` calls `POST /v1/auth/reset-password`. A 204 advances to
+///      `.done`. The server is authoritative on code validity/expiry and its
+///      message surfaces verbatim on failure (e.g. an expired or used code).
+///   3. `.done` — terminal success; the only action is to return to sign-in.
+///
+/// The client mirrors the server's password policy (≥12 chars, ≥1 letter &
+/// ≥1 digit) and the 12-symbol code length for the submit-button gate only —
+/// the server re-validates and normalizes confusable glyphs/case itself.
 @Reducer
 public struct ForgotPasswordFeature: Sendable {
+  public enum Step: Equatable, Sendable {
+    case request
+    case redeem
+    case done
+  }
+
   @ObservableState
   public struct State: Equatable, Sendable {
+    public var step: Step
     public var email: String
+    public var code: String
+    public var newPassword: String
     public var isSubmitting: Bool
-    public var submitted: Bool
     public var error: String?
 
     public init(
+      step: Step = .request,
       email: String = "",
+      code: String = "",
+      newPassword: String = "",
       isSubmitting: Bool = false,
-      submitted: Bool = false,
       error: String? = nil
     ) {
+      self.step = step
       self.email = email
+      self.code = code
+      self.newPassword = newPassword
       self.isSubmitting = isSubmitting
-      self.submitted = submitted
       self.error = error
     }
 
     public var emailIsValid: Bool { Email(email) != nil }
-    public var canSubmit: Bool { !isSubmitting && !submitted && emailIsValid }
+    public var canRequest: Bool { !isSubmitting && step == .request && emailIsValid }
+
+    /// The display code is 12 Crockford symbols (`XXXX-XXXX-XXXX`). We gate on
+    /// 12 significant characters once separators/whitespace are stripped; the
+    /// server folds confusable glyphs and is authoritative on the actual value.
+    public var codeIsValid: Bool {
+      code.filter { !$0.isWhitespace && $0 != "-" }.count >= 12
+    }
+    public var passwordMeetsPolicy: Bool {
+      newPassword.count >= 12
+        && newPassword.contains(where: \.isLetter)
+        && newPassword.contains(where: \.isNumber)
+    }
+    public var canRedeem: Bool {
+      !isSubmitting && step == .redeem && codeIsValid && passwordMeetsPolicy
+    }
   }
 
   public enum Action: Equatable, Sendable {
     case emailChanged(String)
+    case codeChanged(String)
+    case newPasswordChanged(String)
     case submitTapped
+    case resetTapped
+    case requestResponse(Result<EmptyResponse, APIErrorBox>)
+    case resetResponse(Result<EmptyResponse, APIErrorBox>)
     case dismissTapped
     case delegate(Delegate)
 
@@ -44,6 +87,8 @@ public struct ForgotPasswordFeature: Sendable {
       case dismissed
     }
   }
+
+  @Dependency(\.authAPIClient) var auth
 
   public init() {}
 
@@ -55,12 +100,69 @@ public struct ForgotPasswordFeature: Sendable {
         state.error = nil
         return .none
 
+      case .codeChanged(let value):
+        state.code = value
+        state.error = nil
+        return .none
+
+      case .newPasswordChanged(let value):
+        state.newPassword = value
+        state.error = nil
+        return .none
+
       case .submitTapped:
-        guard state.canSubmit else { return .none }
-        // Phase 17 will wire the real /v1/auth/reset-password endpoint;
-        // until then the UX confirms-by-default to avoid leaking which
-        // emails exist in the system (standard password-reset hygiene).
-        state.submitted = true
+        guard state.canRequest else { return .none }
+        state.isSubmitting = true
+        state.error = nil
+        let request = ForgotPasswordRequestDTO(email: state.email.lowercased())
+        return .run { send in
+          do {
+            let response = try await auth.forgotPassword(request)
+            await send(.requestResponse(.success(response)))
+          } catch {
+            await send(.requestResponse(.failure(APIErrorBox(error))))
+          }
+        }
+
+      case .requestResponse(.success):
+        state.isSubmitting = false
+        state.step = .redeem
+        return .none
+
+      case .requestResponse(.failure(let box)):
+        state.isSubmitting = false
+        state.error = box.userFacingMessage(
+          default: "We couldn't start your reset. Try again."
+        )
+        return .none
+
+      case .resetTapped:
+        guard state.canRedeem else { return .none }
+        state.isSubmitting = true
+        state.error = nil
+        let request = ResetPasswordRequestDTO(code: state.code, newPassword: state.newPassword)
+        return .run { send in
+          do {
+            let response = try await auth.resetPassword(request)
+            await send(.resetResponse(.success(response)))
+          } catch {
+            await send(.resetResponse(.failure(APIErrorBox(error))))
+          }
+        }
+
+      case .resetResponse(.success):
+        state.isSubmitting = false
+        state.step = .done
+        // The plaintext credential no longer needs to live in memory.
+        state.code = ""
+        state.newPassword = ""
+        return .none
+
+      case .resetResponse(.failure(let box)):
+        state.isSubmitting = false
+        state.error = box.userFacingMessage(
+          default: "We couldn't reset your password. Check your code and try again."
+        )
         return .none
 
       case .dismissTapped:

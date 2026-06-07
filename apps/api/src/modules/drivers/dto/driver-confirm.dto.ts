@@ -62,6 +62,39 @@ export type DriverPickupConfirmRequest = z.infer<typeof DriverPickupConfirmReque
 
 export class DriverPickupConfirmRequestDto extends createZodDto(DriverPickupConfirmRequestSchema) {}
 
+/**
+ * POST /v1/driver/orders/:id/depart — `picked_up` → `en_route_dropoff`.
+ * Driver has the bag and is leaving the dispensary for the customer.
+ * Same location-fix audit shape as pickup-confirm: the captured
+ * coordinate is the start-of-trip evidence on the append-only
+ * `order_events` row.
+ */
+export const DriverDepartRequestSchema = z
+  .object({
+    location: DriverLocationFixSchema.nullable(),
+  })
+  .strict();
+
+export type DriverDepartRequest = z.infer<typeof DriverDepartRequestSchema>;
+
+export class DriverDepartRequestDto extends createZodDto(DriverDepartRequestSchema) {}
+
+/**
+ * POST /v1/driver/orders/:id/arrive — `en_route_dropoff` →
+ * `arrived_at_dropoff`. Driver reached the customer's address; the next
+ * legal step is the (non-bypassable) ID-scan session. The captured
+ * coordinate proves arrival proximity for a future dispute.
+ */
+export const DriverArriveRequestSchema = z
+  .object({
+    location: DriverLocationFixSchema.nullable(),
+  })
+  .strict();
+
+export type DriverArriveRequest = z.infer<typeof DriverArriveRequestSchema>;
+
+export class DriverArriveRequestDto extends createZodDto(DriverArriveRequestSchema) {}
+
 export const DriverDeliveryConfirmRequestSchema = z
   .object({
     location: DriverLocationFixSchema.nullable(),

@@ -12,7 +12,11 @@ import { describe, expect, it } from 'vitest';
 import { DriverOffersController } from './driver-offers.controller.js';
 import type { DriverOffersService } from './driver-offers.service.js';
 import type { DriverContext } from '../context/driver-context.types.js';
-import type { DeclineOfferRequest, DispatchOfferResponse } from './dto/index.js';
+import type {
+  DeclineOfferRequest,
+  DispatchOfferResponse,
+  PendingOffersResponse,
+} from './dto/index.js';
 
 const CTX: DriverContext = {
   driverId: '01935f3d-0000-7000-8000-0000000000d1',
@@ -42,9 +46,19 @@ const DECLINED_OFFER: DispatchOfferResponse = {
   declineReason: 'too far',
 };
 
+const PENDING_OFFERS: PendingOffersResponse = {
+  offers: [{ ...ACCEPTED_OFFER, status: 'offered', respondedAt: null }],
+};
+
 class FakeOffersService {
   public acceptCalls: { ctx: DriverContext; id: string }[] = [];
   public declineCalls: { ctx: DriverContext; id: string; body: DeclineOfferRequest }[] = [];
+  public listPendingCalls: { ctx: DriverContext }[] = [];
+
+  listPending = (ctx: DriverContext): Promise<PendingOffersResponse> => {
+    this.listPendingCalls.push({ ctx });
+    return Promise.resolve(PENDING_OFFERS);
+  };
 
   accept = (ctx: DriverContext, id: string): Promise<DispatchOfferResponse> => {
     this.acceptCalls.push({ ctx, id });
@@ -60,6 +74,18 @@ class FakeOffersService {
     return Promise.resolve({ ...DECLINED_OFFER, declineReason: body.reason ?? null });
   };
 }
+
+describe('DriverOffersController.listPending', () => {
+  it('forwards the context to the service and returns the pending-offers envelope', async () => {
+    const svc = new FakeOffersService();
+    const controller = new DriverOffersController(svc as unknown as DriverOffersService);
+
+    const res = await controller.listPending(CTX);
+
+    expect(svc.listPendingCalls).toEqual([{ ctx: CTX }]);
+    expect(res).toEqual(PENDING_OFFERS);
+  });
+});
 
 describe('DriverOffersController.accept', () => {
   it('forwards the context + URL id to the service and returns the accepted offer', async () => {

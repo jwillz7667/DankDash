@@ -261,6 +261,10 @@ function nextStatusForEvent(event: TransitionRequest['event']): Order['status'] 
   switch (event) {
     case 'DRIVER_EN_ROUTE_PICKUP':
       return 'en_route_pickup';
+    case 'DRIVER_EN_ROUTE_DROPOFF':
+      return 'en_route_dropoff';
+    case 'DRIVER_ARRIVED':
+      return 'arrived_at_dropoff';
     case 'DRIVER_DELIVERED':
       return 'delivered';
     default:
@@ -455,6 +459,110 @@ describe('DriverOrdersService.confirmPickup', () => {
     await rig.service.confirmPickup(DRIVER_USER_ID, ORDER_ID, { location: null });
 
     expect(rig.transitions.calls[0]?.payload).toEqual({ location: null });
+  });
+});
+
+describe('DriverOrdersService.confirmDeparture', () => {
+  let rig: Rig;
+  beforeEach(() => {
+    rig = makeRig();
+  });
+
+  it('transitions to en_route_dropoff with the driver-supplied location payload', async () => {
+    seedHappyPath(rig, { status: 'picked_up' });
+    const location = {
+      latitude: 44.978,
+      longitude: -93.265,
+      accuracyMeters: 6.0,
+      capturedAt: '2026-05-15T20:40:00.000Z',
+    };
+
+    const result = await rig.service.confirmDeparture(DRIVER_USER_ID, ORDER_ID, { location });
+
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]).toEqual({
+      orderId: ORDER_ID,
+      event: 'DRIVER_EN_ROUTE_DROPOFF',
+      actor: { userId: DRIVER_USER_ID, role: 'driver' },
+      payload: { location },
+    });
+    expect(result.order.status).toBe('en_route_dropoff');
+  });
+
+  it('throws NotFoundError without calling transition when the driver does not own the order', async () => {
+    await expect(
+      rig.service.confirmDeparture(DRIVER_USER_ID, ORDER_ID, { location: null }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(rig.transitions.calls).toHaveLength(0);
+  });
+
+  it('propagates a 409 ConflictError from the state-machine guard (wrong from-state)', async () => {
+    seedHappyPath(rig, { status: 'driver_assigned' });
+    rig.transitions.throwError = new ConflictError(
+      'ORDER_STATE_INVALID',
+      'order is in status driver_assigned, expected one of [picked_up, en_route_dropoff]',
+      { orderId: ORDER_ID },
+    );
+
+    await expect(
+      rig.service.confirmDeparture(DRIVER_USER_ID, ORDER_ID, { location: null }),
+    ).rejects.toMatchObject({ code: 'ORDER_STATE_INVALID', statusCode: 409 });
+  });
+
+  it('accepts a null location and forwards it on the event payload', async () => {
+    seedHappyPath(rig, { status: 'picked_up' });
+
+    await rig.service.confirmDeparture(DRIVER_USER_ID, ORDER_ID, { location: null });
+
+    expect(rig.transitions.calls[0]?.payload).toEqual({ location: null });
+  });
+});
+
+describe('DriverOrdersService.confirmArrival', () => {
+  let rig: Rig;
+  beforeEach(() => {
+    rig = makeRig();
+  });
+
+  it('transitions to arrived_at_dropoff with the driver-supplied location payload', async () => {
+    seedHappyPath(rig, { status: 'en_route_dropoff' });
+    const location = {
+      latitude: 44.953,
+      longitude: -93.094,
+      accuracyMeters: 9.0,
+      capturedAt: '2026-05-15T20:58:00.000Z',
+    };
+
+    const result = await rig.service.confirmArrival(DRIVER_USER_ID, ORDER_ID, { location });
+
+    expect(rig.transitions.calls).toHaveLength(1);
+    expect(rig.transitions.calls[0]).toEqual({
+      orderId: ORDER_ID,
+      event: 'DRIVER_ARRIVED',
+      actor: { userId: DRIVER_USER_ID, role: 'driver' },
+      payload: { location },
+    });
+    expect(result.order.status).toBe('arrived_at_dropoff');
+  });
+
+  it('throws NotFoundError without calling transition when the driver does not own the order', async () => {
+    await expect(
+      rig.service.confirmArrival(DRIVER_USER_ID, ORDER_ID, { location: null }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(rig.transitions.calls).toHaveLength(0);
+  });
+
+  it('propagates a 409 ConflictError from the state-machine guard (wrong from-state)', async () => {
+    seedHappyPath(rig, { status: 'picked_up' });
+    rig.transitions.throwError = new ConflictError(
+      'ORDER_STATE_INVALID',
+      'order is in status picked_up, expected one of [en_route_dropoff, arrived_at_dropoff]',
+      { orderId: ORDER_ID },
+    );
+
+    await expect(
+      rig.service.confirmArrival(DRIVER_USER_ID, ORDER_ID, { location: null }),
+    ).rejects.toMatchObject({ code: 'ORDER_STATE_INVALID', statusCode: 409 });
   });
 });
 

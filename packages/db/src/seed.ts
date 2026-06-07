@@ -259,6 +259,9 @@ interface SeedDispensary {
   readonly posProvider: PosProvider;
   readonly location: GeoPoint;
   readonly deliveryPolygon: GeoPolygon;
+  // numeric(3,2) — passed through as a string so Drizzle doesn't lose precision.
+  readonly ratingAvg: string;
+  readonly ratingCount: number;
 }
 
 // Keys must be the 3-letter lowercase weekday codes the @dankdash/dispensaries
@@ -287,6 +290,8 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     phone: '+16125558501',
     email: 'hello@northloopcannabis.example.com',
     posProvider: 'dutchie',
+    ratingAvg: '4.80',
+    ratingCount: 214,
     location: { type: 'Point', coordinates: [-93.273, 44.987] },
     deliveryPolygon: {
       type: 'Polygon',
@@ -313,6 +318,8 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     phone: '+16515558502',
     email: 'hello@capitolcannabis.example.com',
     posProvider: 'flowhub',
+    ratingAvg: '4.60',
+    ratingCount: 156,
     location: { type: 'Point', coordinates: [-93.09, 44.954] },
     deliveryPolygon: {
       type: 'Polygon',
@@ -339,6 +346,8 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     phone: '+17635558503',
     email: 'hello@grovecannabis.example.com',
     posProvider: 'treez',
+    ratingAvg: '4.70',
+    ratingCount: 89,
     location: { type: 'Point', coordinates: [-93.456, 45.073] },
     deliveryPolygon: {
       type: 'Polygon',
@@ -1423,6 +1432,8 @@ export async function seed(opts: SeedOptions): Promise<SeedSummary> {
       hoursJson: HOURS_JSON,
       phone: disp.phone,
       email: disp.email,
+      ratingAvg: disp.ratingAvg,
+      ratingCount: disp.ratingCount,
       isAcceptingOrders: true,
       status: 'active',
       createdAt: days(-365),

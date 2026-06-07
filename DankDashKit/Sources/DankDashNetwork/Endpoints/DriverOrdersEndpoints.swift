@@ -7,6 +7,8 @@ import Foundation
 ///
 ///   GET  /v1/driver/orders/:id            — denormalized route view
 ///   POST /v1/driver/orders/:id/pickup-confirm
+///   POST /v1/driver/orders/:id/depart
+///   POST /v1/driver/orders/:id/arrive
 ///   POST /v1/driver/orders/:id/delivery-confirm
 ///
 /// All three require an authenticated driver JWT. The `id` segment is
@@ -37,6 +39,38 @@ public enum DriverOrdersEndpoints {
     Endpoint(
       method: .POST,
       path: "v1/driver/orders/\(id.uuidString.lowercased())/pickup-confirm",
+      body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
+
+  /// Transitions the order `picked_up → en_route_dropoff` once the
+  /// driver leaves the store with the package. The response is the full
+  /// refreshed order detail; the reducer flips to the dropoff leg and
+  /// recalculates directions from the latest fix.
+  public static func depart(
+    id: UUID,
+    body: DriverDepartRequestDTO
+  ) -> Endpoint<DriverOrderDetailResponseDTO> {
+    Endpoint(
+      method: .POST,
+      path: "v1/driver/orders/\(id.uuidString.lowercased())/depart",
+      body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
+
+  /// Transitions the order `en_route_dropoff → arrived_at_dropoff` when
+  /// the driver reaches the customer. This MUST land before the ID-scan
+  /// session opens — `id-scan-session` 409s from any earlier state — so
+  /// the reducer awaits this response before delegating to the scan.
+  public static func arrive(
+    id: UUID,
+    body: DriverArriveRequestDTO
+  ) -> Endpoint<DriverOrderDetailResponseDTO> {
+    Endpoint(
+      method: .POST,
+      path: "v1/driver/orders/\(id.uuidString.lowercased())/arrive",
       body: AnyEncodableBody(body),
       requiresAuth: true
     )

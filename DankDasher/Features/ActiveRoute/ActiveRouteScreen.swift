@@ -6,10 +6,12 @@ import DankDashFeatures
 
 /// Active-delivery route surface. The driver lands here after accepting
 /// an offer — top half is the live map (dispensary + drop-off + driver
-/// pins), bottom half is the leg-specific card (PickupCardView while
-/// heading to the dispensary, DropoffCardView once the pickup is
-/// confirmed). The current turn-by-turn step is overlaid above the
-/// card as a thin instruction banner whenever directions are loaded.
+/// pins), bottom half is the phase-specific card: PickupCardView heading
+/// to the dispensary, a handoff-wait card while the vendor confirms the
+/// physical handoff, a Start-Trip card once picked up, then
+/// DropoffCardView heading to the customer. The current turn-by-turn
+/// step is overlaid above the card as a thin instruction banner whenever
+/// directions are loaded.
 ///
 /// The screen is the SwiftUI shell for ``ActiveRouteFeature`` — it
 /// owns the `.task` / `.onDisappear` lifecycle hooks and routes
@@ -107,13 +109,17 @@ struct ActiveRouteScreen: View {
           isConfirming: store.confirmPickupInFlight,
           onConfirm: { store.send(.confirmPickupTapped) }
         )
+      case .awaitingHandoff:
+        handoffWaitCard(route)
+      case .readyToDepart:
+        departCard(route)
       case .enRouteToDropoff:
         DropoffCardView(
           customer: route.customer,
           address: route.dropoff,
           etaMinutes: etaMinutes,
           distanceMiles: distanceMiles,
-          isArriving: false,
+          isArriving: store.arriveInFlight,
           onArrived: { store.send(.arrivedTapped) }
         )
       case .awaitingIdScan, .completed:
@@ -131,6 +137,106 @@ struct ActiveRouteScreen: View {
           .clipShape(Capsule())
       }
     }
+  }
+
+  /// Shown while the order sits at `en_route_pickup` waiting for the
+  /// vendor to confirm the physical handoff (`picked_up`). No CTA — the
+  /// reducer flips to ``ActiveRouteFeature/LocalPhase/readyToDepart`` the
+  /// instant the handoff is observed over the socket or the poll.
+  private func handoffWaitCard(_ route: ActiveRoute) -> some View {
+    VStack(alignment: .leading, spacing: DankSpacing.sm) {
+      HStack(alignment: .center, spacing: DankSpacing.sm) {
+        Image(systemName: "shippingbox.fill")
+          .font(DankFont.headline)
+          .foregroundStyle(DankColor.primary)
+          .frame(width: 28, height: 28)
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Waiting for handoff")
+            .font(DankFont.headline)
+            .foregroundStyle(DankColor.Text.onBackground)
+          Text(route.dispensary.name)
+            .font(DankFont.bodySmall)
+            .foregroundStyle(DankColor.Text.secondary)
+        }
+        Spacer(minLength: 0)
+        ProgressView()
+          .progressViewStyle(.circular)
+          .tint(DankColor.primary)
+      }
+      Text("The pickup unlocks the moment staff confirm the handoff in their portal.")
+        .font(DankFont.bodySmall)
+        .foregroundStyle(DankColor.Text.muted)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(DankSpacing.lg)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(DankColor.background)
+    .clipShape(RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous)
+        .strokeBorder(DankColor.primary.opacity(0.12), lineWidth: 1)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Waiting for \(route.dispensary.name) to hand off the order")
+  }
+
+  /// Shown at `picked_up`: the bag is in the car. The driver taps Start
+  /// Trip to fire `depart` (→ `en_route_dropoff`) and begin navigating to
+  /// the customer.
+  private func departCard(_ route: ActiveRoute) -> some View {
+    VStack(alignment: .leading, spacing: DankSpacing.md) {
+      HStack(alignment: .top, spacing: DankSpacing.sm) {
+        Image(systemName: "checkmark.seal.fill")
+          .font(DankFont.headline)
+          .foregroundStyle(DankColor.Semantic.success)
+          .frame(width: 28, height: 28)
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Order picked up")
+            .font(DankFont.headline)
+            .foregroundStyle(DankColor.Text.onBackground)
+          Text("Deliver to \(route.customer.displayName)")
+            .font(DankFont.bodySmall)
+            .foregroundStyle(DankColor.Text.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      Text(route.dropoff.oneLine)
+        .font(DankFont.body)
+        .foregroundStyle(DankColor.Text.secondary)
+        .multilineTextAlignment(.leading)
+        .accessibilityLabel("Drop-off address: \(route.dropoff.oneLine)")
+      departButton(route)
+    }
+    .padding(DankSpacing.lg)
+    .background(DankColor.background)
+    .clipShape(RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous)
+        .strokeBorder(DankColor.primary.opacity(0.12), lineWidth: 1)
+    )
+  }
+
+  private func departButton(_ route: ActiveRoute) -> some View {
+    Button {
+      store.send(.departTapped)
+    } label: {
+      ZStack {
+        Text("Start Trip")
+          .font(DankFont.headline)
+          .foregroundStyle(DankColor.Text.onPrimary)
+          .opacity(store.departInFlight ? 0 : 1)
+        if store.departInFlight {
+          ProgressView()
+            .progressViewStyle(.circular)
+            .tint(DankColor.Text.onPrimary)
+        }
+      }
+      .frame(maxWidth: .infinity, minHeight: 52)
+      .background(DankColor.primary)
+      .clipShape(Capsule())
+    }
+    .disabled(store.departInFlight)
+    .accessibilityLabel("Start trip to \(route.customer.displayName)")
   }
 
   private var etaMinutes: Int? {

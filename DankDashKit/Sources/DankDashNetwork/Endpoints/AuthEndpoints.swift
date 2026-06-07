@@ -31,6 +31,28 @@ public enum AuthEndpoints {
     )
   }
 
+  /// Starts the email-delivered reset. Public; always answered 202 with an
+  /// empty body, so the response type is `EmptyResponse`.
+  public static func forgotPassword(_ body: ForgotPasswordRequestDTO) -> Endpoint<EmptyResponse> {
+    Endpoint(
+      method: .POST,
+      path: "v1/auth/forgot-password",
+      body: AnyEncodableBody(body),
+      requiresAuth: false
+    )
+  }
+
+  /// Redeems a reset code and sets a new password. Public; 204 No Content on
+  /// success (empty body → `EmptyResponse`).
+  public static func resetPassword(_ body: ResetPasswordRequestDTO) -> Endpoint<EmptyResponse> {
+    Endpoint(
+      method: .POST,
+      path: "v1/auth/reset-password",
+      body: AnyEncodableBody(body),
+      requiresAuth: false
+    )
+  }
+
   /// Refresh is special — APIClient drives it internally rather than via
   /// the public Endpoint pipeline, so we don't expose it on
   /// `AuthEndpoints`. Logout is authenticated.

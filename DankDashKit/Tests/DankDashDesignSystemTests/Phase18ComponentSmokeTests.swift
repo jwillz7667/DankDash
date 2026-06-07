@@ -354,6 +354,16 @@ final class Phase18ComponentSmokeTests: XCTestCase {
         onSkip: {}
       ).body
     )
+    XCTAssertNotNil(
+      RatingSheet(
+        rating: Binding(get: { rating5 }, set: { rating5 = $0 }),
+        comment: Binding(get: { filledComment }, set: { filledComment = $0 }),
+        isSubmitting: false,
+        errorMessage: "Couldn't submit rating. Try again.",
+        onSubmit: {},
+        onSkip: {}
+      ).body
+    )
   }
 
   // MARK: - Fixtures

@@ -153,6 +153,49 @@ export const sessions = pgTable(
   ],
 );
 
+/**
+ * Email-delivered password-reset tokens.
+ *
+ * The user receives a high-entropy code by email; we never store the code
+ * itself — only its SHA-256 (`code_hash`, a bytea mirroring the
+ * `sessions.refresh_token_hash` pattern). Lookups are by hash, so the unique
+ * constraint also guarantees at most one row per code.
+ *
+ * Defence in depth against a stolen/guessed code:
+ *   - high entropy — the code is 60 bits of CSPRNG output, so an online guess
+ *                    effectively never finds a row and an offline grind of the
+ *                    hash cannot finish inside the TTL.
+ *   - `expires_at` — short TTL (the service uses 15 minutes).
+ *   - `used_at`    — single-use; also stamped on every still-active token for
+ *                    a user when they request a fresh one, so a superseded
+ *                    code can never be redeemed.
+ *
+ * `user_id` cascade-deletes with the account. `requested_ip` is retained for
+ * abuse triage only and is never surfaced to clients.
+ */
+export const passwordResetTokens = pgTable(
+  'password_reset_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    codeHash: bytea('code_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true, mode: 'date' }),
+    requestedIp: inet('requested_ip'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('password_reset_tokens_user_active_idx')
+      .on(table.userId)
+      .where(sql`${table.usedAt} IS NULL`),
+    index('password_reset_tokens_expires_idx')
+      .on(table.expiresAt)
+      .where(sql`${table.usedAt} IS NULL`),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 
@@ -171,3 +214,5 @@ export type UserIdDocument = typeof userIdDocuments.$inferSelect;
 export type NewUserIdDocument = typeof userIdDocuments.$inferInsert;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
+export type NewPasswordResetToken = typeof passwordResetTokens.$inferInsert;

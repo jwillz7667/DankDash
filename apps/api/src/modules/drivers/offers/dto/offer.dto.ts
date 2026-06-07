@@ -47,3 +47,18 @@ export const DispatchOfferResponseSchema = z
   .strict();
 export type DispatchOfferResponse = z.infer<typeof DispatchOfferResponseSchema>;
 export class DispatchOfferResponseDto extends createZodDto(DispatchOfferResponseSchema) {}
+
+/**
+ * `GET /v1/driver/offers/pending` response. Wrapped in an `{ offers }`
+ * envelope (not a bare array) so a future cursor / next-page metadata
+ * addition is non-breaking — the iOS `PendingOffersResponseDTO` decodes
+ * the same envelope. Ordered newest-first by `offeredAt`; the server has
+ * already filtered to this driver's `offered`, non-expired rows.
+ */
+export const PendingOffersResponseSchema = z
+  .object({
+    offers: z.array(DispatchOfferResponseSchema),
+  })
+  .strict();
+export type PendingOffersResponse = z.infer<typeof PendingOffersResponseSchema>;
+export class PendingOffersResponseDto extends createZodDto(PendingOffersResponseSchema) {}

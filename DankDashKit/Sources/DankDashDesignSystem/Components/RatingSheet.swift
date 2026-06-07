@@ -3,13 +3,14 @@ import SwiftUI
 /// Post-delivery rating sheet. Surfaced 5 minutes after `delivered`
 /// by `OrderTrackingFeature` (see plan's "Rating timer"). Stateless —
 /// the parent reducer owns `rating` + `comment` so the sheet can be
-/// reopened without losing partial state. Submit is wired to a stub
-/// endpoint in Phase 18; the real PATCH lands in Phase 19+ (see
-/// "Deferred" in the plan).
+/// reopened without losing partial state. Submit posts to
+/// `POST /v1/orders/:id/rate`; `isSubmitting` drives the spinner while
+/// the request is in flight.
 public struct RatingSheet: View {
   @Binding private var rating: Int
   @Binding private var comment: String
   private let isSubmitting: Bool
+  private let errorMessage: String?
   private let onSubmit: () -> Void
   private let onSkip: () -> Void
 
@@ -17,12 +18,14 @@ public struct RatingSheet: View {
     rating: Binding<Int>,
     comment: Binding<String>,
     isSubmitting: Bool = false,
+    errorMessage: String? = nil,
     onSubmit: @escaping () -> Void,
     onSkip: @escaping () -> Void
   ) {
     self._rating = rating
     self._comment = comment
     self.isSubmitting = isSubmitting
+    self.errorMessage = errorMessage
     self.onSubmit = onSubmit
     self.onSkip = onSkip
   }
@@ -32,11 +35,31 @@ public struct RatingSheet: View {
       header
       starRow
       commentField
+      if let errorMessage {
+        errorLine(errorMessage)
+      }
       Spacer(minLength: 0)
       actions
     }
     .padding(DankSpacing.lg)
     .background(DankColor.cream)
+  }
+
+  private func errorLine(_ message: String) -> some View {
+    HStack(alignment: .top, spacing: DankSpacing.xs) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(DankColor.Semantic.danger)
+        .accessibilityHidden(true)
+      Text(message)
+        .font(DankFont.bodySmall)
+        .foregroundStyle(DankColor.Text.primary)
+      Spacer(minLength: 0)
+    }
+    .padding(DankSpacing.sm)
+    .background(DankColor.Semantic.danger.opacity(0.08))
+    .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Error: \(message)")
   }
 
   private var header: some View {

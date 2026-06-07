@@ -35,12 +35,20 @@ final class OrderTrackingFeatureTests: XCTestCase {
       $0.order = detail.order
       $0.events = detail.events
       $0.driver = detail.driver
+      $0.dispensaryName = detail.dispensaryName
+      $0.dispensaryCoordinate = detail.dispensaryCoordinate
+      $0.dropoffCoordinate = detail.dropoffCoordinate
+      $0.dropoffLabel = detail.dropoffLabel
     }
 
     let recorded = await cacheRecorder.snapshot()
     XCTAssertEqual(recorded.count, 1)
     XCTAssertEqual(recorded.first?.orderId, orderId)
     XCTAssertEqual(recorded.first?.cached.order, detail.order)
+    // The map-point snapshot rides along into the cache write so a cold
+    // start can render the map before the next network refresh.
+    XCTAssertEqual(recorded.first?.cached.dropoffCoordinate, detail.dropoffCoordinate)
+    XCTAssertEqual(recorded.first?.cached.dispensaryCoordinate, detail.dispensaryCoordinate)
 
     await store.send(.onDisappear)
   }
@@ -82,6 +90,10 @@ final class OrderTrackingFeatureTests: XCTestCase {
       $0.order = networkDetail.order
       $0.events = networkDetail.events
       $0.driver = networkDetail.driver
+      $0.dispensaryName = networkDetail.dispensaryName
+      $0.dispensaryCoordinate = networkDetail.dispensaryCoordinate
+      $0.dropoffCoordinate = networkDetail.dropoffCoordinate
+      $0.dropoffLabel = networkDetail.dropoffLabel
     }
 
     await store.send(.onDisappear)
@@ -300,6 +312,10 @@ final class OrderTrackingFeatureTests: XCTestCase {
       $0.order = updated.order
       $0.events = updated.events
       $0.driver = updated.driver
+      $0.dispensaryName = updated.dispensaryName
+      $0.dispensaryCoordinate = updated.dispensaryCoordinate
+      $0.dropoffCoordinate = updated.dropoffCoordinate
+      $0.dropoffLabel = updated.dropoffLabel
     }
     let firstCount = await fetchRecorder.snapshot()
     XCTAssertEqual(firstCount, 1)
@@ -384,6 +400,10 @@ final class OrderTrackingFeatureTests: XCTestCase {
       $0.order = updated.order
       $0.events = updated.events
       $0.driver = updated.driver
+      $0.dispensaryName = updated.dispensaryName
+      $0.dispensaryCoordinate = updated.dispensaryCoordinate
+      $0.dropoffCoordinate = updated.dropoffCoordinate
+      $0.dropoffLabel = updated.dropoffLabel
     }
     let count = await fetchRecorder.snapshot()
     XCTAssertEqual(count, 1, "polling should fire exactly one fetch per tick")
@@ -458,6 +478,10 @@ final class OrderTrackingFeatureTests: XCTestCase {
       $0.order = detail.order
       $0.events = detail.events
       $0.driver = detail.driver
+      $0.dispensaryName = detail.dispensaryName
+      $0.dispensaryCoordinate = detail.dispensaryCoordinate
+      $0.dropoffCoordinate = detail.dropoffCoordinate
+      $0.dropoffLabel = detail.dropoffLabel
     }
 
     await clock.advance(by: .seconds(300))
@@ -526,25 +550,385 @@ final class OrderTrackingFeatureTests: XCTestCase {
     }
   }
 
-  func test_mapVisible_isTrueOnlyWithDriverAndNonTerminalOrder() {
+  func test_ratingChanged_clampsToServerRange_andCommentIsStored() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(orderId: orderId)
+    ) {
+      OrderTrackingFeature()
+    }
+
+    await store.send(.ratingChanged(4)) { $0.rating = 4 }
+    await store.send(.ratingChanged(9)) { $0.rating = 5 }
+    await store.send(.ratingChanged(-2)) { $0.rating = 0 }
+    await store.send(.ratingCommentChanged("Great driver")) {
+      $0.ratingComment = "Great driver"
+    }
+  }
+
+  func test_submitRatingTapped_isIgnored_withoutStars() async {
+    let orderId = UUID()
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(
+        orderId: orderId,
+        order: makeOrder(id: orderId, status: .delivered),
+        ratingDue: true,
+        rating: 0
+      )
+    ) {
+      OrderTrackingFeature()
+    }
+
+    // No stars selected → guard short-circuits, no effect, no state change.
+    await store.send(.submitRatingTapped)
+  }
+
+  func test_submitRating_success_updatesOrder_dismissesSheet_retiresPrompt() async {
+    let orderId = UUID()
+    let delivered = makeOrder(id: orderId, status: .delivered)
+    let probe = RatingProbe()
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(
+        orderId: orderId,
+        order: delivered,
+        ratingDue: true,
+        rating: 4,
+        ratingComment: "  Smooth and friendly  "
+      )
+    ) {
+      OrderTrackingFeature()
+    } withDependencies: {
+      $0.ordersAPIClient.rateOrder = { id, input in
+        await probe.record(orderId: id, input: input)
+        return delivered
+      }
+    }
+
+    await store.send(.submitRatingTapped) {
+      $0.isSubmittingRating = true
+    }
+    await store.receive(\.ratingSubmitted.success) {
+      $0.isSubmittingRating = false
+      $0.ratingSubmitted = true
+      $0.ratingDue = false
+      $0.order = delivered
+    }
+
+    let observed = await probe.snapshot()
+    XCTAssertEqual(observed?.orderId, orderId)
+    XCTAssertEqual(observed?.input.rating, 4)
+    // Comment is trimmed before it goes on the wire.
+    XCTAssertEqual(observed?.input.review, "Smooth and friendly")
+  }
+
+  func test_submitRating_blankComment_sendsNilReview() async {
+    let orderId = UUID()
+    let delivered = makeOrder(id: orderId, status: .delivered)
+    let probe = RatingProbe()
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(
+        orderId: orderId,
+        order: delivered,
+        ratingDue: true,
+        rating: 5,
+        ratingComment: "   "
+      )
+    ) {
+      OrderTrackingFeature()
+    } withDependencies: {
+      $0.ordersAPIClient.rateOrder = { id, input in
+        await probe.record(orderId: id, input: input)
+        return delivered
+      }
+    }
+
+    await store.send(.submitRatingTapped) {
+      $0.isSubmittingRating = true
+    }
+    await store.receive(\.ratingSubmitted.success) {
+      $0.isSubmittingRating = false
+      $0.ratingSubmitted = true
+      $0.ratingDue = false
+      $0.order = delivered
+    }
+
+    let observed = await probe.snapshot()
+    XCTAssertEqual(observed?.input.rating, 5)
+    XCTAssertNil(observed?.input.review, "whitespace-only comment must not become an empty review")
+  }
+
+  func test_submitRating_failure_surfacesError_andClearsSubmitting() async {
+    let orderId = UUID()
+    let delivered = makeOrder(id: orderId, status: .delivered)
+
+    struct StubError: LocalizedError {
+      var errorDescription: String? { "Couldn't submit rating" }
+    }
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(
+        orderId: orderId,
+        order: delivered,
+        ratingDue: true,
+        rating: 3
+      )
+    ) {
+      OrderTrackingFeature()
+    } withDependencies: {
+      $0.ordersAPIClient.rateOrder = { _, _ in throw StubError() }
+    }
+
+    await store.send(.submitRatingTapped) {
+      $0.isSubmittingRating = true
+    }
+    await store.receive(\.ratingSubmitted.failure) {
+      $0.isSubmittingRating = false
+      // Failure surfaces in the rating-specific channel, not the tracking
+      // banner that sits behind the sheet.
+      $0.ratingError = "Couldn't submit rating"
+      // Sheet stays open so the user can retry.
+      XCTAssertTrue($0.ratingDue)
+      XCTAssertNil($0.error)
+    }
+
+    // Dismissing wipes the inline error so a re-open starts clean.
+    await store.send(.dismissRatingSheet) {
+      $0.ratingDue = false
+      $0.ratingError = nil
+    }
+  }
+
+  func test_afterRatingSubmitted_deliveredTransition_doesNotReschedulePrompt() async {
+    let orderId = UUID()
+    let order = makeOrder(id: orderId, status: .enRouteDropoff)
+    let clock = TestClock()
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(
+        orderId: orderId,
+        order: order,
+        ratingSubmitted: true
+      )
+    ) {
+      OrderTrackingFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+    }
+
+    let deliveredAt = Date(timeIntervalSinceReferenceDate: 10_000)
+    await store.send(
+      .realtimeEventReceived(
+        .statusChanged(orderId: orderId, status: .delivered, occurredAt: deliveredAt)
+      )
+    ) {
+      $0.order = order.withStatus(.delivered, at: deliveredAt)
+      $0.events.append(
+        OrderEvent(
+          id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+          orderId: order.id,
+          eventType: "status_changed",
+          actorUserId: nil,
+          actorRole: "system",
+          payload: .object(["status": .string("delivered")]),
+          occurredAt: deliveredAt
+        )
+      )
+    }
+
+    // Already rated this session → no timer scheduled, so no prompt fires.
+    await clock.advance(by: .seconds(600))
+  }
+
+  func test_mapVisible_isTrueOnceDropoffKnownAndOrderNonTerminal() {
     let orderId = UUID()
     var state = OrderTrackingFeature.State(orderId: orderId)
-    XCTAssertFalse(state.mapVisible)
+    XCTAssertFalse(state.mapVisible, "no order, no drop-off")
 
     state.order = makeOrder(id: orderId, status: .enRouteDropoff)
-    XCTAssertFalse(state.mapVisible, "no driver yet")
+    XCTAssertFalse(state.mapVisible, "drop-off coordinate not loaded yet")
 
-    state.driver = DriverPublicProfile(
+    // The map shows on the drop-off coordinate alone — a driver pin is not
+    // required (the "here's where your order is going" affordance comes up
+    // before anyone is even assigned).
+    state.dropoffCoordinate = stubDropoffCoordinate
+    XCTAssertTrue(state.mapVisible, "drop-off known + non-terminal → map shows")
+
+    state.order = makeOrder(id: orderId, status: .delivered)
+    XCTAssertFalse(state.mapVisible, "terminal hides map even with a drop-off")
+  }
+
+  func test_cachedDetailLoaded_restoresMapPointsWhenPresent() async {
+    let orderId = UUID()
+    let cached = CachedOrderDetail(
+      order: makeOrder(id: orderId, status: .enRouteDropoff),
+      events: [],
+      driver: nil,
+      cachedAt: Date(timeIntervalSinceReferenceDate: 500),
+      dispensaryName: stubDispensaryName,
+      dispensaryCoordinate: stubDispensaryCoordinate,
+      dropoffCoordinate: stubDropoffCoordinate,
+      dropoffLabel: stubDropoffLabel
+    )
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(orderId: orderId)
+    ) {
+      OrderTrackingFeature()
+    }
+
+    await store.send(.cachedDetailLoaded(cached)) {
+      $0.order = cached.order
+      $0.events = cached.events
+      $0.driver = cached.driver
+      $0.dispensaryName = stubDispensaryName
+      $0.dispensaryCoordinate = stubDispensaryCoordinate
+      $0.dropoffCoordinate = stubDropoffCoordinate
+      $0.dropoffLabel = stubDropoffLabel
+    }
+    // A coordinate-bearing cache entry lights the map immediately on cold
+    // start, before the network refresh lands.
+    XCTAssertTrue(store.state.mapVisible)
+  }
+
+  func test_cachedDetailLoaded_legacyEntryWithoutCoords_leavesMapHidden() async {
+    let orderId = UUID()
+    // An entry written by a build that predates the map-point fields:
+    // every coord decodes to nil, so the map stays hidden until the
+    // network detail load fills it in.
+    let legacy = CachedOrderDetail(
+      order: makeOrder(id: orderId, status: .enRouteDropoff),
+      events: [],
+      driver: nil,
+      cachedAt: Date(timeIntervalSinceReferenceDate: 500)
+    )
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(orderId: orderId)
+    ) {
+      OrderTrackingFeature()
+    }
+
+    await store.send(.cachedDetailLoaded(legacy)) {
+      $0.order = legacy.order
+      $0.events = legacy.events
+      $0.driver = legacy.driver
+    }
+    XCTAssertFalse(store.state.mapVisible, "no drop-off coord on a legacy entry → no map")
+  }
+
+  func test_statusChangedIntoDriverState_withoutDriver_selfHealsViaRefetch() async {
+    let orderId = UUID()
+    let order = makeOrder(id: orderId, status: .awaitingDriver)
+    // The refetched detail carries the driver the missing `driver_assigned`
+    // event never delivered.
+    let assignedDriver = DriverPublicProfile(
+      id: UUID(),
+      displayName: "Jordan",
+      avatarKey: nil,
+      vehicleSummary: "Blue Subaru",
+      maskedPhone: "(***) ***-7788"
+    )
+    let refetched = makeDetail(orderId: orderId, status: .driverAssigned, driver: assignedDriver)
+    let changedAt = Date(timeIntervalSinceReferenceDate: 5_000)
+    let clock = TestClock()
+    let fetchRecorder = FetchCounter()
+
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(orderId: orderId, order: order)
+    ) {
+      OrderTrackingFeature()
+    } withDependencies: {
+      $0.ordersAPIClient.getOrder = { _ in
+        await fetchRecorder.bump()
+        return refetched
+      }
+      $0.orderCacheClient.writeDetail = { _, _ in }
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      $0.date.now = Date(timeIntervalSinceReferenceDate: 1_000)
+    }
+
+    await store.send(
+      .realtimeEventReceived(
+        .statusChanged(orderId: orderId, status: .driverAssigned, occurredAt: changedAt)
+      )
+    ) {
+      $0.order = order.withStatus(.driverAssigned, at: changedAt)
+      $0.events.append(
+        OrderEvent(
+          id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+          orderId: order.id,
+          eventType: "status_changed",
+          actorUserId: nil,
+          actorRole: "system",
+          payload: .object(["status": .string("driver_assigned")]),
+          occurredAt: changedAt
+        )
+      )
+    }
+
+    // The status bump into a driver-bearing state with no driver triggers a
+    // best-effort detail re-fetch that fills the driver in.
+    await store.receive(\.detailLoaded.success) {
+      $0.order = refetched.order
+      $0.events = refetched.events
+      $0.driver = assignedDriver
+      $0.dispensaryName = refetched.dispensaryName
+      $0.dispensaryCoordinate = refetched.dispensaryCoordinate
+      $0.dropoffCoordinate = refetched.dropoffCoordinate
+      $0.dropoffLabel = refetched.dropoffLabel
+    }
+    let fetches = await fetchRecorder.snapshot()
+    XCTAssertEqual(fetches, 1, "exactly one self-heal refetch")
+
+    await store.send(.onDisappear)
+  }
+
+  func test_statusChangedIntoDriverState_withDriverAlreadyPresent_doesNotRefetch() async {
+    let orderId = UUID()
+    let driver = DriverPublicProfile(
       id: UUID(),
       displayName: "Sam",
       avatarKey: nil,
       vehicleSummary: nil,
       maskedPhone: nil
     )
-    XCTAssertTrue(state.mapVisible)
+    let order = makeOrder(id: orderId, status: .driverAssigned)
+    let changedAt = Date(timeIntervalSinceReferenceDate: 6_000)
+    let clock = TestClock()
 
-    state.order = makeOrder(id: orderId, status: .delivered)
-    XCTAssertFalse(state.mapVisible, "terminal hides map")
+    let store = TestStore(
+      initialState: OrderTrackingFeature.State(orderId: orderId, order: order, driver: driver)
+    ) {
+      OrderTrackingFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      // No getOrder stub: if a refetch fired this would trap as unimplemented.
+    }
+
+    await store.send(
+      .realtimeEventReceived(
+        .statusChanged(orderId: orderId, status: .enRoutePickup, occurredAt: changedAt)
+      )
+    ) {
+      $0.order = order.withStatus(.enRoutePickup, at: changedAt)
+      $0.events.append(
+        OrderEvent(
+          id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
+          orderId: order.id,
+          eventType: "status_changed",
+          actorUserId: nil,
+          actorRole: "system",
+          payload: .object(["status": .string("en_route_pickup")]),
+          occurredAt: changedAt
+        )
+      )
+    }
+    // Driver already present → no self-heal effect, so nothing else fires.
   }
 
   func test_onAppear_isIdempotent_whenAlreadyLoading() async {
@@ -584,6 +968,14 @@ private func makeOrder(id: UUID, status: OrderStatus) -> Order {
   )
 }
 
+// Fixed map points shared by every `makeDetail` so the `.detailLoaded`
+// state-mutation assertions can reference them by name rather than
+// re-deriving the coordinate each time.
+private let stubDispensaryName = "Green Thumb Dispensary"
+private let stubDispensaryCoordinate = Coordinate(latitude: 44.9778, longitude: -93.2650)
+private let stubDropoffCoordinate = Coordinate(latitude: 44.9483, longitude: -93.2920)
+private let stubDropoffLabel = "123 Nicollet Ave"
+
 private func makeDetail(
   orderId: UUID,
   status: OrderStatus,
@@ -592,7 +984,11 @@ private func makeDetail(
   OrderDetail(
     order: makeOrder(id: orderId, status: status),
     events: [],
-    driver: driver
+    driver: driver,
+    dispensaryName: stubDispensaryName,
+    dispensaryCoordinate: stubDispensaryCoordinate,
+    dropoffCoordinate: stubDropoffCoordinate,
+    dropoffLabel: stubDropoffLabel
   )
 }
 
@@ -629,4 +1025,19 @@ private actor FetchCounter {
   }
 
   func snapshot() -> Int { count }
+}
+
+private actor RatingProbe {
+  struct Call: Sendable {
+    let orderId: UUID
+    let input: OrderRatingInput
+  }
+
+  private(set) var call: Call?
+
+  func record(orderId: UUID, input: OrderRatingInput) {
+    call = Call(orderId: orderId, input: input)
+  }
+
+  func snapshot() -> Call? { call }
 }

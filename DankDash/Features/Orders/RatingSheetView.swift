@@ -3,29 +3,32 @@ import ComposableArchitecture
 import DankDashDesignSystem
 import DankDashFeatures
 
-/// Thin wrapper around ``RatingSheet`` that owns the local star + comment
-/// state for the post-delivery feedback prompt. The Phase-18 backend has
-/// no `PATCH /v1/orders/:id/rating` endpoint yet (see the plan's
-/// "Deferred" section), so both Submit and Skip route through the same
-/// `.dismissRatingSheet` action — the parent reducer tears down the
-/// sheet and cancels the 5-minute rating timer.
+/// Thin wrapper around ``RatingSheet`` that binds the post-delivery
+/// feedback prompt to ``OrderTrackingFeature``. Star + comment live in
+/// reducer state (not `@State`) so the submit effect can read them and so
+/// partial input survives the sheet being dismissed and re-presented.
 ///
-/// Rating + comment live as `@State` here (not in the reducer) because
-/// the wire submission is a no-op stub; persisting them across the
-/// sheet's lifetime would only carry value once the real endpoint
-/// lands in Phase 19+.
+/// Submit posts the rating to `POST /v1/orders/:id/rate` via
+/// `.submitRatingTapped`; on success the reducer dismisses the sheet and
+/// retires the prompt. Skip routes through `.dismissRatingSheet`, which
+/// tears down the sheet and cancels the 5-minute rating timer without
+/// sending anything to the server.
 struct RatingSheetView: View {
   @Bindable var store: StoreOf<OrderTrackingFeature>
 
-  @State private var rating: Int = 0
-  @State private var comment: String = ""
-
   var body: some View {
     RatingSheet(
-      rating: $rating,
-      comment: $comment,
-      isSubmitting: false,
-      onSubmit: { store.send(.dismissRatingSheet) },
+      rating: Binding(
+        get: { store.rating },
+        set: { store.send(.ratingChanged($0)) }
+      ),
+      comment: Binding(
+        get: { store.ratingComment },
+        set: { store.send(.ratingCommentChanged($0)) }
+      ),
+      isSubmitting: store.isSubmittingRating,
+      errorMessage: store.ratingError,
+      onSubmit: { store.send(.submitRatingTapped) },
       onSkip: { store.send(.dismissRatingSheet) }
     )
   }

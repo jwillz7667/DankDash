@@ -9,8 +9,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { CustomerOrdersController } from './customer-orders.controller.js';
-import { projectOrder } from './order.projection.js';
 import type { CancelOrderRequest, ListOrdersQuery, RateOrderRequest } from './dto/index.js';
+import type { CustomerOrderDetailResponse } from './dto/customer-order-detail.dto.js';
+import type { OrderResponse } from '../checkout/dto/index.js';
 import type { OrderTransitionService } from './order-transition.service.js';
 import type { OrdersService } from './orders.service.js';
 import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
@@ -79,11 +80,61 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
   };
 }
 
+const FLAT_ORDER: OrderResponse = {
+  id: ORDER_ID,
+  shortCode: '7K2X4Q',
+  userId: USER_ID,
+  dispensaryId: '01935f3d-0000-7000-8000-000000000010',
+  deliveryAddressId: '01935f3d-0000-7000-8000-000000000060',
+  status: 'delivered',
+  subtotalCents: 9000,
+  cannabisTaxCents: 900,
+  salesTaxCents: 619,
+  deliveryFeeCents: 0,
+  driverTipCents: 500,
+  discountCents: 0,
+  totalCents: 11019,
+  items: [],
+  placedAt: PINNED_NOW.toISOString(),
+  statusChangedAt: PINNED_NOW.toISOString(),
+  createdAt: PINNED_NOW.toISOString(),
+  updatedAt: PINNED_NOW.toISOString(),
+};
+
+const DETAIL: CustomerOrderDetailResponse = {
+  order: { ...FLAT_ORDER, status: 'en_route_dropoff' },
+  events: [],
+  driver: {
+    id: '01935f3d-0000-7000-8000-000000000201',
+    displayName: 'Sam J.',
+    avatarKey: null,
+    vehicleSummary: 'Silver 2021 Toyota Prius',
+    maskedPhone: '••• ••• 4321',
+  },
+  dispensary: {
+    id: '01935f3d-0000-7000-8000-000000000010',
+    name: 'TC Cannabis',
+    latitude: 44.978,
+    longitude: -93.265,
+  },
+  dropoff: {
+    latitude: 44.953,
+    longitude: -93.094,
+    line1: '345 Park Ave',
+    line2: null,
+    city: 'St Paul',
+    state: 'MN',
+    postalCode: '55102',
+    instructions: null,
+  },
+};
+
 class FakeOrdersService {
   public calls: { method: string; args: unknown[] }[] = [];
   public ordersForUser: Order[] = [];
   public orderForUser: Order | null = null;
-  public ratingResult: Order | null = null;
+  public detailResult: CustomerOrderDetailResponse | null = null;
+  public rateResult: OrderResponse | null = null;
 
   listForUser = (userId: string, limit: number): Promise<readonly Order[]> => {
     this.calls.push({ method: 'listForUser', args: [userId, limit] });
@@ -97,11 +148,21 @@ class FakeOrdersService {
     return Promise.resolve(this.orderForUser);
   };
 
-  recordRating = (userId: string, orderId: string, req: RateOrderRequest): Promise<Order> => {
-    this.calls.push({ method: 'recordRating', args: [userId, orderId, req] });
-    if (this.ratingResult === null)
-      throw new TypeError('FakeOrdersService.ratingResult was not set');
-    return Promise.resolve(this.ratingResult);
+  getDetailForUser = (userId: string, orderId: string): Promise<CustomerOrderDetailResponse> => {
+    this.calls.push({ method: 'getDetailForUser', args: [userId, orderId] });
+    if (this.detailResult === null)
+      throw new TypeError('FakeOrdersService.detailResult was not set');
+    return Promise.resolve(this.detailResult);
+  };
+
+  rateForUser = (
+    userId: string,
+    orderId: string,
+    req: RateOrderRequest,
+  ): Promise<OrderResponse> => {
+    this.calls.push({ method: 'rateForUser', args: [userId, orderId, req] });
+    if (this.rateResult === null) throw new TypeError('FakeOrdersService.rateResult was not set');
+    return Promise.resolve(this.rateResult);
   };
 }
 
@@ -149,14 +210,17 @@ describe('CustomerOrdersController', () => {
   });
 
   describe('get', () => {
-    it('returns the projected single order', async () => {
+    it('threads (userId, orderId) to getDetailForUser and returns its envelope unchanged', async () => {
       const { controller, svc } = makeController();
-      svc.orderForUser = makeOrder({ status: 'accepted' });
+      svc.detailResult = DETAIL;
 
       const res = await controller.get(PRINCIPAL, ORDER_ID);
 
-      expect(svc.calls).toEqual([{ method: 'findForUser', args: [USER_ID, ORDER_ID] }]);
-      expect(res).toEqual(projectOrder(svc.orderForUser));
+      expect(svc.calls).toEqual([{ method: 'getDetailForUser', args: [USER_ID, ORDER_ID] }]);
+      expect(res).toBe(DETAIL);
+      expect(res.order.id).toBe(ORDER_ID);
+      expect(res.dispensary.name).toBe('TC Cannabis');
+      expect(res.driver?.displayName).toBe('Sam J.');
     });
   });
 
@@ -199,16 +263,16 @@ describe('CustomerOrdersController', () => {
   });
 
   describe('rate', () => {
-    it('threads (userId, orderId, body) to recordRating and projects the result', async () => {
+    it('threads (userId, orderId, body) to rateForUser and returns the flat order', async () => {
       const { controller, svc } = makeController();
-      svc.ratingResult = makeOrder({ status: 'delivered', customerRating: 5 });
+      svc.rateResult = FLAT_ORDER;
 
       const body: RateOrderRequest = { rating: 5, review: 'great' };
       const res = await controller.rate(PRINCIPAL, ORDER_ID, body);
 
-      expect(svc.calls).toEqual([{ method: 'recordRating', args: [USER_ID, ORDER_ID, body] }]);
+      expect(svc.calls).toEqual([{ method: 'rateForUser', args: [USER_ID, ORDER_ID, body] }]);
       expect(res.id).toBe(ORDER_ID);
-      expect(res.ratings.customer).toBe(5);
+      expect(res.status).toBe('delivered');
     });
   });
 });

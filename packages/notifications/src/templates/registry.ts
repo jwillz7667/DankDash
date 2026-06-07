@@ -1,4 +1,8 @@
-import { authIdVerificationRequiredTemplate, authWelcomeTemplate } from './auth.js';
+import {
+  authIdVerificationRequiredTemplate,
+  authPasswordResetTemplate,
+  authWelcomeTemplate,
+} from './auth.js';
 import {
   dispatchCanceledTemplate,
   dispatchOfferExpiredTemplate,
@@ -49,6 +53,7 @@ export const TEMPLATES: TemplateRegistry = {
   'vendor.metrc.reconciliation_discrepancy': vendorMetrcReconciliationDiscrepancyTemplate,
   'auth.welcome': authWelcomeTemplate,
   'auth.id_verification_required': authIdVerificationRequiredTemplate,
+  'auth.password_reset': authPasswordResetTemplate,
 };
 
 /**

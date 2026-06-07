@@ -19,15 +19,21 @@ import DankDashNetwork
 public struct DriverOrdersAPIClient: Sendable {
   public var getOrder: @Sendable (UUID) async throws -> ActiveRoute
   public var pickupConfirm: @Sendable (UUID, DriverPickupConfirmRequestDTO) async throws -> ActiveRoute
+  public var depart: @Sendable (UUID, DriverDepartRequestDTO) async throws -> ActiveRoute
+  public var arrive: @Sendable (UUID, DriverArriveRequestDTO) async throws -> ActiveRoute
   public var deliveryConfirm: @Sendable (UUID, DriverDeliveryConfirmRequestDTO) async throws -> ActiveRoute
 
   public init(
     getOrder: @Sendable @escaping (UUID) async throws -> ActiveRoute,
     pickupConfirm: @Sendable @escaping (UUID, DriverPickupConfirmRequestDTO) async throws -> ActiveRoute,
+    depart: @Sendable @escaping (UUID, DriverDepartRequestDTO) async throws -> ActiveRoute,
+    arrive: @Sendable @escaping (UUID, DriverArriveRequestDTO) async throws -> ActiveRoute,
     deliveryConfirm: @Sendable @escaping (UUID, DriverDeliveryConfirmRequestDTO) async throws -> ActiveRoute
   ) {
     self.getOrder = getOrder
     self.pickupConfirm = pickupConfirm
+    self.depart = depart
+    self.arrive = arrive
     self.deliveryConfirm = deliveryConfirm
   }
 }
@@ -51,6 +57,24 @@ public extension DriverOrdersAPIClient {
         }
         return route
       },
+      depart: { orderId, body in
+        let dto = try await apiClient.send(
+          DriverOrdersEndpoints.depart(id: orderId, body: body)
+        )
+        guard let route = dto.toDomain() else {
+          throw DriverAPIError.malformedPayload("DriverOrderDetail")
+        }
+        return route
+      },
+      arrive: { orderId, body in
+        let dto = try await apiClient.send(
+          DriverOrdersEndpoints.arrive(id: orderId, body: body)
+        )
+        guard let route = dto.toDomain() else {
+          throw DriverAPIError.malformedPayload("DriverOrderDetail")
+        }
+        return route
+      },
       deliveryConfirm: { orderId, body in
         let dto = try await apiClient.send(
           DriverOrdersEndpoints.deliveryConfirm(id: orderId, body: body)
@@ -66,6 +90,8 @@ public extension DriverOrdersAPIClient {
   static let unimplemented = DriverOrdersAPIClient(
     getOrder: { _ in throw DriverAPIError.unimplemented("getOrder") },
     pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
+    depart: { _, _ in throw DriverAPIError.unimplemented("depart") },
+    arrive: { _, _ in throw DriverAPIError.unimplemented("arrive") },
     deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
   )
 }

@@ -62,7 +62,11 @@ import {
   OfferDeclinedEvent,
 } from './offer.events.js';
 import type { DriverContext } from '../context/driver-context.types.js';
-import type { DeclineOfferRequest, DispatchOfferResponse } from './dto/index.js';
+import type {
+  DeclineOfferRequest,
+  DispatchOfferResponse,
+  PendingOffersResponse,
+} from './dto/index.js';
 
 export interface DriverOffersScopedRepos {
   readonly dispatchOffers: DispatchOffersRepository;
@@ -80,6 +84,24 @@ export class DriverOffersService {
     private readonly scopedReposFor: DriverOffersScopedReposFactory,
     private readonly events: EventEmitter2,
   ) {}
+
+  /**
+   * GET /v1/driver/offers/pending. The driver app's polling fallback
+   * for offer delivery (the `/driver` Socket.io namespace is the
+   * future push channel). Returns only this driver's still-`offered`,
+   * non-expired rows — `listActiveForDriver` filters on
+   * `driver_id = ctx.driverId AND status = 'offered' AND expires_at >
+   * now`, newest-first. No lock: a stale read here is self-correcting
+   * (the accept path re-validates the offer under FOR UPDATE), and the
+   * 30-second countdown UI re-polls every 10s regardless.
+   *
+   * Wrapped in `{ offers }` so a future page-cursor is non-breaking.
+   */
+  async listPending(ctx: DriverContext, now: Date = new Date()): Promise<PendingOffersResponse> {
+    const repos = this.scopedReposFor(this.db);
+    const offers = await repos.dispatchOffers.listActiveForDriver(ctx.driverId, now);
+    return { offers: offers.map(projectDispatchOffer) };
+  }
 
   async accept(
     ctx: DriverContext,

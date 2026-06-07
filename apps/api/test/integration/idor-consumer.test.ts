@@ -88,10 +88,16 @@ describe('IDOR — consumer surface (cross-user 404)', () => {
                            compliance_check_payload, delivery_address_snapshot)
        VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5::uuid,
                1000, 100, 87, 599, 1786,
-               '{}'::jsonb, '{}'::jsonb)`,
+               '{}'::jsonb,
+               '{"line1":"123 Main St","line2":null,"city":"Minneapolis","region":"MN","postalCode":"55401","location":{"type":"Point","coordinates":[-93.265,44.978]},"deliveryInstructions":null}'::jsonb)`,
       [
         '01935f3d-0000-7000-9000-000000000aa1',
-        'IDOR001',
+        // 6-char short code + a well-formed delivery snapshot: GET
+        // /v1/orders/:id now projects the full CustomerOrderDetailResponse
+        // (order + dispensary pin + dropoff pin), validated by strict Zod
+        // schemas. A real checkout always writes these; the IDOR contract
+        // under test (cross-customer probe → 404) is unchanged.
+        'IDORC1',
         SEED_IDS.user.customer1,
         SEED_IDS.dispensary.mpls,
         aliceAddress[0]!.id,

@@ -62,6 +62,7 @@ import {
   type OrderTransitionService,
   type TransitionRequest,
 } from '../../orders/order-transition.service.js';
+import { projectDispatchOffer } from './dispatch-offer.projection.js';
 import { DriverOffersService, type DriverOffersScopedRepos } from './driver-offers.service.js';
 import {
   OFFER_ACCEPTED_EVENT,
@@ -138,7 +139,7 @@ function makeOffer(overrides: Partial<DispatchOffer> = {}): DispatchOffer {
 
 class FakeDispatchOffersRepo implements Pick<
   DispatchOffersRepository,
-  'findByIdForUpdate' | 'respond' | 'expireOtherActiveForOrder'
+  'findByIdForUpdate' | 'respond' | 'expireOtherActiveForOrder' | 'listActiveForDriver'
 > {
   public offers = new Map<string, DispatchOffer>();
   public lockedIds: string[] = [];
@@ -151,6 +152,20 @@ class FakeDispatchOffersRepo implements Pick<
   findByIdForUpdate(id: string): Promise<DispatchOffer | null> {
     this.lockedIds.push(id);
     return Promise.resolve(this.offers.get(id) ?? null);
+  }
+
+  // Mirrors the SQL: driver_id = ? AND status = 'offered' AND
+  // expires_at > now, ORDER BY offered_at DESC.
+  listActiveForDriver(driverId: string, now: Date): Promise<readonly DispatchOffer[]> {
+    const rows = [...this.offers.values()]
+      .filter(
+        (o) =>
+          o.driverId === driverId &&
+          o.status === 'offered' &&
+          o.expiresAt.getTime() > now.getTime(),
+      )
+      .sort((a, b) => b.offeredAt.getTime() - a.offeredAt.getTime());
+    return Promise.resolve(rows);
   }
 
   respond(
@@ -310,6 +325,44 @@ function makeService(
 
   return { service, offersRepo, driversRepo, transitions, events, emitSpy };
 }
+
+describe('DriverOffersService.listPending', () => {
+  it('returns this driver’s open, non-expired offers in an { offers } envelope', async () => {
+    const offer = makeOffer();
+    const { service } = makeService({ offer });
+
+    const result = await service.listPending(makeContext(), NOW);
+
+    expect(result.offers).toHaveLength(1);
+    expect(result.offers[0]).toEqual(projectDispatchOffer(offer));
+  });
+
+  it('excludes expired and already-responded offers', async () => {
+    const open = makeOffer();
+    const expired = makeOffer({
+      id: '01935f3d-0000-7000-8000-0000000000f1',
+      expiresAt: PAST,
+    });
+    const declined = makeOffer({
+      id: '01935f3d-0000-7000-8000-0000000000f2',
+      status: 'declined',
+      respondedAt: NOW,
+    });
+    const { service } = makeService({ offer: open, siblings: [expired, declined] });
+
+    const result = await service.listPending(makeContext(), NOW);
+
+    expect(result.offers.map((o) => o.id)).toEqual([open.id]);
+  });
+
+  it('returns an empty envelope when the driver has no active offers', async () => {
+    const { service } = makeService({ offer: null });
+
+    const result = await service.listPending(makeContext(), NOW);
+
+    expect(result.offers).toEqual([]);
+  });
+});
 
 describe('DriverOffersService.accept', () => {
   beforeEach(() => {
