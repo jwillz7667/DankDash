@@ -7,7 +7,7 @@
  * (and obviously) instead of silently widening the contract.
  */
 import { describe, expect, it } from 'vitest';
-import { projectOrder, projectVendorQueueOrder } from './order.projection.js';
+import { projectOrder, projectOrderListItem, projectVendorQueueOrder } from './order.projection.js';
 import type { Order, VendorQueueOrderRow } from '@dankdash/db';
 
 const PLACED_AT = new Date('2026-05-18T19:00:00.000Z');
@@ -177,5 +177,23 @@ describe('projectVendorQueueOrder', () => {
     expect(projected.acceptedAt).toBe('2026-05-18T19:05:00.000Z');
     expect(projected.preppingAt).toBe('2026-05-18T19:10:00.000Z');
     expect(projected.preparedAt).toBeNull();
+  });
+});
+
+describe('projectOrderListItem', () => {
+  it('projects the slim list row with ISO timestamps', () => {
+    const projected = projectOrderListItem(
+      makeRow({ status: 'en_route_dropoff', statusChangedAt: STATUS_CHANGED_AT }),
+    );
+
+    expect(projected).toEqual({
+      id: '01935f3d-0000-7000-8000-000000001001',
+      shortCode: '7K2X4Q',
+      dispensaryId: '01935f3d-0000-7000-8000-000000000010',
+      status: 'en_route_dropoff',
+      totalCents: 11019,
+      placedAt: '2026-05-18T19:00:00.000Z',
+      statusChangedAt: '2026-05-18T19:01:00.000Z',
+    });
   });
 });

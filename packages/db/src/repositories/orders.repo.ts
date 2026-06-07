@@ -263,7 +263,7 @@ export class OrdersRepository extends BaseRepository {
       .from(orders)
       .where(wheres.length === 1 ? wheres[0] : and(...wheres))
       .orderBy(desc(orders.placedAt), desc(orders.id))
-      .limit(input.limit);
+      .limit(input.limit + 1);
   }
 
   /**

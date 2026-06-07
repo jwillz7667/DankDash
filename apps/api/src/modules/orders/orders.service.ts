@@ -40,6 +40,7 @@ import {
   type CustomerOrderDetailResponse,
   type DriverPublicProfile,
 } from './dto/customer-order-detail.dto.js';
+import { encodeOrderCursor, type OrderCursor } from './order-cursor.js';
 import type { RateOrderRequest } from './dto/index.js';
 
 export interface OrdersScopedRepos {
@@ -63,6 +64,44 @@ export class OrdersService {
   async listForUser(userId: string, limit: number): Promise<readonly Order[]> {
     const repos = this.reposFactory(this.db);
     return repos.orders.listForUser(userId, limit);
+  }
+
+  /**
+   * GET /v1/orders — the cursor-paginated Orders-tab read. Scopes to the
+   * JWT user, filters by lifecycle (`active` = not in a terminal state,
+   * `completed` = terminal, `all` = everything), and returns at most
+   * `limit` rows plus the `nextCursor` to fetch the page after them.
+   *
+   * The repo fetches `limit + 1` so we can tell whether a further page
+   * exists without a second count query: if the extra row came back, drop
+   * it and mint a cursor from the LAST kept row's `(placedAt, id)`;
+   * otherwise this is the final page and `nextCursor` is null.
+   */
+  async listPageForUser(
+    userId: string,
+    input: {
+      readonly status: 'active' | 'completed' | 'all';
+      readonly limit: number;
+      readonly cursor: OrderCursor | undefined;
+    },
+  ): Promise<{ readonly items: readonly Order[]; readonly nextCursor: string | null }> {
+    const repos = this.reposFactory(this.db);
+    const rows = await repos.orders.listForUserCursored({
+      userId,
+      limit: input.limit,
+      statusFilter: input.status,
+      cursor: input.cursor ?? null,
+    });
+
+    const hasMore = rows.length > input.limit;
+    const items = hasMore ? rows.slice(0, input.limit) : rows;
+    const last = items.at(-1);
+    const nextCursor =
+      hasMore && last !== undefined
+        ? encodeOrderCursor({ placedAt: last.placedAt, id: last.id })
+        : null;
+
+    return { items, nextCursor };
   }
 
   async findForUser(userId: string, orderId: string): Promise<Order> {

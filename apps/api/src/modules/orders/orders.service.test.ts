@@ -30,6 +30,7 @@ import {
   type OrdersScopedRepos,
   type OrdersScopedReposFactory,
 } from './orders.service.js';
+import { decodeOrderCursor } from './order-cursor.js';
 
 const USER_ID = '01935f3d-0000-7000-8000-000000000001';
 const OTHER_USER_ID = '01935f3d-0000-7000-8000-0000000000ff';
@@ -292,7 +293,12 @@ class FakeDriversRepo implements Pick<DriversRepository, 'findByUserId'> {
 
 class FakeOrdersRepo implements Pick<
   OrdersRepository,
-  'findById' | 'listForUser' | 'listForDispensary' | 'listForDispensaryQueue' | 'update'
+  | 'findById'
+  | 'listForUser'
+  | 'listForUserCursored'
+  | 'listForDispensary'
+  | 'listForDispensaryQueue'
+  | 'update'
 > {
   public readonly rows = new Map<string, Order>();
   /** Last patch the service passed to `update` — assertions sample this
@@ -325,6 +331,50 @@ class FakeOrdersRepo implements Pick<
 
   listForUser(userId: string, _limit = 50): Promise<readonly Order[]> {
     return Promise.resolve([...this.rows.values()].filter((r) => r.userId === userId));
+  }
+
+  /** Mirrors the real repo: lifecycle filter, `(placedAt DESC, id DESC)`
+   *  keyset, and the `limit + 1` over-fetch — so the service's hasMore /
+   *  slice / nextCursor logic is exercised against true pagination. */
+  listForUserCursored(input: {
+    readonly userId: string;
+    readonly limit: number;
+    readonly statusFilter: 'active' | 'completed' | 'all';
+    readonly cursor: { readonly placedAt: Date; readonly id: string } | null;
+  }): Promise<readonly Order[]> {
+    const TERMINAL: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+      'delivered',
+      'canceled',
+      'rejected',
+      'returned_to_store',
+      'disputed',
+      'id_scan_failed',
+      'payment_failed',
+    ]);
+    const matched = [...this.rows.values()]
+      .filter((r) => r.userId === input.userId)
+      .filter((r) =>
+        input.statusFilter === 'all'
+          ? true
+          : input.statusFilter === 'completed'
+            ? TERMINAL.has(r.status)
+            : !TERMINAL.has(r.status),
+      )
+      .filter((r) => {
+        const c = input.cursor;
+        if (c === null) return true;
+        return (
+          r.placedAt.getTime() < c.placedAt.getTime() ||
+          (r.placedAt.getTime() === c.placedAt.getTime() && r.id < c.id)
+        );
+      })
+      .sort((a, b) => {
+        const byTime = b.placedAt.getTime() - a.placedAt.getTime();
+        if (byTime !== 0) return byTime;
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      })
+      .slice(0, input.limit + 1);
+    return Promise.resolve(matched);
   }
 
   listForDispensary(dispensaryId: string): Promise<readonly Order[]> {
@@ -433,6 +483,100 @@ describe('OrdersService', () => {
 
       expect(rows).toHaveLength(1);
       expect(rows[0]!.id).toBe(ORDER_ID);
+    });
+  });
+
+  describe('listPageForUser', () => {
+    const idAt = (n: number): string => `01935f3d-0000-7000-8000-0000000010${`0${n}`.slice(-2)}`;
+    // Five orders for the user, strictly decreasing placedAt so the
+    // (placedAt DESC) order is unambiguous: idAt(1) newest … idAt(5) oldest.
+    const ladder = (): Order[] =>
+      [1, 2, 3, 4, 5].map((n) =>
+        makeOrder({
+          id: idAt(n),
+          status: n % 2 === 0 ? 'delivered' : 'placed',
+          placedAt: new Date(PINNED_NOW.getTime() - n * 60_000),
+          statusChangedAt: new Date(PINNED_NOW.getTime() - n * 60_000),
+        }),
+      );
+
+    it('returns the first page newest-first with a nextCursor when more rows remain', async () => {
+      const { service } = makeService(ladder());
+
+      const page = await service.listPageForUser(USER_ID, {
+        status: 'all',
+        limit: 2,
+        cursor: undefined,
+      });
+
+      expect(page.items.map((o) => o.id)).toEqual([idAt(1), idAt(2)]);
+      expect(page.nextCursor).not.toBeNull();
+    });
+
+    it('resumes after the cursor and returns null nextCursor on the final page', async () => {
+      const { service } = makeService(ladder());
+
+      const first = await service.listPageForUser(USER_ID, {
+        status: 'all',
+        limit: 2,
+        cursor: undefined,
+      });
+      const decoded = decodeOrderCursor(first.nextCursor!)!;
+      const second = await service.listPageForUser(USER_ID, {
+        status: 'all',
+        limit: 2,
+        cursor: decoded,
+      });
+      const third = await service.listPageForUser(USER_ID, {
+        status: 'all',
+        limit: 2,
+        cursor: decodeOrderCursor(second.nextCursor!)!,
+      });
+
+      expect(second.items.map((o) => o.id)).toEqual([idAt(3), idAt(4)]);
+      expect(third.items.map((o) => o.id)).toEqual([idAt(5)]);
+      expect(third.nextCursor).toBeNull();
+    });
+
+    it('filters to active (non-terminal) orders only', async () => {
+      const { service } = makeService(ladder());
+
+      const page = await service.listPageForUser(USER_ID, {
+        status: 'active',
+        limit: 50,
+        cursor: undefined,
+      });
+
+      // placed = active; delivered = terminal. idAt(1,3,5) are placed.
+      expect(page.items.map((o) => o.id)).toEqual([idAt(1), idAt(3), idAt(5)]);
+      expect(page.nextCursor).toBeNull();
+    });
+
+    it('filters to completed (terminal) orders only', async () => {
+      const { service } = makeService(ladder());
+
+      const page = await service.listPageForUser(USER_ID, {
+        status: 'completed',
+        limit: 50,
+        cursor: undefined,
+      });
+
+      expect(page.items.map((o) => o.id)).toEqual([idAt(2), idAt(4)]);
+      expect(page.nextCursor).toBeNull();
+    });
+
+    it('scopes to the JWT user — another user’s orders never appear', async () => {
+      const mine = makeOrder({ id: ORDER_ID, userId: USER_ID });
+      const theirs = makeOrder({ id: idAt(9), userId: OTHER_USER_ID });
+      const { service } = makeService([mine, theirs]);
+
+      const page = await service.listPageForUser(USER_ID, {
+        status: 'all',
+        limit: 50,
+        cursor: undefined,
+      });
+
+      expect(page.items.map((o) => o.id)).toEqual([ORDER_ID]);
     });
   });
 

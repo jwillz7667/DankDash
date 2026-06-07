@@ -11,7 +11,7 @@
  * controller's return type a plain JSON shape, which is easier to
  * snapshot in tests.
  */
-import type { OrderResponse, VendorQueueOrderResponse } from './dto/index.js';
+import type { OrderListItem, OrderResponse, VendorQueueOrderResponse } from './dto/index.js';
 import type { Order, VendorQueueOrderRow } from '@dankdash/db';
 
 const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString());
@@ -91,5 +91,23 @@ export function projectOrder(o: Order): OrderResponse {
       dispensary: o.dispensaryRating,
       driver: o.driverRating,
     },
+  };
+}
+
+/**
+ * Slim list-row projection for the consumer Orders tab. Carries only what
+ * the list renders + paginates by; the full order (items, compliance
+ * snapshot, event log) is fetched lazily from the detail endpoint when a
+ * row is opened.
+ */
+export function projectOrderListItem(o: Order): OrderListItem {
+  return {
+    id: o.id,
+    shortCode: o.shortCode,
+    dispensaryId: o.dispensaryId,
+    status: o.status,
+    totalCents: o.totalCents,
+    placedAt: o.placedAt.toISOString(),
+    statusChangedAt: o.statusChangedAt.toISOString(),
   };
 }

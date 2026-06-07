@@ -131,14 +131,24 @@ const DETAIL: CustomerOrderDetailResponse = {
 
 class FakeOrdersService {
   public calls: { method: string; args: unknown[] }[] = [];
-  public ordersForUser: Order[] = [];
+  public pageForUser: { items: readonly Order[]; nextCursor: string | null } = {
+    items: [],
+    nextCursor: null,
+  };
   public orderForUser: Order | null = null;
   public detailResult: CustomerOrderDetailResponse | null = null;
   public rateResult: OrderResponse | null = null;
 
-  listForUser = (userId: string, limit: number): Promise<readonly Order[]> => {
-    this.calls.push({ method: 'listForUser', args: [userId, limit] });
-    return Promise.resolve(this.ordersForUser);
+  listPageForUser = (
+    userId: string,
+    input: {
+      status: 'active' | 'completed' | 'all';
+      limit: number;
+      cursor: { placedAt: Date; id: string } | undefined;
+    },
+  ): Promise<{ items: readonly Order[]; nextCursor: string | null }> => {
+    this.calls.push({ method: 'listPageForUser', args: [userId, input] });
+    return Promise.resolve(this.pageForUser);
   };
 
   findForUser = (userId: string, orderId: string): Promise<Order> => {
@@ -196,16 +206,34 @@ function makeController(): {
 
 describe('CustomerOrdersController', () => {
   describe('list', () => {
-    it('passes (userId, limit) through and projects each row', async () => {
+    it('threads (status, limit, cursor) to listPageForUser and projects the slim rows', async () => {
       const { controller, svc } = makeController();
-      svc.ordersForUser = [makeOrder()];
-      const query: ListOrdersQuery = { limit: 25 };
+      svc.pageForUser = { items: [makeOrder()], nextCursor: 'CURSOR_TOKEN' };
+      const query: ListOrdersQuery = { status: 'active', limit: 25 };
 
       const res = await controller.list(PRINCIPAL, query);
 
-      expect(svc.calls).toEqual([{ method: 'listForUser', args: [USER_ID, 25] }]);
-      expect(res.orders).toHaveLength(1);
-      expect(res.orders[0]!.id).toBe(ORDER_ID);
+      expect(svc.calls).toEqual([
+        {
+          method: 'listPageForUser',
+          args: [USER_ID, { status: 'active', limit: 25, cursor: undefined }],
+        },
+      ]);
+      expect(res.items).toHaveLength(1);
+      expect(res.items[0]!.id).toBe(ORDER_ID);
+      expect(res.nextCursor).toBe('CURSOR_TOKEN');
+    });
+
+    it('forwards a decoded cursor through to the service unchanged', async () => {
+      const { controller, svc } = makeController();
+      const cursor = { placedAt: new Date('2026-05-18T19:00:00.000Z'), id: ORDER_ID };
+      const query: ListOrdersQuery = { status: 'completed', limit: 10, cursor };
+
+      await controller.list(PRINCIPAL, query);
+
+      expect(svc.calls).toEqual([
+        { method: 'listPageForUser', args: [USER_ID, { status: 'completed', limit: 10, cursor }] },
+      ]);
     });
   });
 
