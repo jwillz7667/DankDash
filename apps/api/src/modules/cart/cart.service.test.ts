@@ -105,6 +105,7 @@ function makeListing(overrides: Partial<DispensaryListing> = {}): DispensaryList
     priceCents: 4500,
     compareAtPriceCents: null,
     quantityAvailable: 25,
+    imageKeys: [],
     metrcPackageTag: null,
     lastSyncedAt: null,
     isActive: true,

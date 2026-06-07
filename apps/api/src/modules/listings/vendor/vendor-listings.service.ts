@@ -63,6 +63,7 @@ import {
 import { ConflictError, NotFoundError, ValidationError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
 import { CatalogCacheService } from '../../catalog-cache/catalog-cache.service.js';
+import { isImageKeyOwnedBy } from './listing-image-keys.js';
 import type {
   CreateListingRequest,
   ListingListResponse,
@@ -115,6 +116,9 @@ export class VendorListingsService {
           { dispensaryId: ctx.dispensaryId, sku: body.sku },
         );
       }
+      if (body.imageKeys !== undefined) {
+        this.assertImageKeysOwned(ctx.dispensaryId, body.imageKeys);
+      }
       const row = await listings.create({
         dispensaryId: ctx.dispensaryId,
         productId: body.productId,
@@ -124,6 +128,7 @@ export class VendorListingsService {
         ...(body.quantityAvailable !== undefined
           ? { quantityAvailable: body.quantityAvailable }
           : {}),
+        ...(body.imageKeys !== undefined ? { imageKeys: body.imageKeys } : {}),
         metrcPackageTag: body.metrcPackageTag ?? null,
       });
       return projectListing(row);
@@ -150,6 +155,13 @@ export class VendorListingsService {
       // existing strike price would otherwise slip through.
       this.enforcePriceInvariants(existing, body);
 
+      // Every image key must sit under this dispensary's own R2 prefix —
+      // reject an attempt to point the listing at another tenant's objects
+      // before it reaches the row.
+      if (body.imageKeys !== undefined) {
+        this.assertImageKeysOwned(ctx.dispensaryId, body.imageKeys);
+      }
+
       // SKU rename also collides with the unique index; pre-flight so
       // the response is a typed 409 not a raw DB error.
       if (body.sku !== undefined && body.sku !== existing.sku) {
@@ -172,6 +184,7 @@ export class VendorListingsService {
         ...(body.quantityAvailable !== undefined
           ? { quantityAvailable: body.quantityAvailable }
           : {}),
+        ...(body.imageKeys !== undefined ? { imageKeys: body.imageKeys } : {}),
         ...(body.metrcPackageTag !== undefined ? { metrcPackageTag: body.metrcPackageTag } : {}),
         ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
       };
@@ -257,6 +270,24 @@ export class VendorListingsService {
     });
   }
 
+  /**
+   * Defends the cross-tenant boundary on image keys. The DTO already capped
+   * the count and string length; here we reject any key that does not sit
+   * under this dispensary's own R2 prefix, so a vendor cannot bind its public
+   * listing to another tenant's (or the admin catalog's) uploaded objects.
+   * The presign endpoint only ever mints keys under this prefix, so a
+   * legitimate round-trip always passes.
+   */
+  private assertImageKeysOwned(dispensaryId: string, keys: readonly string[]): void {
+    const foreign = keys.filter((key) => !isImageKeyOwnedBy(dispensaryId, key));
+    if (foreign.length > 0) {
+      throw new ValidationError('imageKeys must reference objects uploaded under this dispensary', {
+        dispensaryId,
+        foreign,
+      });
+    }
+  }
+
   private enforcePriceInvariants(existing: DispensaryListing, patch: PatchListingRequest): void {
     const nextPrice = patch.priceCents ?? existing.priceCents;
     const nextCompareRaw =
@@ -283,6 +314,7 @@ function projectListing(row: DispensaryListing): ListingResponse {
     priceCents: row.priceCents,
     compareAtPriceCents: row.compareAtPriceCents,
     quantityAvailable: row.quantityAvailable,
+    imageKeys: row.imageKeys,
     metrcPackageTag: row.metrcPackageTag,
     lastSyncedAt: row.lastSyncedAt === null ? null : row.lastSyncedAt.toISOString(),
     isActive: row.isActive,

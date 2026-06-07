@@ -153,6 +153,26 @@ describe('CreateListingRequestSchema', () => {
     const parsed = CreateListingRequestSchema.parse(makeCreateBody({ quantityAvailable: 0 }));
     expect(parsed.quantityAvailable).toBe(0);
   });
+
+  it('accepts an imageKeys array of dispensary-prefixed keys', () => {
+    const keys = ['dispensaries/d1/listings/abc.jpg', 'dispensaries/d1/listings/def.webp'];
+    const parsed = CreateListingRequestSchema.parse(makeCreateBody({ imageKeys: keys }));
+    expect(parsed.imageKeys).toEqual(keys);
+  });
+
+  it('accepts an empty imageKeys array (clears all images on create)', () => {
+    const parsed = CreateListingRequestSchema.parse(makeCreateBody({ imageKeys: [] }));
+    expect(parsed.imageKeys).toEqual([]);
+  });
+
+  it('rejects more than 10 imageKeys', () => {
+    const keys = Array.from({ length: 11 }, (_, i) => `dispensaries/d1/listings/${i}.jpg`);
+    expect(() => CreateListingRequestSchema.parse(makeCreateBody({ imageKeys: keys }))).toThrow();
+  });
+
+  it('rejects an empty-string imageKey', () => {
+    expect(() => CreateListingRequestSchema.parse(makeCreateBody({ imageKeys: [''] }))).toThrow();
+  });
 });
 
 describe('PatchListingRequestSchema', () => {
@@ -206,5 +226,19 @@ describe('PatchListingRequestSchema', () => {
 
   it('rejects malformed metrcPackageTag on patch', () => {
     expect(() => PatchListingRequestSchema.parse({ metrcPackageTag: 'X' })).toThrow();
+  });
+
+  it('accepts an imageKeys array on patch', () => {
+    const keys = ['dispensaries/d1/listings/abc.jpg'];
+    expect(PatchListingRequestSchema.parse({ imageKeys: keys })).toEqual({ imageKeys: keys });
+  });
+
+  it('accepts an empty imageKeys array on patch (removes every image)', () => {
+    expect(PatchListingRequestSchema.parse({ imageKeys: [] })).toEqual({ imageKeys: [] });
+  });
+
+  it('rejects more than 10 imageKeys on patch', () => {
+    const keys = Array.from({ length: 11 }, (_, i) => `dispensaries/d1/listings/${i}.jpg`);
+    expect(() => PatchListingRequestSchema.parse({ imageKeys: keys })).toThrow();
   });
 });

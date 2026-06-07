@@ -33,7 +33,10 @@ import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { CatalogCacheService } from '../catalog-cache/catalog-cache.service.js';
 import { DispensariesModule } from '../dispensaries/dispensaries.module.js';
+import { StorageModule } from '../storage/storage.module.js';
 import { VendorContextGuard } from './vendor/vendor-context.guard.js';
+import { VendorListingUploadsController } from './vendor/vendor-listing-uploads.controller.js';
+import { VendorListingUploadsService } from './vendor/vendor-listing-uploads.service.js';
 import { VendorListingsController } from './vendor/vendor-listings.controller.js';
 import { VendorListingsService, type ScopedRepos } from './vendor/vendor-listings.service.js';
 
@@ -52,9 +55,9 @@ const vendorListingsServiceProvider: FactoryProvider<VendorListingsService> = {
 };
 
 @Module({
-  imports: [AuthModule, DispensariesModule],
-  controllers: [VendorListingsController],
-  providers: [vendorListingsServiceProvider, VendorContextGuard],
+  imports: [AuthModule, DispensariesModule, StorageModule],
+  controllers: [VendorListingsController, VendorListingUploadsController],
+  providers: [vendorListingsServiceProvider, VendorListingUploadsService, VendorContextGuard],
   exports: [VendorListingsService, VendorContextGuard, DispensariesModule],
 })
 export class ListingsModule {}

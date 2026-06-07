@@ -41,12 +41,23 @@ import { z } from 'zod';
 
 const METRC_TAG_REGEX = /^1[A-Z0-9]{7}[A-F0-9]{16}$/u;
 
+/**
+ * Cap on per-listing image overrides. Ten is well past what a menu card or
+ * detail gallery renders and keeps the list-row payload bounded; the portal
+ * uploader enforces the same limit client-side so the 422 is a backstop, not
+ * the primary UX. Ownership of each key — it must sit under this dispensary's
+ * own R2 prefix — is enforced in the service, the only layer that knows the
+ * dispensary id; the DTO shape-validates length and count here.
+ */
+const MAX_LISTING_IMAGES = 10;
+
 const ListingFields = {
   productId: z.string().uuid(),
   sku: z.string().min(1).max(120),
   priceCents: z.number().int().positive().max(1_000_000_00),
   compareAtPriceCents: z.number().int().positive().max(1_000_000_00).nullable().optional(),
   quantityAvailable: z.number().int().min(0).max(1_000_000).optional(),
+  imageKeys: z.array(z.string().min(1).max(512)).max(MAX_LISTING_IMAGES).optional(),
   metrcPackageTag: z
     .string()
     .regex(METRC_TAG_REGEX, 'must be a Metrc package tag')
@@ -94,6 +105,7 @@ export const PatchListingRequestSchema = z
     priceCents: ListingFields.priceCents.optional(),
     compareAtPriceCents: ListingFields.compareAtPriceCents,
     quantityAvailable: ListingFields.quantityAvailable,
+    imageKeys: ListingFields.imageKeys,
     metrcPackageTag: ListingFields.metrcPackageTag,
     isActive: z.boolean().optional(),
   })

@@ -103,6 +103,9 @@ importers:
       '@dankdash/realtime-events':
         specifier: workspace:*
         version: link:../../packages/realtime-events
+      '@dankdash/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@dankdash/types':
         specifier: workspace:*
         version: link:../../packages/types
