@@ -25,6 +25,12 @@ export interface VendorListing {
   readonly priceCents: number;
   readonly compareAtPriceCents: number | null;
   readonly quantityAvailable: number;
+  /**
+   * Per-listing image override keys (R2 object keys under this dispensary's
+   * prefix). When non-empty, the consumer menu renders these instead of the
+   * shared product images; empty means "fall back to the product photos".
+   */
+  readonly imageKeys: readonly string[];
   readonly metrcPackageTag: string | null;
   readonly lastSyncedAt: string | null;
   readonly isActive: boolean;
@@ -79,6 +85,14 @@ export interface PatchVendorListingInput {
   readonly priceCents?: number;
   readonly compareAtPriceCents?: number | null;
   readonly quantityAvailable?: number;
+  /**
+   * Replace the listing's image-override set. The server re-validates that
+   * every key sits under this dispensary's own R2 prefix (a forged key for
+   * another store's prefix is a 422), so the portal can only ever attach
+   * images it uploaded. An empty array clears every override and the
+   * consumer menu falls back to the shared product photos.
+   */
+  readonly imageKeys?: readonly string[];
   readonly metrcPackageTag?: string | null;
   readonly isActive?: boolean;
 }
@@ -140,4 +154,100 @@ export async function triggerVendorListingsSync(
   return client.request<SyncVendorListingsResult>('/v1/vendor/listings/sync', {
     method: 'POST',
   });
+}
+
+/**
+ * Content types the listing-image uploader accepts. Mirrors
+ * `UPLOADABLE_IMAGE_CONTENT_TYPES` in
+ * `apps/api/src/modules/listings/vendor/dto/image-upload.dto.ts`. SVG is
+ * excluded on purpose (XSS vector when served from a content domain).
+ */
+export const UPLOADABLE_LISTING_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+
+export type UploadableListingImageType = (typeof UPLOADABLE_LISTING_IMAGE_TYPES)[number];
+
+export function isUploadableListingImageType(value: string): value is UploadableListingImageType {
+  return (UPLOADABLE_LISTING_IMAGE_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Presigned POST policy returned by
+ * `POST /v1/vendor/listings/image-uploads`. The browser submits `fields`
+ * verbatim as multipart/form-data with the file appended last under a
+ * `file` field; `objectKey` is the key to persist in the listing's
+ * `imageKeys` once the upload succeeds.
+ */
+export interface ListingImageUploadTicket {
+  readonly uploadUrl: string;
+  readonly fields: Readonly<Record<string, string>>;
+  readonly objectKey: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * Raised when the direct-to-R2 multipart POST fails. The presign request
+ * itself surfaces as {@link ApiError}; this is specifically the storage
+ * leg, which never touches the API and so carries no error envelope.
+ */
+export class ListingImageUploadError extends Error {
+  public readonly status: number | null;
+
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = 'ListingImageUploadError';
+    this.status = status;
+  }
+}
+
+/**
+ * POST /v1/vendor/listings/image-uploads — mint a presigned R2 upload for a
+ * single listing image. The dispensary scope comes from the client's
+ * `X-Dispensary-Id` header, so the minted key is always under the caller's
+ * own prefix.
+ */
+export async function requestListingImageUpload(
+  client: ApiClient,
+  contentType: UploadableListingImageType,
+): Promise<ListingImageUploadTicket> {
+  return client.request<ListingImageUploadTicket>('/v1/vendor/listings/image-uploads', {
+    method: 'POST',
+    body: { contentType },
+  });
+}
+
+/**
+ * Uploads a file straight to R2 using a presigned POST {@link ticket}.
+ *
+ * Runs in the browser (the file is a `File`/`Blob`), bypassing the API so
+ * large image bytes never traverse the Node event loop. The policy fields
+ * must be appended in order with the file LAST — S3/R2 ignore form fields
+ * that appear after the `file` part, and `Content-Type` must precede it for
+ * the policy condition to match. Returns the object key to persist.
+ *
+ * `fetchImpl` is injectable for tests; production uses the global `fetch`.
+ */
+export async function uploadListingImageToStorage(
+  ticket: ListingImageUploadTicket,
+  file: Blob,
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
+): Promise<string> {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(ticket.fields)) {
+    form.append(key, value);
+  }
+  form.append('file', file);
+
+  let response: Response;
+  try {
+    response = await fetchImpl(ticket.uploadUrl, { method: 'POST', body: form });
+  } catch (cause) {
+    throw new ListingImageUploadError(
+      cause instanceof Error ? cause.message : 'network error during image upload',
+      null,
+    );
+  }
+  if (!response.ok) {
+    throw new ListingImageUploadError(`image upload rejected by storage`, response.status);
+  }
+  return ticket.objectKey;
 }

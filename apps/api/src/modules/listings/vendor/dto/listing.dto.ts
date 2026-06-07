@@ -40,6 +40,7 @@ export const ListingResponseSchema = z
     priceCents: z.number().int().positive(),
     compareAtPriceCents: z.number().int().positive().nullable(),
     quantityAvailable: z.number().int().nonnegative(),
+    imageKeys: z.array(z.string()).readonly(),
     metrcPackageTag: z.string().nullable(),
     lastSyncedAt: z.string().datetime({ offset: true }).nullable(),
     isActive: z.boolean(),

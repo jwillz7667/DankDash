@@ -152,11 +152,21 @@ function projectMenuItem(listing: DispensaryListing, product: Product): MenuItem
     priceCents: listing.priceCents,
     compareAtPriceCents: listing.compareAtPriceCents,
     quantityAvailable: listing.quantityAvailable,
-    product: projectMenuProduct(product),
+    product: projectMenuProduct(product, listing.imageKeys),
   };
 }
 
-function projectMenuProduct(product: Product): MenuProductResponse {
+/**
+ * `listingImageKeys` is the per-dispensary image override. When the vendor has
+ * uploaded its own photos for this listing we render those; otherwise we fall
+ * back to the canonical, admin-curated `products.image_keys`. Same wire field
+ * either way, so the iOS client needs no change — it always reads
+ * `product.imageKeys` and is agnostic to which side supplied them.
+ */
+function projectMenuProduct(
+  product: Product,
+  listingImageKeys: readonly string[],
+): MenuProductResponse {
   return {
     id: product.id,
     categoryId: product.categoryId,
@@ -170,7 +180,7 @@ function projectMenuProduct(product: Product): MenuProductResponse {
     weightGramsPerUnit: product.weightGramsPerUnit,
     servingCount: product.servingCount,
     thcMgPerServing: product.thcMgPerServing,
-    imageKeys: product.imageKeys,
+    imageKeys: listingImageKeys.length > 0 ? listingImageKeys : product.imageKeys,
     effectsTags: product.effectsTags,
     flavorTags: product.flavorTags,
   };

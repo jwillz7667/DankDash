@@ -27,6 +27,7 @@ function makeListing(overrides: Partial<VendorListingWithProduct> = {}): VendorL
     priceCents: 4500,
     compareAtPriceCents: null,
     quantityAvailable: 10,
+    imageKeys: [],
     metrcPackageTag: null,
     lastSyncedAt: NOW.toISOString(),
     isActive: true,

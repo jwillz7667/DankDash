@@ -45,7 +45,7 @@ import {
   type TransitionResponse,
 } from './dto/index.js';
 import { OrderTransitionService } from './order-transition.service.js';
-import { projectOrder } from './order.projection.js';
+import { projectOrderListItem } from './order.projection.js';
 import { OrdersService } from './orders.service.js';
 import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
 
@@ -64,8 +64,12 @@ export class CustomerOrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListOrdersQueryDto,
   ): Promise<ListOrdersResponse> {
-    const rows = await this.orders.listForUser(user.userId, query.limit);
-    return { orders: rows.map(projectOrder) };
+    const page = await this.orders.listPageForUser(user.userId, {
+      status: query.status,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return { items: page.items.map(projectOrderListItem), nextCursor: page.nextCursor };
   }
 
   @Get(':id')

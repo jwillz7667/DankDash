@@ -101,6 +101,7 @@ function makeListing(overrides: Partial<DispensaryListing> = {}): DispensaryList
     priceCents: 4500,
     compareAtPriceCents: null,
     quantityAvailable: 10,
+    imageKeys: [],
     metrcPackageTag: null,
     lastSyncedAt: null,
     isActive: true,
@@ -187,6 +188,7 @@ class FakeListingsRepo implements Pick<
       priceCents: input.priceCents,
       compareAtPriceCents: input.compareAtPriceCents ?? null,
       quantityAvailable: input.quantityAvailable ?? 0,
+      imageKeys: input.imageKeys ?? [],
       metrcPackageTag: input.metrcPackageTag ?? null,
       lastSyncedAt: null,
       isActive: true,
@@ -433,6 +435,37 @@ describe('VendorListingsService.create', () => {
     expect(input.metrcPackageTag).toBe('1A4060300002F62000000045');
   });
 
+  it('forwards imageKeys owned by the dispensary on create', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct());
+    const keys = [`dispensaries/${DISPENSARY_ID}/listings/a.jpg`];
+
+    const res = await rig.service.create(CTX, {
+      productId: PRODUCT_ID,
+      sku: 'NS-PE-3.5G',
+      priceCents: 4500,
+      imageKeys: keys,
+    });
+
+    expect(rig.listings.createCalls[0]?.imageKeys).toEqual(keys);
+    expect(res.imageKeys).toEqual(keys);
+  });
+
+  it('rejects create when an imageKey is not under the dispensary prefix (cross-tenant guard)', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct());
+
+    await expect(
+      rig.service.create(CTX, {
+        productId: PRODUCT_ID,
+        sku: 'NS-PE-3.5G',
+        priceCents: 4500,
+        imageKeys: [`dispensaries/${OTHER_DISPENSARY_ID}/listings/stolen.jpg`],
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(rig.listings.createCalls).toEqual([]);
+  });
+
   it('throws ValidationError when the product does not exist', async () => {
     const rig = makeRig();
 
@@ -648,6 +681,39 @@ describe('VendorListingsService.patch', () => {
 
     expect(res.priceCents).toBe(6000);
     expect(res.sku).toBe('NS-PE-3.5G');
+  });
+
+  it('forwards owned imageKeys on patch and reflects them on the projection', async () => {
+    const rig = makeRig();
+    rig.listings.seed(makeListing());
+    const keys = [`dispensaries/${DISPENSARY_ID}/listings/new.webp`];
+
+    const res = await rig.service.patch(CTX, LISTING_ID, { imageKeys: keys });
+
+    expect(rig.listings.updateCalls[0]?.patch).toEqual({ imageKeys: keys });
+    expect(res.imageKeys).toEqual(keys);
+  });
+
+  it('accepts an empty imageKeys patch to clear every image', async () => {
+    const rig = makeRig();
+    rig.listings.seed(makeListing({ imageKeys: [`dispensaries/${DISPENSARY_ID}/listings/x.jpg`] }));
+
+    const res = await rig.service.patch(CTX, LISTING_ID, { imageKeys: [] });
+
+    expect(rig.listings.updateCalls[0]?.patch).toEqual({ imageKeys: [] });
+    expect(res.imageKeys).toEqual([]);
+  });
+
+  it('rejects a patch carrying an imageKey under another dispensary prefix', async () => {
+    const rig = makeRig();
+    rig.listings.seed(makeListing());
+
+    await expect(
+      rig.service.patch(CTX, LISTING_ID, {
+        imageKeys: [`dispensaries/${OTHER_DISPENSARY_ID}/listings/stolen.jpg`],
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(rig.listings.updateCalls).toEqual([]);
   });
 });
 

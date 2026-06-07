@@ -44,6 +44,7 @@ const LISTING: ListingResponse = {
   priceCents: 4500,
   compareAtPriceCents: null,
   quantityAvailable: 10,
+  imageKeys: [],
   metrcPackageTag: null,
   lastSyncedAt: null,
   isActive: true,

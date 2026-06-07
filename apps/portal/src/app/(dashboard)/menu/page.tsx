@@ -8,10 +8,12 @@ import {
   listVendorListings,
   type VendorListingWithProduct,
 } from '../../../lib/api/vendor-listings.js';
+import { loadPublicEnv } from '../../../lib/env.js';
 import {
   deleteVendorListingAction,
   listVendorListingsAction,
   patchVendorListingAction,
+  requestListingImageUploadAction,
   triggerVendorListingsSyncAction,
 } from '../../../lib/listings/actions.js';
 import { type VendorListingActions } from '../../../lib/listings/listing-actions.js';
@@ -50,7 +52,10 @@ export default async function MenuPage(): Promise<ReactNode> {
     patch: patchVendorListingAction,
     remove: deleteVendorListingAction,
     sync: triggerVendorListingsSyncAction,
+    requestImageUpload: requestListingImageUploadAction,
   };
+
+  const imageBaseUrl = loadPublicEnv().NEXT_PUBLIC_R2_PUBLIC_BASE_URL;
 
   return (
     <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6">
@@ -66,7 +71,7 @@ export default async function MenuPage(): Promise<ReactNode> {
           </p>
         </div>
       </header>
-      <MenuTable initialListings={initialListings} actions={actions} />
+      <MenuTable initialListings={initialListings} actions={actions} imageBaseUrl={imageBaseUrl} />
     </div>
   );
 }

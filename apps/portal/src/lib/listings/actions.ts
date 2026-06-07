@@ -21,9 +21,12 @@ import {
   deleteVendorListing,
   listVendorListings,
   patchVendorListing,
+  requestListingImageUpload,
   triggerVendorListingsSync,
+  type ListingImageUploadTicket,
   type PatchVendorListingInput,
   type SyncVendorListingsResult,
+  type UploadableListingImageType,
   type VendorListing,
   type VendorListingWithProduct,
 } from '../api/vendor-listings.js';
@@ -56,4 +59,10 @@ export async function deleteVendorListingAction(listingId: string): Promise<void
 
 export async function triggerVendorListingsSyncAction(): Promise<SyncVendorListingsResult> {
   return triggerVendorListingsSync(await authedClient());
+}
+
+export async function requestListingImageUploadAction(
+  contentType: UploadableListingImageType,
+): Promise<ListingImageUploadTicket> {
+  return requestListingImageUpload(await authedClient(), contentType);
 }

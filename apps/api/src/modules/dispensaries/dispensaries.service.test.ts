@@ -107,6 +107,7 @@ function makeListing(overrides: Partial<DispensaryListing> = {}): DispensaryList
     priceCents: 4500,
     compareAtPriceCents: 5000,
     quantityAvailable: 12,
+    imageKeys: [],
     metrcPackageTag: null,
     lastSyncedAt: null,
     isActive: true,
@@ -368,6 +369,35 @@ describe('DispensariesService.getMenu', () => {
         },
       ],
     });
+  });
+
+  it('renders per-listing imageKeys over the shared product images when present', async () => {
+    const rig = makeRig();
+    rig.dispensaries.seed(makeDispensary());
+    const listingImages = [
+      'dispensaries/01935f3d-0000-7000-8000-000000000001/listings/own-a.jpg',
+      'dispensaries/01935f3d-0000-7000-8000-000000000001/listings/own-b.webp',
+    ];
+    rig.listings.seedMenu('01935f3d-0000-7000-8000-000000000001', [
+      { listing: makeListing({ imageKeys: listingImages }), product: makeProduct() },
+    ]);
+
+    const res = await rig.service.getMenu('01935f3d-0000-7000-8000-000000000001', NOON_MONDAY);
+
+    // The vendor's own photos win over the catalog default on the menu card.
+    expect(res.items[0]?.product.imageKeys).toEqual(listingImages);
+  });
+
+  it('falls back to the shared product images when the listing has no override', async () => {
+    const rig = makeRig();
+    rig.dispensaries.seed(makeDispensary());
+    rig.listings.seedMenu('01935f3d-0000-7000-8000-000000000001', [
+      { listing: makeListing({ imageKeys: [] }), product: makeProduct() },
+    ]);
+
+    const res = await rig.service.getMenu('01935f3d-0000-7000-8000-000000000001', NOON_MONDAY);
+
+    expect(res.items[0]?.product.imageKeys).toEqual(['products/sunny-side/sour-tangie/01.jpg']);
   });
 
   it('returns an empty items array when the dispensary carries nothing', async () => {

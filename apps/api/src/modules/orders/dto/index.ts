@@ -6,6 +6,7 @@
  */
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
+import { decodeOrderCursor } from '../order-cursor.js';
 
 export const RejectOrderRequestSchema = z
   .object({
@@ -44,9 +45,31 @@ export const RateOrderRequestSchema = z
 export type RateOrderRequest = z.infer<typeof RateOrderRequestSchema>;
 export class RateOrderRequestDto extends createZodDto(RateOrderRequestSchema) {}
 
+/**
+ * `GET /v1/orders` query. `status` partitions the user's history into the
+ * Active and Past tabs (`'all'` is the admin/back-compat default — a
+ * paramless call still returns everything). `cursor` is the opaque keyset
+ * token from a previous page; it's decoded here at the boundary so a
+ * malformed token surfaces as a 422 VALIDATION_FAILED rather than a
+ * silently-wrong page. The decoded `{ placedAt, id }` is what the service
+ * hands to the repo's cursored scan.
+ */
 export const ListOrdersQuerySchema = z
   .object({
+    status: z.enum(['active', 'completed', 'all']).default('all'),
     limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z
+      .string()
+      .min(1)
+      .transform((raw, ctx) => {
+        const decoded = decodeOrderCursor(raw);
+        if (decoded === null) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid cursor' });
+          return z.NEVER;
+        }
+        return decoded;
+      })
+      .optional(),
   })
   .strict();
 export type ListOrdersQuery = z.infer<typeof ListOrdersQuerySchema>;
@@ -186,7 +209,35 @@ export const OrderResponseSchema = z
   .strict();
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;
 
-export const ListOrdersResponseSchema = z.object({ orders: z.array(OrderResponseSchema) }).strict();
+/**
+ * Slim list-row projection for `GET /v1/orders` — the Orders tab needs the
+ * code, dispensary, status, total, and the two timestamps it sorts/labels
+ * by; it loads items + events + compliance snapshot on demand from the
+ * detail endpoint. Mirrors the iOS `OrderListItemDTO`.
+ */
+export const OrderListItemSchema = z
+  .object({
+    id: z.string().uuid(),
+    shortCode: z.string(),
+    dispensaryId: z.string().uuid(),
+    status: OrderStatusSchema,
+    totalCents: z.number().int(),
+    placedAt: z.string(),
+    statusChangedAt: z.string(),
+  })
+  .strict();
+export type OrderListItem = z.infer<typeof OrderListItemSchema>;
+
+/**
+ * Cursor-paginated list envelope. `nextCursor: null` marks the last page so
+ * the client knows to stop. Mirrors the iOS `OrderListResponseDTO`.
+ */
+export const ListOrdersResponseSchema = z
+  .object({
+    items: z.array(OrderListItemSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .strict();
 export type ListOrdersResponse = z.infer<typeof ListOrdersResponseSchema>;
 
 export const TransitionResponseSchema = z

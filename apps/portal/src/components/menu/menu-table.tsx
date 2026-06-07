@@ -17,9 +17,10 @@
  *     to the table header (so the "Add listing" CTA lines up cleanly
  *     under the column heads on wide screens).
  *
- * Search/filter and the override panel land in follow-up commits to
- * this same file; the table boundary stays here so those layers
- * extend the snapshot, not the server-side fetch.
+ * Search/filter live here; the override panel (richer per-listing edit:
+ * images, SKU, compare-at, Metrc tag) is a sibling slide-over this table
+ * opens. The table boundary owns the snapshot so both the inline cells
+ * and the panel fold their patches back through the same `handlePatch`.
  */
 import { DomainError, type ErrorDetails } from '@dankdash/types';
 import { PackageOpen, Search } from 'lucide-react';
@@ -31,6 +32,7 @@ import {
 } from '../../lib/api/vendor-listings.js';
 import { type VendorListingActions } from '../../lib/listings/listing-actions.js';
 import { Input } from '../ui/input.js';
+import { ListingOverridePanel } from './listing-override-panel.js';
 import { MenuRow } from './menu-row.js';
 import { SyncBanner } from './sync-banner.js';
 
@@ -51,15 +53,23 @@ class MenuSnapshotError extends DomainError {
 export interface MenuTableProps {
   readonly initialListings: readonly VendorListingWithProduct[];
   readonly actions: VendorListingActions;
+  /** Public R2 base for image previews; undefined renders placeholders. */
+  readonly imageBaseUrl?: string;
   /** Test seam — deterministic clock for sync labels. */
   readonly nowFactory?: () => Date;
 }
 
-export function MenuTable({ initialListings, actions, nowFactory }: MenuTableProps): ReactNode {
+export function MenuTable({
+  initialListings,
+  actions,
+  imageBaseUrl,
+  nowFactory,
+}: MenuTableProps): ReactNode {
   const [listings, setListings] = useState<readonly VendorListingWithProduct[]>(() =>
     [...initialListings].sort(compareListings),
   );
   const [query, setQuery] = useState('');
+  const [overrideListing, setOverrideListing] = useState<VendorListingWithProduct | null>(null);
   const now = nowFactory?.() ?? new Date();
 
   const oldestLastSyncedAt = useMemo<string | null>(() => {
@@ -214,13 +224,30 @@ export function MenuTable({ initialListings, actions, nowFactory }: MenuTablePro
               </thead>
               <tbody>
                 {filtered.map((listing) => (
-                  <MenuRow key={listing.id} listing={listing} onPatch={handlePatch} now={now} />
+                  <MenuRow
+                    key={listing.id}
+                    listing={listing}
+                    onPatch={handlePatch}
+                    onOpenOverride={setOverrideListing}
+                    imageBaseUrl={imageBaseUrl}
+                    now={now}
+                  />
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      <ListingOverridePanel
+        listing={overrideListing}
+        onClose={() => {
+          setOverrideListing(null);
+        }}
+        onPatch={handlePatch}
+        requestImageUpload={actions.requestImageUpload}
+        imageBaseUrl={imageBaseUrl}
+      />
     </div>
   );
 }
