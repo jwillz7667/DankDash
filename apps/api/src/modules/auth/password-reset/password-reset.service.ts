@@ -7,12 +7,16 @@
  *                   eligible, invalidate any prior unused codes, mint a fresh
  *                   one, persist only its hash, and email the plaintext code.
  *                   ALWAYS resolves without signalling whether the email
- *                   existed — the controller returns 202 either way, so the
- *                   endpoint is not an account-enumeration oracle. Any failure
- *                   in the "account exists" branch (DB, Redis, provider) is
- *                   caught and logged rather than propagated, so an internal
- *                   error can't become a timing/error oracle that only fires
- *                   for real accounts.
+ *                   existed. The eligible branch does real work the unknown
+ *                   branch skips (DB writes + an inline provider call), so this
+ *                   method is deliberately NOT constant-time — the controller
+ *                   dispatches it WITHOUT awaiting and returns 202 immediately,
+ *                   which is what keeps the HTTP response timing independent of
+ *                   account existence (no enumeration oracle). Any failure in
+ *                   the "account exists" branch (DB, Redis, provider) is caught
+ *                   and logged rather than propagated, so a background error
+ *                   can't become an error oracle that only fires for real
+ *                   accounts either.
  *
  *   resetPassword — hash the submitted code, look up the token, reject if
  *                   missing/expired/used, then ATOMICALLY claim it

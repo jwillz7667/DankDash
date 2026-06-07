@@ -87,16 +87,30 @@ describe('/v1/auth password reset — forgot → reset → login', () => {
     return { userId: body.user.id, refreshToken: body.tokens.refreshToken };
   }
 
+  // forgot-password returns 202 before the reset work finishes (the controller
+  // dispatches it un-awaited so response latency can't leak account existence —
+  // see the service header). The notification row is therefore written shortly
+  // AFTER the 202, so poll for it rather than reading once.
   async function readResetCode(userId: string): Promise<string> {
-    const rows = await getPool().sql.unsafe<{ payload: { text?: string } }[]>(
-      `SELECT payload FROM notifications
-         WHERE user_id = $1 AND template_key = 'auth.password_reset'
-         ORDER BY created_at DESC
-         LIMIT 1`,
-      [userId],
-    );
-    expect(rows).toHaveLength(1);
-    const text = rows[0]?.payload.text ?? '';
+    const deadline = Date.now() + 5_000;
+    let text = '';
+    for (;;) {
+      const rows = await getPool().sql.unsafe<{ payload: { text?: string } }[]>(
+        `SELECT payload FROM notifications
+           WHERE user_id = $1 AND template_key = 'auth.password_reset'
+           ORDER BY created_at DESC
+           LIMIT 1`,
+        [userId],
+      );
+      if (rows.length === 1) {
+        text = rows[0]?.payload.text ?? '';
+        break;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`reset notification never landed for user ${userId}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     const match = DISPLAY_CODE.exec(text);
     expect(match, `reset email did not contain a code: ${text}`).not.toBeNull();
     return match![0];
