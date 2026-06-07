@@ -1,8 +1,15 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "stream",
-  "globalEnv": ["NODE_ENV", "CI"],
-  "globalPassThroughEnv": ["DATABASE_URL", "DATABASE_URL_TEST", "REDIS_URL", "LOG_LEVEL"],
+  "globalEnv": ["NODE_ENV", "CI", "NEXT_PUBLIC_API_BASE_URL", "NEXT_PUBLIC_REALTIME_URL"],
+  "globalPassThroughEnv": [
+    "DATABASE_URL",
+    "DATABASE_URL_TEST",
+    "REDIS_URL",
+    "LOG_LEVEL",
+    "AUTH_SECRET",
+    "INTERNAL_API_BASE_URL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
