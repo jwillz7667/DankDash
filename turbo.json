@@ -1,7 +1,13 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "stream",
-  "globalEnv": ["NODE_ENV", "CI", "NEXT_PUBLIC_API_BASE_URL", "NEXT_PUBLIC_REALTIME_URL"],
+  "globalEnv": [
+    "NODE_ENV",
+    "CI",
+    "NEXT_PUBLIC_API_BASE_URL",
+    "NEXT_PUBLIC_REALTIME_URL",
+    "NEXT_PUBLIC_R2_PUBLIC_BASE_URL"
+  ],
   "globalPassThroughEnv": [
     "DATABASE_URL",
     "DATABASE_URL_TEST",

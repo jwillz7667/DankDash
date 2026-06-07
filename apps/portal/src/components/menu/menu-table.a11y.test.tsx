@@ -48,6 +48,7 @@ function makeListing(overrides: Partial<VendorListingWithProduct> = {}): VendorL
     priceCents: 4500,
     compareAtPriceCents: null,
     quantityAvailable: 10,
+    imageKeys: [],
     metrcPackageTag: null,
     lastSyncedAt: NOW.toISOString(),
     isActive: true,
@@ -69,6 +70,7 @@ function buildActions(): VendorListingActions {
         syncedAt: NOW.toISOString(),
       }),
     ),
+    requestImageUpload: vi.fn(async () => Promise.reject(new Error('not invoked'))),
   };
 }
 

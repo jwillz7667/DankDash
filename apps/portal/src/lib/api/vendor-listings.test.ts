@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiClient } from './client.js';
 import {
   deleteVendorListing,
+  isUploadableListingImageType,
   listVendorListings,
   patchVendorListing,
+  requestListingImageUpload,
   triggerVendorListingsSync,
+  uploadListingImageToStorage,
+  ListingImageUploadError,
+  type ListingImageUploadTicket,
   type ListVendorListingsResult,
   type SyncVendorListingsResult,
   type VendorListing,
@@ -51,6 +56,7 @@ const SAMPLE_LISTING: VendorListing = {
   priceCents: 1500,
   compareAtPriceCents: null,
   quantityAvailable: 42,
+  imageKeys: [],
   metrcPackageTag: '1A4FF010000022B000000023',
   lastSyncedAt: '2026-05-19T10:00:00.000Z',
   isActive: true,
@@ -162,5 +168,104 @@ describe('triggerVendorListingsSync', () => {
     expect(result).toEqual(body);
     expect(captured[0]?.method).toBe('POST');
     expect(captured[0]?.url).toBe('https://api.test/v1/vendor/listings/sync');
+  });
+});
+
+describe('isUploadableListingImageType', () => {
+  it('accepts the three storable image types and rejects everything else', () => {
+    expect(isUploadableListingImageType('image/jpeg')).toBe(true);
+    expect(isUploadableListingImageType('image/png')).toBe(true);
+    expect(isUploadableListingImageType('image/webp')).toBe(true);
+    expect(isUploadableListingImageType('image/gif')).toBe(false);
+    expect(isUploadableListingImageType('image/svg+xml')).toBe(false);
+    expect(isUploadableListingImageType('application/pdf')).toBe(false);
+  });
+});
+
+describe('requestListingImageUpload', () => {
+  it('POSTs the content type to /v1/vendor/listings/image-uploads and returns the ticket', async () => {
+    const ticket: ListingImageUploadTicket = {
+      uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash',
+      fields: {
+        key: `dispensaries/${DISPENSARY_ID}/listings/abc.jpg`,
+        'Content-Type': 'image/jpeg',
+      },
+      objectKey: `dispensaries/${DISPENSARY_ID}/listings/abc.jpg`,
+      expiresAt: '2026-06-07T12:05:00.000Z',
+    };
+    const { client, captured } = newClient(() => buildResponse(201, ticket));
+
+    const result = await requestListingImageUpload(client, 'image/jpeg');
+
+    expect(result).toEqual(ticket);
+    const req = captured[0];
+    expect(req?.method).toBe('POST');
+    expect(req?.url).toBe('https://api.test/v1/vendor/listings/image-uploads');
+    expect(req?.headers['X-Dispensary-Id']).toBe(DISPENSARY_ID);
+    expect(req?.body !== null && req?.body !== undefined && JSON.parse(req.body)).toEqual({
+      contentType: 'image/jpeg',
+    });
+  });
+});
+
+describe('uploadListingImageToStorage', () => {
+  const TICKET: ListingImageUploadTicket = {
+    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash',
+    fields: {
+      key: `dispensaries/${DISPENSARY_ID}/listings/abc.webp`,
+      'Content-Type': 'image/webp',
+      Policy: 'eyJ...',
+      'X-Amz-Signature': 'deadbeef',
+    },
+    objectKey: `dispensaries/${DISPENSARY_ID}/listings/abc.webp`,
+    expiresAt: '2026-06-07T12:05:00.000Z',
+  };
+
+  it('submits every policy field then the file last, and returns the object key', async () => {
+    let captured: FormData | null = null;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      captured = init?.body as FormData;
+      return new Response(null, { status: 204 });
+    });
+    const file = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' });
+
+    const key = await uploadListingImageToStorage(
+      TICKET,
+      file,
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    expect(key).toBe(TICKET.objectKey);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const form = captured as unknown as FormData;
+    const entries = [...form.keys()];
+    expect(entries).toEqual(['key', 'Content-Type', 'Policy', 'X-Amz-Signature', 'file']);
+    expect(entries.at(-1)).toBe('file');
+    expect(form.get('key')).toBe(TICKET.fields.key);
+  });
+
+  it('throws ListingImageUploadError with the HTTP status when storage rejects the policy', async () => {
+    const fetchImpl = vi.fn(async () => new Response('AccessDenied', { status: 403 }));
+    const file = new Blob([new Uint8Array([1])], { type: 'image/webp' });
+
+    await expect(
+      uploadListingImageToStorage(TICKET, file, fetchImpl as unknown as typeof fetch),
+    ).rejects.toMatchObject({ name: 'ListingImageUploadError', status: 403 });
+  });
+
+  it('wraps a network failure as ListingImageUploadError with a null status', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    const file = new Blob([new Uint8Array([1])], { type: 'image/webp' });
+
+    const error = await uploadListingImageToStorage(
+      TICKET,
+      file,
+      fetchImpl as unknown as typeof fetch,
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ListingImageUploadError);
+    expect((error as ListingImageUploadError).status).toBeNull();
   });
 });

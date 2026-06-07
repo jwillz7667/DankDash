@@ -16,6 +16,14 @@ const PublicEnvSchema = z
   .object({
     NEXT_PUBLIC_API_BASE_URL: z.string().url(),
     NEXT_PUBLIC_REALTIME_URL: z.string().url(),
+    /**
+     * Public base URL for the R2 image bucket (a Cloudflare custom domain
+     * or `pub-*.r2.dev`). Optional: when unset the menu renders a brand
+     * monogram placeholder instead of the photo, so the portal still works
+     * before the CDN is provisioned. Mirrors the API's optional
+     * `R2_PUBLIC_BASE_URL` (see `apps/api/.../storage.module.ts`).
+     */
+    NEXT_PUBLIC_R2_PUBLIC_BASE_URL: z.string().url().optional(),
   })
   .strict();
 
@@ -39,6 +47,7 @@ export function loadPublicEnv(source: NodeJS.ProcessEnv = process.env): PublicEn
   const parsed = PublicEnvSchema.safeParse({
     NEXT_PUBLIC_API_BASE_URL: source['NEXT_PUBLIC_API_BASE_URL'],
     NEXT_PUBLIC_REALTIME_URL: source['NEXT_PUBLIC_REALTIME_URL'],
+    NEXT_PUBLIC_R2_PUBLIC_BASE_URL: source['NEXT_PUBLIC_R2_PUBLIC_BASE_URL'],
   });
   if (!parsed.success) {
     throw new ConfigError('CONFIG_INVALID', 'portal public env is missing or malformed', {

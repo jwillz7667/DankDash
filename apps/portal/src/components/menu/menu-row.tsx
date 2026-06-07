@@ -43,6 +43,7 @@ import {
   parseInputToQuantity,
   syncStaleness,
 } from '../../lib/listings/format.js';
+import { listingImageUrl } from '../../lib/listings/images.js';
 import { formatMoney } from '../../lib/orders/format.js';
 import { Badge, type BadgeTone } from '../ui/badge.js';
 import { Button } from '../ui/button.js';
@@ -64,13 +65,21 @@ export interface MenuRowProps {
   ) => Promise<VendorListingWithProduct>;
   /** Open the override panel for a richer edit (SKU, compareAt, Metrc tag). */
   readonly onOpenOverride?: (listing: VendorListingWithProduct) => void;
+  /** Public R2 base for the thumbnail; undefined renders a brand monogram. */
+  readonly imageBaseUrl?: string;
   /** Deterministic clock for the sync-staleness label. */
   readonly now?: Date;
 }
 
 type FieldKey = 'price' | 'quantity';
 
-export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps): ReactNode {
+export function MenuRow({
+  listing,
+  onPatch,
+  onOpenOverride,
+  imageBaseUrl,
+  now,
+}: MenuRowProps): ReactNode {
   const clock = now ?? new Date();
   const [editing, setEditing] = useState<FieldKey | null>(null);
   const [busy, setBusy] = useState(false);
@@ -106,7 +115,7 @@ export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps)
     >
       <td className="py-3 pl-5 pr-3">
         <div className="flex items-center gap-3">
-          <ProductThumb listing={listing} />
+          <ProductThumb listing={listing} imageBaseUrl={imageBaseUrl} />
           <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-2">
               <p className="truncate text-sm font-semibold text-foreground">
@@ -244,9 +253,19 @@ export function MenuRow({ listing, onPatch, onOpenOverride, now }: MenuRowProps)
   );
 }
 
-function ProductThumb({ listing }: { readonly listing: VendorListingWithProduct }): ReactNode {
-  const firstImage = listing.product.imageKeys[0];
-  if (firstImage === undefined) {
+function ProductThumb({
+  listing,
+  imageBaseUrl,
+}: {
+  readonly listing: VendorListingWithProduct;
+  readonly imageBaseUrl: string | undefined;
+}): ReactNode {
+  // Prefer the per-listing override image (what the consumer sees), then
+  // the shared catalog photo. Compose the public URL from the bare R2 key;
+  // a missing key or unconfigured CDN base falls through to the monogram.
+  const firstKey = listing.imageKeys[0] ?? listing.product.imageKeys[0];
+  const src = firstKey === undefined ? null : listingImageUrl(firstKey, imageBaseUrl);
+  if (src === null) {
     return (
       <div
         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-subtle text-2xs font-medium uppercase tracking-widest text-muted"
@@ -261,7 +280,7 @@ function ProductThumb({ listing }: { readonly listing: VendorListingWithProduct 
       className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-subtle"
       aria-hidden="true"
     >
-      <img src={firstImage} alt="" className="h-10 w-10 rounded-lg object-cover" loading="lazy" />
+      <img src={src} alt="" className="h-10 w-10 rounded-lg object-cover" loading="lazy" />
     </div>
   );
 }
