@@ -22,7 +22,7 @@ struct WelcomeView: View {
         )
 
         VStack(spacing: DankSpacing.md) {
-          DankLogo(.mark, size: 88)
+          DankLogo(.mark, size: 56)
           Text("Drive with DankDash")
             .font(DankFont.title)
             .foregroundStyle(DankColor.Text.primary)
@@ -63,6 +63,7 @@ struct WelcomeView: View {
       .frame(maxWidth: 560)
       .frame(maxWidth: .infinity)
     }
+    .scrollBounceBehavior(.basedOnSize)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)
   }

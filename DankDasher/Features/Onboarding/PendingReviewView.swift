@@ -29,7 +29,7 @@ struct PendingReviewView: View {
     ScrollView {
       VStack(spacing: DankSpacing.lg) {
         VStack(spacing: DankSpacing.md) {
-          DankLogo(.mark, size: 88)
+          DankLogo(.mark, size: 64)
           Text(headline)
             .font(DankFont.title)
             .foregroundStyle(DankColor.Text.primary)

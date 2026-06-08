@@ -112,6 +112,7 @@ struct SignUpView: View {
       .frame(maxWidth: 560)
       .frame(maxWidth: .infinity)
     }
+    .scrollBounceBehavior(.basedOnSize)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(DankColor.cream)
   }
