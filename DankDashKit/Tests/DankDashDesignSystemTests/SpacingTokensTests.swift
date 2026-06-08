@@ -7,9 +7,9 @@ final class SpacingTokensTests: XCTestCase {
     XCTAssertEqual(DankSpacing.xs, 8)
     XCTAssertEqual(DankSpacing.sm, 12)
     XCTAssertEqual(DankSpacing.md, 16)
-    XCTAssertEqual(DankSpacing.lg, 24)
-    XCTAssertEqual(DankSpacing.xl, 32)
-    XCTAssertEqual(DankSpacing.xxl, 48)
+    XCTAssertEqual(DankSpacing.lg, 20)
+    XCTAssertEqual(DankSpacing.xl, 28)
+    XCTAssertEqual(DankSpacing.xxl, 40)
   }
 
   func test_inventoryIsExhaustive() {

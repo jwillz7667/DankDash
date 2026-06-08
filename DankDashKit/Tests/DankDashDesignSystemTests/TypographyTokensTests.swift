@@ -4,19 +4,19 @@ import XCTest
 final class TypographyTokensTests: XCTestCase {
   func test_displayMatchesSpec() {
     let token = DankFont.allTokens.first { $0.name == "display" }
-    XCTAssertEqual(token?.size, 34)
+    XCTAssertEqual(token?.size, 28)
     XCTAssertEqual(token?.weight, "bold")
   }
 
   func test_titleMatchesSpec() {
     let token = DankFont.allTokens.first { $0.name == "title" }
-    XCTAssertEqual(token?.size, 28)
+    XCTAssertEqual(token?.size, 22)
     XCTAssertEqual(token?.weight, "semibold")
   }
 
   func test_bodyMatchesSpec() {
     let token = DankFont.allTokens.first { $0.name == "body" }
-    XCTAssertEqual(token?.size, 17)
+    XCTAssertEqual(token?.size, 16)
     XCTAssertEqual(token?.weight, "regular")
   }
 

@@ -51,12 +51,12 @@ public struct DankFontToken: Hashable, Sendable {
 
 public extension DankFont {
   static let allTokens: [DankFontToken] = [
-    DankFontToken(name: "display", size: 34, weight: "bold"),
-    DankFontToken(name: "title", size: 28, weight: "semibold"),
-    DankFontToken(name: "headline", size: 20, weight: "semibold"),
-    DankFontToken(name: "body", size: 17, weight: "regular"),
-    DankFontToken(name: "bodySmall", size: 15, weight: "regular"),
-    DankFontToken(name: "caption", size: 13, weight: "medium"),
-    DankFontToken(name: "mono", size: 15, weight: "medium"),
+    DankFontToken(name: "display", size: 28, weight: "bold"),
+    DankFontToken(name: "title", size: 22, weight: "semibold"),
+    DankFontToken(name: "headline", size: 17, weight: "semibold"),
+    DankFontToken(name: "body", size: 16, weight: "regular"),
+    DankFontToken(name: "bodySmall", size: 13, weight: "regular"),
+    DankFontToken(name: "caption", size: 12, weight: "medium"),
+    DankFontToken(name: "mono", size: 13, weight: "medium"),
   ]
 }

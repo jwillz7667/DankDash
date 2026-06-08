@@ -51,9 +51,9 @@ internal enum GeneratedTokens {
     internal static let xs: CGFloat = 8
     internal static let sm: CGFloat = 12
     internal static let md: CGFloat = 16
-    internal static let lg: CGFloat = 24
-    internal static let xl: CGFloat = 32
-    internal static let xxl: CGFloat = 48
+    internal static let lg: CGFloat = 20
+    internal static let xl: CGFloat = 28
+    internal static let xxl: CGFloat = 40
   }
 
   internal enum Radius {
@@ -64,20 +64,20 @@ internal enum GeneratedTokens {
   }
 
   internal enum Typography {
-    internal static let display: Font = .system(.largeTitle, design: .rounded, weight: .bold)
-    internal static let displaySize: CGFloat = 34
-    internal static let title: Font = .system(.title, design: .rounded, weight: .semibold)
-    internal static let titleSize: CGFloat = 28
-    internal static let headline: Font = .system(.title3, design: .default, weight: .semibold)
-    internal static let headlineSize: CGFloat = 20
-    internal static let body: Font = .system(.body, design: .default, weight: .regular)
-    internal static let bodySize: CGFloat = 17
-    internal static let bodySmall: Font = .system(.subheadline, design: .default, weight: .regular)
-    internal static let bodySmallSize: CGFloat = 15
-    internal static let caption: Font = .system(.footnote, design: .default, weight: .medium)
-    internal static let captionSize: CGFloat = 13
-    internal static let mono: Font = .system(.subheadline, design: .monospaced, weight: .medium)
-    internal static let monoSize: CGFloat = 15
+    internal static let display: Font = .system(.title, design: .rounded, weight: .bold)
+    internal static let displaySize: CGFloat = 28
+    internal static let title: Font = .system(.title2, design: .rounded, weight: .semibold)
+    internal static let titleSize: CGFloat = 22
+    internal static let headline: Font = .system(.body, design: .default, weight: .semibold)
+    internal static let headlineSize: CGFloat = 17
+    internal static let body: Font = .system(.subheadline, design: .default, weight: .regular)
+    internal static let bodySize: CGFloat = 16
+    internal static let bodySmall: Font = .system(.footnote, design: .default, weight: .regular)
+    internal static let bodySmallSize: CGFloat = 13
+    internal static let caption: Font = .system(.caption, design: .default, weight: .medium)
+    internal static let captionSize: CGFloat = 12
+    internal static let mono: Font = .system(.footnote, design: .monospaced, weight: .medium)
+    internal static let monoSize: CGFloat = 13
   }
 
   internal enum Shadow {

@@ -89,9 +89,9 @@ export const tokens = {
     xs: 8,
     sm: 12,
     md: 16,
-    lg: 24,
-    xl: 32,
-    xxl: 48,
+    lg: 20,
+    xl: 28,
+    xxl: 40,
   },
 
   /** Corner radius scale. `pill` exceeds any expected element height. */
@@ -108,13 +108,13 @@ export const tokens = {
    * font primitives in the codegen layer.
    */
   typography: {
-    display: { size: 34, weight: 'bold', design: 'rounded' },
-    title: { size: 28, weight: 'semibold', design: 'rounded' },
-    headline: { size: 20, weight: 'semibold', design: 'default' },
-    body: { size: 17, weight: 'regular', design: 'default' },
-    bodySmall: { size: 15, weight: 'regular', design: 'default' },
-    caption: { size: 13, weight: 'medium', design: 'default' },
-    mono: { size: 15, weight: 'medium', design: 'monospaced' },
+    display: { size: 28, weight: 'bold', design: 'rounded' },
+    title: { size: 22, weight: 'semibold', design: 'rounded' },
+    headline: { size: 17, weight: 'semibold', design: 'default' },
+    body: { size: 16, weight: 'regular', design: 'default' },
+    bodySmall: { size: 13, weight: 'regular', design: 'default' },
+    caption: { size: 12, weight: 'medium', design: 'default' },
+    mono: { size: 13, weight: 'medium', design: 'monospaced' },
   },
 
   /**

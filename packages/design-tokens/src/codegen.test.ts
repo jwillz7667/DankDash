@@ -29,10 +29,10 @@ describe('emitSwift', () => {
 
   it('emits typography tokens with the expected text style for each size', () => {
     expect(output).toContain(
-      'internal static let display: Font = .system(.largeTitle, design: .rounded, weight: .bold)',
+      'internal static let display: Font = .system(.title, design: .rounded, weight: .bold)',
     );
     expect(output).toContain(
-      'internal static let mono: Font = .system(.subheadline, design: .monospaced, weight: .medium)',
+      'internal static let mono: Font = .system(.footnote, design: .monospaced, weight: .medium)',
     );
   });
 
