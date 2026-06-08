@@ -35,7 +35,7 @@
  *                          drives the outer scan; the NOT EXISTS uses
  *                          `order_items_listing_idx`.
  */
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, lt, sql } from 'drizzle-orm';
 import { products, dispensaryListings } from '../schema/catalog.js';
 import { orders, orderItems } from '../schema/orders.js';
 import { BaseRepository } from './base.js';
@@ -99,8 +99,12 @@ export class AnalyticsRepository extends BaseRepository {
           eq(orders.dispensaryId, dispensaryId),
           eq(orders.status, 'delivered'),
           isNotNull(orders.deliveredAt),
-          sql`${orders.deliveredAt} >= ${since}`,
-          sql`${orders.deliveredAt} < ${until}`,
+          // Typed operators (not raw `sql\`col >= ${date}\``): drizzle binds the
+          // Date through the column's timestamp driver-mapper. A raw Date in a
+          // `sql` template reaches postgres-js unmapped and throws
+          // ERR_INVALID_ARG_TYPE at Bind ("Received an instance of Date").
+          gte(orders.deliveredAt, since),
+          lt(orders.deliveredAt, until),
         ),
       );
     return {
@@ -122,6 +126,11 @@ export class AnalyticsRepository extends BaseRepository {
     since: Date,
     until: Date,
   ): Promise<readonly HourlyBucketRow[]> {
+    // Raw `sql` template can't use the typed column mapper, so bind the bounds
+    // as ISO strings + `::timestamptz` casts — a raw Date param crashes
+    // postgres-js at Bind (ERR_INVALID_ARG_TYPE, "Received an instance of Date").
+    const sinceIso = since.toISOString();
+    const untilIso = until.toISOString();
     const rows = await this.db.execute<{
       day_of_week: number;
       hour: number;
@@ -137,8 +146,8 @@ export class AnalyticsRepository extends BaseRepository {
       WHERE ${orders.dispensaryId} = ${dispensaryId}
         AND ${orders.status} = 'delivered'
         AND ${orders.deliveredAt} IS NOT NULL
-        AND ${orders.deliveredAt} >= ${since}
-        AND ${orders.deliveredAt} < ${until}
+        AND ${orders.deliveredAt} >= ${sinceIso}::timestamptz
+        AND ${orders.deliveredAt} < ${untilIso}::timestamptz
       GROUP BY day_of_week, hour
       ORDER BY day_of_week, hour
     `);
@@ -188,8 +197,10 @@ export class AnalyticsRepository extends BaseRepository {
           eq(orders.dispensaryId, dispensaryId),
           eq(orders.status, 'delivered'),
           isNotNull(orders.deliveredAt),
-          sql`${orders.deliveredAt} >= ${since}`,
-          sql`${orders.deliveredAt} < ${until}`,
+          // See dispensarySalesBetween: typed operators so the Date binds via
+          // the column mapper instead of crashing postgres-js at Bind.
+          gte(orders.deliveredAt, since),
+          lt(orders.deliveredAt, until),
         ),
       )
       .groupBy(products.id, products.brand, products.name)
@@ -214,6 +225,9 @@ export class AnalyticsRepository extends BaseRepository {
     since: Date,
     until: Date,
   ): Promise<ReorderCountsRow> {
+    // Bind bounds as ISO strings + casts (see dispensaryHourlyBetween).
+    const sinceIso = since.toISOString();
+    const untilIso = until.toISOString();
     const result = await this.db.execute<{
       customer_count: number;
       repeat_customer_count: number;
@@ -227,8 +241,8 @@ export class AnalyticsRepository extends BaseRepository {
         WHERE ${orders.dispensaryId} = ${dispensaryId}
           AND ${orders.status} = 'delivered'
           AND ${orders.deliveredAt} IS NOT NULL
-          AND ${orders.deliveredAt} >= ${since}
-          AND ${orders.deliveredAt} < ${until}
+          AND ${orders.deliveredAt} >= ${sinceIso}::timestamptz
+          AND ${orders.deliveredAt} < ${untilIso}::timestamptz
         GROUP BY ${orders.userId}
       ) c
     `);
@@ -254,6 +268,9 @@ export class AnalyticsRepository extends BaseRepository {
     until: Date,
     limit = 50,
   ): Promise<readonly DeadInventoryRow[]> {
+    // Bind the window bounds as ISO strings + casts (see dispensaryHourlyBetween).
+    const sinceIso = since.toISOString();
+    const untilIso = until.toISOString();
     const rows = await this.db.execute<{
       listing_id: string;
       sku: string;
@@ -290,8 +307,8 @@ export class AnalyticsRepository extends BaseRepository {
             AND o.dispensary_id = ${dispensaryId}
             AND o.status = 'delivered'
             AND o.delivered_at IS NOT NULL
-            AND o.delivered_at >= ${since}
-            AND o.delivered_at < ${until}
+            AND o.delivered_at >= ${sinceIso}::timestamptz
+            AND o.delivered_at < ${untilIso}::timestamptz
         )
       ORDER BY ${dispensaryListings.quantityAvailable} DESC,
                ${dispensaryListings.priceCents} DESC
