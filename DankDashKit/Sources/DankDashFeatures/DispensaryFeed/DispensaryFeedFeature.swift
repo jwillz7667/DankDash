@@ -19,9 +19,23 @@ public struct DispensaryFeedFeature: Sendable {
   /// the empty state instead.
   static let staleAfter: TimeInterval = 60 * 60 * 24
 
+  /// Discovery is intentionally NOT geo-gated. The server treats the
+  /// unfiltered active list as the discovery hot path (and caches it),
+  /// while the lat/lng-filtered query runs `ST_Contains` against each
+  /// store's `delivery_polygon` — which excludes any browser standing
+  /// outside a (small, sparse) polygon, e.g. most MN suburbs and the
+  /// simulator's default location. The statutory delivery geofence is
+  /// enforced at checkout against the *delivery address*, not the
+  /// device's current location, so the feed fetch ignores `coordinate`
+  /// and shares one stable cache entry across locations.
+  static let discoveryFeedKey = CatalogCacheClient.feedKey(for: nil)
+
   @ObservableState
   public struct State: Equatable, Sendable {
     public var authorizationStatus: LocationAuthorizationStatus
+    /// Resolved device location. Retained for checkout address pre-fill
+    /// and future distance sorting — deliberately NOT used to filter the
+    /// discovery feed (see ``DispensaryFeedFeature/discoveryFeedKey``).
     public var coordinate: Coordinate?
     public var dispensaries: [Dispensary]
     public var isLoading: Bool
@@ -98,9 +112,8 @@ public struct DispensaryFeedFeature: Sendable {
     Reduce { state, action in
       switch action {
       case .task:
-        let coordinate = state.coordinate
         return .run { send in
-          let snapshot = await cache.readFeed(CatalogCacheClient.feedKey(for: coordinate))
+          let snapshot = await cache.readFeed(Self.discoveryFeedKey)
           await send(.cacheLoaded(snapshot: snapshot))
           let status = location.authorizationStatus()
           await send(.authorizationStatusResolved(status))
@@ -164,16 +177,18 @@ public struct DispensaryFeedFeature: Sendable {
         state.isLoading = true
         state.error = nil
         state.hasAttemptedFetch = true
-        let coordinate = state.coordinate
         let writtenAt = now
         return .run { send in
           do {
-            let dispensaries = try await api.listDispensaries(coordinate)
+            // Discovery is location-agnostic — pass nil so the server
+            // returns the full active list, not the polygon-filtered set.
+            // See `discoveryFeedKey` for why.
+            let dispensaries = try await api.listDispensaries(nil)
             let snapshot = CatalogCacheClient.FeedSnapshot(
               dispensaries: dispensaries,
               queriedAt: writtenAt
             )
-            await cache.writeFeed(CatalogCacheClient.feedKey(for: coordinate), snapshot)
+            await cache.writeFeed(Self.discoveryFeedKey, snapshot)
             await send(.fetchResponse(.success(dispensaries)))
           } catch let error as CatalogAPIError {
             switch error {
@@ -236,6 +251,10 @@ public struct DispensaryFeedSection: Identifiable, Equatable, Sendable {
     case topRated
     case newOnDankDash
     case closingSoon
+    /// Full directory rail. Always rendered last and always contains
+    /// every dispensary, so the feed is never empty when the server
+    /// returned active stores — even if none qualify for a curated rail.
+    case allDispensaries
 
     public var title: String {
       switch self {
@@ -243,6 +262,7 @@ public struct DispensaryFeedSection: Identifiable, Equatable, Sendable {
       case .topRated: "Top rated"
       case .newOnDankDash: "New on DankDash"
       case .closingSoon: "Closing soon"
+      case .allDispensaries: "All dispensaries"
       }
     }
 
@@ -252,20 +272,26 @@ public struct DispensaryFeedSection: Identifiable, Equatable, Sendable {
       case .topRated: "Trending"
       case .newOnDankDash: "Recently joined"
       case .closingSoon: "Last call"
+      case .allDispensaries: "Browse"
       }
     }
   }
 
-  /// Builds the four sections from the unsorted feed. Order:
+  /// Builds the feed sections from the unsorted list. Order:
   ///
   ///   1. `deliveringNow` — every dispensary with `isOpenNow == true`.
   ///   2. `topRated` — `ratingAvg >= 4.5`, sorted descending.
   ///   3. `newOnDankDash` — created within the last 30 days, newest first.
   ///   4. `closingSoon` — open now and closing within 60 minutes of
   ///      `referenceDate` based on the weekday's hours.
+  ///   5. `allDispensaries` — the full directory, rating then name. This
+  ///      catch-all always carries every store, so a dispensary that
+  ///      qualifies for none of the curated rails (closed, unrated, old)
+  ///      is still reachable and the feed is never empty when data exists.
   ///
-  /// Empty sections are omitted so the view never renders a "Top rated"
-  /// header with zero rows.
+  /// Curated rails (1–4) are omitted when empty so the view never renders
+  /// a "Top rated" header with zero rows; the catch-all (5) is omitted
+  /// only when the input itself is empty.
   public static func sections(
     from dispensaries: [Dispensary],
     referenceDate: Date = Date(),
@@ -287,12 +313,19 @@ public struct DispensaryFeedSection: Identifiable, Equatable, Sendable {
     let closingSoon = dispensaries.filter {
       isClosingSoon($0, referenceDate: referenceDate, timeZone: timeZone)
     }
+    let allSorted = dispensaries.sorted {
+      let lhs = $0.ratingAvg ?? 0
+      let rhs = $1.ratingAvg ?? 0
+      if lhs != rhs { return lhs > rhs }
+      return $0.legalName.localizedCaseInsensitiveCompare($1.legalName) == .orderedAscending
+    }
 
     var result: [DispensaryFeedSection] = []
     if !deliveringNow.isEmpty { result.append(.init(kind: .deliveringNow, dispensaries: deliveringNow)) }
     if !topRated.isEmpty { result.append(.init(kind: .topRated, dispensaries: topRated)) }
     if !newOnes.isEmpty { result.append(.init(kind: .newOnDankDash, dispensaries: newOnes)) }
     if !closingSoon.isEmpty { result.append(.init(kind: .closingSoon, dispensaries: closingSoon)) }
+    if !allSorted.isEmpty { result.append(.init(kind: .allDispensaries, dispensaries: allSorted)) }
     return result
   }
 

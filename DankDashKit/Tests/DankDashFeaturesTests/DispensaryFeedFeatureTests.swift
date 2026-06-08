@@ -56,8 +56,10 @@ final class DispensaryFeedFeatureTests: XCTestCase {
     let fetched = [Self.makeDispensary(legalName: "Bloom")]
     var api = CatalogAPIClient.unimplemented
     api.listDispensaries = { passed in
-      XCTAssertEqual(passed?.latitude ?? .nan, coord.latitude, accuracy: 1e-6)
-      XCTAssertEqual(passed?.longitude ?? .nan, coord.longitude, accuracy: 1e-6)
+      // Discovery is location-agnostic: the resolved coordinate lands in
+      // state (for checkout pre-fill) but is never used to geo-filter the
+      // feed, so the fetch always passes nil.
+      XCTAssertNil(passed, "Discovery feed must not be geo-filtered by device location.")
       return fetched
     }
 
@@ -381,7 +383,7 @@ final class DispensaryFeedFeatureTests: XCTestCase {
     XCTAssertEqual(newSection?.dispensaries.map(\.legalName), ["Fresh"])
   }
 
-  func test_sections_omitsEmptySections() {
+  func test_sections_omitsEmptyCuratedRails() {
     let closed = Self.makeDispensary(
       legalName: "Closed",
       isOpenNow: false,
@@ -392,7 +394,31 @@ final class DispensaryFeedFeatureTests: XCTestCase {
       from: [closed],
       referenceDate: Date(timeIntervalSince1970: 1_780_000_000)
     )
-    XCTAssertTrue(result.isEmpty, "Single low-rated old closed store yields no sections.")
+    // A low-rated, old, closed store qualifies for none of the curated
+    // rails, but the catch-all still surfaces it so it is never hidden.
+    XCTAssertEqual(result.map(\.kind), [.allDispensaries])
+    XCTAssertEqual(result.first?.dispensaries.map(\.legalName), ["Closed"])
+  }
+
+  func test_sections_allDispensariesCatchAllIsLastAndComplete() {
+    let open = Self.makeDispensary(legalName: "Open Now", isOpenNow: true)
+    let closed = Self.makeDispensary(
+      legalName: "Closed",
+      isOpenNow: false,
+      ratingAvg: Decimal(string: "3.0"),
+      createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let result = DispensaryFeedSection.sections(
+      from: [open, closed],
+      referenceDate: Date(timeIntervalSince1970: 1_780_000_000)
+    )
+
+    XCTAssertEqual(result.last?.kind, .allDispensaries, "Catch-all is always last.")
+    XCTAssertEqual(
+      Set(result.last?.dispensaries.map(\.legalName) ?? []),
+      ["Open Now", "Closed"],
+      "Catch-all carries every dispensary, featured or not."
+    )
   }
 
   // MARK: - isClosingSoon edge cases
