@@ -50,11 +50,7 @@ final class RootFeatureTests: XCTestCase {
       $0.tokenStore = .inMemory
     }
 
-    await store.send(.ageGate(.monthChanged(5))) { $0.ageGate.month = 5 }
-    await store.send(.ageGate(.dayChanged(20))) { $0.ageGate.day = 20 }
-    await store.send(.ageGate(.yearChanged(2000))) { $0.ageGate.year = 2000 }
-    await store.send(.ageGate(.acknowledgementToggled(true))) { $0.ageGate.acknowledged = true }
-    await store.send(.ageGate(.submitTapped))
+    await store.send(.ageGate(.confirmTapped))
     await store.receive(\.ageGate.delegate.passed) {
       $0.screen = .auth
     }

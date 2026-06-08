@@ -1,52 +1,36 @@
 import Foundation
 import ComposableArchitecture
-import DankDashDomain
 
 /// Hard gate enforced before any other surface renders. Per Minn. Stat.
-/// §342.27 the consumer app may not allow cannabis content to anyone
-/// under 21; the gate keeps under-21 users out of the catalog/checkout
-/// paths entirely. KYC age verification (Phase 17) is the authoritative
-/// check — this is the client-side first-line UX guard.
+/// §342.27 the consumer app may not expose cannabis content to anyone
+/// under 21, so this gate keeps under-21 users out of the catalog and
+/// checkout paths entirely.
+///
+/// This is the client-side first-line UX guard, not an identity check. We
+/// deliberately collect no date of birth here: a self-attested DOB adds
+/// no assurance over a single "I am 21 or older" affirmation, and the
+/// authoritative age controls live elsewhere — KYC age verification
+/// (Phase 17) re-derives age from a verified ID document, and the driver
+/// scans a government-issued ID at handoff (which the gate copy promises).
 @Reducer
 public struct AgeGateFeature: Sendable {
   @ObservableState
   public struct State: Equatable, Sendable {
-    public var month: Int
-    public var day: Int
-    public var year: Int
-    public var acknowledged: Bool
+    /// Set when the customer declines the 21+ attestation. Cleared on the
+    /// next affirmative tap so a mis-tap doesn't strand the customer.
     public var error: String?
 
-    public init(
-      month: Int = 1,
-      day: Int = 1,
-      year: Int = Calendar(identifier: .gregorian).component(.year, from: Date()) - 30,
-      acknowledged: Bool = false,
-      error: String? = nil
-    ) {
-      self.month = month
-      self.day = day
-      self.year = year
-      self.acknowledged = acknowledged
+    public init(error: String? = nil) {
       self.error = error
-    }
-
-    /// Whether the form is currently submittable.
-    public var canSubmit: Bool {
-      acknowledged && resolvedDOB() != nil
-    }
-
-    func resolvedDOB() -> DateOfBirth? {
-      DateOfBirth(year: year, month: month, day: day)
     }
   }
 
   public enum Action: Equatable, Sendable {
-    case monthChanged(Int)
-    case dayChanged(Int)
-    case yearChanged(Int)
-    case acknowledgementToggled(Bool)
-    case submitTapped
+    /// "I am 21 or older" — the customer attests to age and to the
+    /// at-delivery ID requirement; the gate opens.
+    case confirmTapped
+    /// "I am under 21" — surfaces the block message; the gate stays shut.
+    case declineTapped
     case delegate(Delegate)
 
     @CasePathable
@@ -55,40 +39,16 @@ public struct AgeGateFeature: Sendable {
     }
   }
 
-  @Dependency(\.date) var now
-
   public init() {}
 
   public var body: some ReducerOf<Self> {
     Reduce { state, action in
       switch action {
-      case .monthChanged(let value):
-        state.month = value
+      case .confirmTapped:
         state.error = nil
-        return .none
+        return .send(.delegate(.passed))
 
-      case .dayChanged(let value):
-        state.day = value
-        state.error = nil
-        return .none
-
-      case .yearChanged(let value):
-        state.year = value
-        state.error = nil
-        return .none
-
-      case .acknowledgementToggled(let value):
-        state.acknowledged = value
-        return .none
-
-      case .submitTapped:
-        guard let dob = state.resolvedDOB() else {
-          state.error = "Enter a valid date of birth."
-          return .none
-        }
-        if dob.isOver21(asOf: now.now) {
-          return .send(.delegate(.passed))
-        }
+      case .declineTapped:
         state.error = "You must be 21 or older to use DankDash."
         return .none
 
