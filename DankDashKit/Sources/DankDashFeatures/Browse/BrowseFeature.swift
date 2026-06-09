@@ -32,6 +32,7 @@ public struct BrowseFeature: Sendable {
     public var search: SearchFeature.State
     public var cart: CartFeature.State
     public var orderHistory: OrderHistoryFeature.State
+    public var account: AccountFeature.State
     public var storefront: StorefrontFeature.State?
     public var productDetail: ProductDetailFeature.State?
     public var orderDetail: OrderDetailFeature.State?
@@ -47,6 +48,7 @@ public struct BrowseFeature: Sendable {
       search: SearchFeature.State = .init(),
       cart: CartFeature.State = .init(),
       orderHistory: OrderHistoryFeature.State = .init(),
+      account: AccountFeature.State = .init(),
       storefront: StorefrontFeature.State? = nil,
       productDetail: ProductDetailFeature.State? = nil,
       orderDetail: OrderDetailFeature.State? = nil,
@@ -58,6 +60,7 @@ public struct BrowseFeature: Sendable {
       self.search = search
       self.cart = cart
       self.orderHistory = orderHistory
+      self.account = account
       self.storefront = storefront
       self.productDetail = productDetail
       self.orderDetail = orderDetail
@@ -85,10 +88,21 @@ public struct BrowseFeature: Sendable {
     case search(SearchFeature.Action)
     case cart(CartFeature.Action)
     case orderHistory(OrderHistoryFeature.Action)
+    case account(AccountFeature.Action)
     case storefront(StorefrontFeature.Action)
     case productDetail(ProductDetailFeature.Action)
     case orderDetail(OrderDetailFeature.Action)
     case checkoutHandoff(CheckoutHandoffFeature.Action)
+    case delegate(Delegate)
+
+    /// Surface for concerns the browse subtree can't own itself. Sign-out
+    /// belongs to ``RootFeature`` (it clears tokens and resets the screen
+    /// stack), so the Account tab routes its request up rather than
+    /// mutating auth state from inside the tab.
+    @CasePathable
+    public enum Delegate: Equatable, Sendable {
+      case signOutRequested
+    }
   }
 
   public init() {}
@@ -108,6 +122,10 @@ public struct BrowseFeature: Sendable {
 
     Scope(state: \.orderHistory, action: \.orderHistory) {
       OrderHistoryFeature()
+    }
+
+    Scope(state: \.account, action: \.account) {
+      AccountFeature()
     }
 
     Reduce { state, action in
@@ -301,6 +319,21 @@ public struct BrowseFeature: Sendable {
         return .none
 
       case .orderHistory:
+        return .none
+
+      // MARK: Account → sign-out / cross-tab
+
+      case .account(.delegate(.signOutRequested)):
+        return .send(.delegate(.signOutRequested))
+
+      case .account(.delegate(.showOrders)):
+        state.selectedTab = .orders
+        return .none
+
+      case .account:
+        return .none
+
+      case .delegate:
         return .none
 
       case .orderDetail(.delegate(.reorderRequested)):

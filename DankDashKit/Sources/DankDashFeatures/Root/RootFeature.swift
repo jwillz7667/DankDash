@@ -110,6 +110,22 @@ public struct RootFeature: Sendable {
 
   public init() {}
 
+  /// Tears the session down to the signed-out baseline: drops the cached
+  /// user, resets every auth sub-flow and the browse subtree, and routes
+  /// back to the login screen. Shared by the explicit sign-out CTA and the
+  /// Account tab's delegated sign-out so both paths leave identical state.
+  /// The caller still owns clearing the keychain tokens (an effect).
+  private static func resetToSignedOut(_ state: inout State) {
+    state.signedInUser = nil
+    state.login = .init()
+    state.signUp = .init()
+    state.forgotPassword = nil
+    state.authScreen = .login
+    state.screen = .auth
+    state.browse = .init()
+    state.pendingDeepLink = nil
+  }
+
   public var body: some ReducerOf<Self> {
     Scope(state: \.ageGate, action: \.ageGate) {
       AgeGateFeature()
@@ -188,18 +204,20 @@ public struct RootFeature: Sendable {
       case .forgotPassword:
         return .none
 
+      // The Account tab can't own sign-out — clearing tokens and
+      // resetting the screen stack is the root's job — so it routes the
+      // request up through ``BrowseFeature/Action/Delegate``.
+      case .browse(.delegate(.signOutRequested)):
+        Self.resetToSignedOut(&state)
+        return .run { _ in
+          await tokens.clear()
+        }
+
       case .browse:
         return .none
 
       case .signOutTapped:
-        state.signedInUser = nil
-        state.login = .init()
-        state.signUp = .init()
-        state.forgotPassword = nil
-        state.authScreen = .login
-        state.screen = .auth
-        state.browse = .init()
-        state.pendingDeepLink = nil
+        Self.resetToSignedOut(&state)
         return .run { _ in
           await tokens.clear()
         }

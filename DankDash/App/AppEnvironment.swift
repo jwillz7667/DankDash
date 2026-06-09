@@ -69,6 +69,7 @@ struct AppEnvironment {
     // before the root store is constructed.
     dependencies.cartAPIClient = .live(apiClient: apiClient)
     dependencies.ordersAPIClient = .live(apiClient: apiClient)
+    dependencies.meAPIClient = .live(apiClient: apiClient)
     dependencies.addressAPIClient = .live(apiClient: apiClient)
     dependencies.handoffAPIClient = .live(apiClient: apiClient)
     dependencies.realtimeClient = .live(

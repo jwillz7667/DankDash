@@ -19,8 +19,6 @@ import DankDashNetwork
 ///     promotes it.
 struct BrowseRootView: View {
   @Bindable var store: StoreOf<BrowseFeature>
-  let user: UserSummaryDTO?
-  let onSignOut: () -> Void
   @Dependency(\.cdnBaseURL) private var cdnBaseURL
 
   var body: some View {
@@ -98,11 +96,9 @@ struct BrowseRootView: View {
         .tabItem { Label("Orders", systemImage: "shippingbox") }
         .tag(BrowseFeature.Tab.orders)
 
-      NavigationStack {
-        AccountTabView(user: user, onSignOut: onSignOut)
-      }
-      .tabItem { Label("Account", systemImage: "person.crop.circle") }
-      .tag(BrowseFeature.Tab.account)
+      AccountTabView(store: store)
+        .tabItem { Label("Account", systemImage: "person.crop.circle") }
+        .tag(BrowseFeature.Tab.account)
     }
     .tint(DankColor.primary)
     .overlay(alignment: .top) {
