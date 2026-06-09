@@ -18,7 +18,7 @@
  * reproduce at the integration layer.
  */
 import { NotFoundError, RepositoryError, ValidationError } from '@dankdash/types';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CartService, type CartScopedRepos, type CartScopedReposFactory } from './cart.service.js';
 import type {
   Cart,
@@ -50,12 +50,12 @@ const ITEM_ID = '01935f3d-0000-7000-8000-000000000040';
 const PRODUCT_ID = '01935f3d-0000-7000-8000-000000000050';
 const ADDRESS_ID = '01935f3d-0000-7000-8000-000000000060';
 
-// validate() runs the live compliance clock, so the test rig seeds a
-// dispensary whose hours mirror MN's full statutory window (08:00–02:00
-// local, encoded as 26:00 for the next-day close). That way these tests
-// stay green for any wall-clock moment that is itself legal under the
-// state cap — they don't bake in a narrower fixture that drifts out of
-// scope as the real time advances during a long run or a late-night CI.
+// The CartService.validate suite pins the compliance clock (see its
+// beforeEach) to a fixed in-hours instant, so the sale-hours rule is
+// deterministic regardless of when CI runs. The dispensary fixture still
+// encodes MN's full statutory window (08:00–02:00 local, written 26:00 for
+// the next-day close) so the pinned instant — and any narrower legal one —
+// lands inside open hours.
 const SAMPLE_HOURS = {
   mon: { open: '08:00', close: '26:00' },
   tue: { open: '08:00', close: '26:00' },
@@ -806,12 +806,24 @@ describe('CartService projection invariants', () => {
 
 describe('CartService.validate', () => {
   let rig: Rig;
+  // validate() reads the live compliance clock; the sale-hours rule fails
+  // closed in the 02:00–08:00 America/Chicago window, when no dispensary may
+  // legally be open, so the full-pass assertions below would flake on any CI
+  // run in that window. Pin "now" to a fixed in-hours instant (Mon 2026-05-18
+  // 14:00 CDT) — matching the fixtures' May-2026 timeline — so only legitimate
+  // rule outcomes are under test, not the time of day. Failure-path tests
+  // still fail for their own reason (over-cap, geofence, …).
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-18T19:00:00.000Z'));
     rig = makeRig();
     rig.carts.seed(makeCart());
     rig.dispensaries.seed(makeDispensary());
     rig.users.seed(makeUser());
     rig.userAddresses.seed(makeUserAddress());
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('returns a passing evaluation for an empty cart in an in-zone window', async () => {
