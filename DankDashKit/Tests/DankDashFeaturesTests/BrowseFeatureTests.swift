@@ -605,4 +605,30 @@ final class BrowseFeatureTests: XCTestCase {
     XCTAssertEqual(store.state.productDetail?.productId, relatedId)
     XCTAssertEqual(store.state.productDetail?.maxAvailable, 0, "Related products drilled into from a non-storefront detail have no listing pin.")
   }
+
+  // MARK: - account tab routing
+
+  func test_accountDelegateSignOutRequested_bubblesToBrowseDelegate() async {
+    let store = TestStore(initialState: BrowseFeature.State(selectedTab: .account)) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.account(.delegate(.signOutRequested)))
+    await store.receive(\.delegate.signOutRequested)
+  }
+
+  func test_accountDelegateShowOrders_switchesToOrdersTab() async {
+    let store = TestStore(initialState: BrowseFeature.State(selectedTab: .account)) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.account(.delegate(.showOrders)))
+    XCTAssertEqual(store.state.selectedTab, .orders)
+  }
 }

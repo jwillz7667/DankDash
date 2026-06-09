@@ -23,9 +23,7 @@ struct RootView: View {
         AuthFlowView(store: store)
       case .signedIn:
         BrowseRootView(
-          store: store.scope(state: \.browse, action: \.browse),
-          user: store.signedInUser,
-          onSignOut: { store.send(.signOutTapped) }
+          store: store.scope(state: \.browse, action: \.browse)
         )
       }
     }
