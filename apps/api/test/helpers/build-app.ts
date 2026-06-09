@@ -41,10 +41,22 @@ import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard.js';
 import { JwtService } from '../../src/modules/auth/jwt/jwt.service.js';
 import type { ExceptionCounters, HttpHistograms, SentryHandle } from '@dankdash/observability';
 
-export interface ProviderOverride {
-  readonly token: unknown;
-  readonly value: unknown;
-}
+/**
+ * A provider override applied before the test module compiles. The
+ * `value` form maps to `overrideProvider(token).useValue(value)` — the
+ * common case (swap a third-party adapter for a fake). The `factory`
+ * form maps to `overrideProvider(token).useFactory({ factory, inject })`
+ * for the rare case where the replacement must be constructed from other
+ * DI tokens resolved at compile time (e.g. forcing a config-snapshotted
+ * flag on by rebuilding the service against the real DB pool).
+ */
+export type ProviderOverride =
+  | { readonly token: unknown; readonly value: unknown }
+  | {
+      readonly token: unknown;
+      readonly factory: (...args: readonly unknown[]) => unknown;
+      readonly inject?: readonly unknown[];
+    };
 
 export interface BuildTestAppOptions {
   readonly overrides?: readonly ProviderOverride[];
@@ -70,7 +82,13 @@ export async function buildTestApp(
     }
     let builder = Test.createTestingModule({ imports: [AppModule] });
     for (const o of overrides) {
-      builder = builder.overrideProvider(o.token).useValue(o.value);
+      builder =
+        'value' in o
+          ? builder.overrideProvider(o.token).useValue(o.value)
+          : builder.overrideProvider(o.token).useFactory({
+              factory: o.factory,
+              inject: o.inject ? [...o.inject] : [],
+            });
     }
     const moduleRef = await builder.compile();
     return moduleRef.createNestApplication<NestFastifyApplication>(adapter, {

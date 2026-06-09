@@ -30,9 +30,12 @@ import {
   type AeropayPaymentStatus,
   type CreatePaymentInput,
 } from '@dankdash/aeropay';
-import { stableUuid } from '@dankdash/db';
+import { stableUuid, type Database } from '@dankdash/db';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { DRIZZLE_DB } from '../../src/infrastructure/drizzle.module.js';
+import { createCheckoutScopedRepos } from '../../src/modules/checkout/checkout.module.js';
+import { CheckoutService } from '../../src/modules/checkout/checkout.service.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../../src/modules/payments/tokens.js';
 import { buildTestApp } from '../helpers/build-app.js';
 import {
@@ -491,6 +494,129 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
   });
 });
 
+describe('/v1/carts/:id/checkout — PAYMENTS_BYPASS_ENABLED test mode', () => {
+  let app: NestFastifyApplication;
+  let aeropay: FakeAeropayClient;
+
+  beforeAll(async () => {
+    // PAYMENTS_BYPASS_ENABLED is snapshotted at ConfigModule import time
+    // (the validate() call runs once when app.module.js is first loaded),
+    // so it cannot be flipped per-test via process.env. Instead override
+    // the CheckoutService provider with one constructed with the flag
+    // forced on, reusing the production scoped-repo factory so the wiring
+    // can't drift. AEROPAY_CLIENT is still faked and injected into the
+    // override so an accidental charge attempt is caught (we assert zero
+    // createPayment calls below).
+    aeropay = new FakeAeropayClient();
+    app = await buildTestApp({
+      overrides: [
+        { token: AEROPAY_CLIENT, value: aeropay },
+        {
+          token: CheckoutService,
+          inject: [DRIZZLE_DB, AEROPAY_CLIENT],
+          factory: (db, ap) =>
+            new CheckoutService(
+              db as Database,
+              createCheckoutScopedRepos,
+              ap as AeropayClientLike,
+              true,
+            ),
+        },
+      ],
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    freezeToBusinessHours();
+    await seedFixtures();
+    await force24HourHours();
+    resetRateLimit(app);
+    aeropay.createCalls.length = 0;
+    aeropay.nextStatus = 'initiated';
+    aeropay.nextThrow = null;
+  });
+
+  afterEach(() => {
+    restoreClock();
+  });
+
+  it('places an order WITHOUT a linked bank account, recording a bypass payment and never charging Aeropay', async () => {
+    const token = signTokenFor(app, { userId: SEED_IDS.user.customer1, role: 'customer' });
+
+    // Remove every funding source for the principal. Under the normal
+    // path this forces a 402 PAYMENT_METHOD_INVALID; a 201 here proves the
+    // bypass skipped the linked-method requirement entirely.
+    await getPool().sql.unsafe(`DELETE FROM payment_methods WHERE user_id = $1`, [
+      SEED_IDS.user.customer1,
+    ]);
+
+    const cart = await buildCart(app, token, [
+      { listingId: MPLS_NORTHERN_LIGHTS_LISTING_ID, quantity: 2 },
+    ]);
+    const inventoryBefore = await readListingQuantity(MPLS_NORTHERN_LIGHTS_LISTING_ID);
+
+    const resp = await app.inject({
+      method: 'POST',
+      url: `/v1/carts/${cart.id}/checkout`,
+      headers: { ...bearer(token), 'content-type': 'application/json' },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 500 },
+    });
+    expect(resp.statusCode).toBe(201);
+    const body = resp.json<CheckoutBody>();
+
+    // Order reaches the vendor queue exactly as the charged path would.
+    expect(body.order.status).toBe('placed');
+    expect(body.order.driverTipCents).toBe(500);
+    expect(body.paymentIntent.provider).toBe('bypass');
+    expect(body.paymentIntent.status).toBe('authorized');
+    expect(body.paymentIntent.amountCents).toBe(body.order.totalCents);
+
+    // Aeropay was never contacted.
+    expect(aeropay.createCalls).toHaveLength(0);
+
+    // payment_transactions row is the synthetic bypass record (no method ref).
+    const intentRows = await fetchPaymentTransactionsForOrder(body.order.id);
+    expect(intentRows).toHaveLength(1);
+    expect(intentRows[0]?.provider).toBe('bypass');
+    expect(intentRows[0]?.status).toBe('authorized');
+    expect(intentRows[0]?.payment_method_id).toBeNull();
+    expect(intentRows[0]?.provider_ref).toBe(body.paymentIntent.providerRef);
+
+    // Inventory decremented and cart cleared — full placement still ran.
+    expect(await readListingQuantity(MPLS_NORTHERN_LIGHTS_LISTING_ID)).toBe(inventoryBefore - 2);
+    expect(await countRows('carts', `id = $1`, [cart.id])).toBe(0);
+
+    // Placement ledger pair is still balanced.
+    const ledger = await fetchLedgerForOrder(body.order.id);
+    expect(ledger).toHaveLength(2);
+    const debits = ledger.reduce((acc, r) => acc + Number(r.debit_cents), 0);
+    const credits = ledger.reduce((acc, r) => acc + Number(r.credit_cents), 0);
+    expect(debits).toBe(credits);
+    expect(debits).toBe(body.order.totalCents);
+  });
+
+  it('still enforces compliance — a 900mg edible cart is rejected with 422 even under bypass', async () => {
+    const token = signTokenFor(app, { userId: SEED_IDS.user.customer1, role: 'customer' });
+    const cart = await buildCart(app, token, [
+      { listingId: MPLS_DARK_CHOCOLATE_LISTING_ID, quantity: 9 },
+    ]);
+
+    const resp = await app.inject({
+      method: 'POST',
+      url: `/v1/carts/${cart.id}/checkout`,
+      headers: { ...bearer(token), 'content-type': 'application/json' },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+    });
+    expect(resp.statusCode).toBe(422);
+    expect(resp.json<ErrorBody>().error.code).toBe('COMPLIANCE_EVALUATION_FAILED');
+    expect(await countRows('orders', `user_id = $1`, [SEED_IDS.user.customer1])).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Helpers — small, test-local, no abstractions hiding what the test is doing.
 // ---------------------------------------------------------------------------
@@ -580,15 +706,18 @@ async function fetchLedgerForOrder(orderId: string): Promise<readonly LedgerRow[
 }
 
 interface PaymentTransactionRow {
+  readonly provider: string;
   readonly provider_ref: string;
   readonly status: string;
   readonly amount_cents: number | string;
+  readonly payment_method_id: string | null;
 }
 async function fetchPaymentTransactionsForOrder(
   orderId: string,
 ): Promise<readonly PaymentTransactionRow[]> {
   return getPool().sql.unsafe<PaymentTransactionRow[]>(
-    `SELECT provider_ref, status, amount_cents FROM payment_transactions WHERE order_id = $1`,
+    `SELECT provider, provider_ref, status, amount_cents, payment_method_id
+       FROM payment_transactions WHERE order_id = $1`,
     [orderId],
   );
 }

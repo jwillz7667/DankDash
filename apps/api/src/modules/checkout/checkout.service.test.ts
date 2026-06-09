@@ -710,7 +710,7 @@ interface Rig {
   readonly aeropay: FakeAeropayClient;
 }
 
-function makeRig(): Rig {
+function makeRig(options: { readonly paymentsBypassEnabled?: boolean } = {}): Rig {
   const carts = new FakeCartsRepo();
   const items = new FakeCartItemsRepo();
   const listings = new FakeListingsRepo();
@@ -745,7 +745,7 @@ function makeRig(): Rig {
       ledgerEntries,
     }) as unknown as CheckoutScopedRepos;
   return {
-    service: new CheckoutService(fakeDb, factory, aeropay),
+    service: new CheckoutService(fakeDb, factory, aeropay, options.paymentsBypassEnabled ?? false),
     carts,
     items,
     listings,
@@ -1460,6 +1460,112 @@ describe('CheckoutService.checkout — Aeropay charge', () => {
       statusCode: 502,
       details: { service: 'aeropay' },
     });
+  });
+});
+
+describe('CheckoutService.checkout — payment bypass (PAYMENTS_BYPASS_ENABLED)', () => {
+  let rig: Rig;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(PINNED_NOW);
+    rig = makeRig({ paymentsBypassEnabled: true });
+    seedHappyPath(rig);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('records a synthetic bypass payment without ever calling Aeropay', async () => {
+    await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(rig.aeropay.createCalls).toHaveLength(0);
+    expect(rig.paymentTransactions.rows).toHaveLength(1);
+    const row = rig.paymentTransactions.rows[0];
+    expect(row?.provider).toBe('bypass');
+    expect(row?.status).toBe('authorized');
+    expect(row?.paymentMethodId).toBeNull();
+    // providerRef is the payment_transactions id (satisfies UNIQUE(provider, provider_ref)).
+    expect(row?.providerRef).toBe(row?.id);
+    expect(row?.authorizedAt).toEqual(PINNED_NOW);
+    expect(row?.settledAt).toBeNull();
+    expect(row?.rawResponse).toMatchObject({ bypass: true, reason: 'PAYMENTS_BYPASS_ENABLED' });
+  });
+
+  it('projects a bypass payment intent the iOS client can discriminate on', async () => {
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(res.paymentIntent.provider).toBe('bypass');
+    expect(res.paymentIntent.status).toBe('authorized');
+    expect(res.paymentIntent.amountCents).toBe(res.order.totalCents);
+    expect(res.paymentIntent.providerRef).toBe(rig.paymentTransactions.rows[0]?.providerRef);
+    expect(res.paymentIntent.clientSecret).toBeNull();
+  });
+
+  it('places the order in the vendor queue with the same totals as the charged path', async () => {
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 500,
+    });
+
+    expect(res.order.status).toBe('placed');
+    expect(res.order.subtotalCents).toBe(9000);
+    expect(res.order.driverTipCents).toBe(500);
+    expect(rig.orderEvents.rows[0]?.eventType).toBe('order_placed');
+  });
+
+  it('still writes the balanced placement ledger entries (customer DR / aeropay_clearing CR)', async () => {
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(rig.ledgerEntries.rows).toHaveLength(2);
+    const debits = rig.ledgerEntries.rows.reduce((s, e) => s + e.debitCents, 0);
+    const credits = rig.ledgerEntries.rows.reduce((s, e) => s + e.creditCents, 0);
+    expect(debits).toBe(credits);
+    expect(debits).toBe(res.order.totalCents);
+  });
+
+  it('lets a user with NO linked payment method place an order', async () => {
+    rig.paymentMethods.rows.clear();
+
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(res.order.status).toBe('placed');
+    expect(res.paymentIntent.provider).toBe('bypass');
+    expect(rig.aeropay.createCalls).toHaveLength(0);
+  });
+
+  it('never relaxes compliance — an over-limit edible cart still fails under bypass', async () => {
+    rig.products.rows.clear();
+    rig.listings.rows.clear();
+    rig.items.rows.clear();
+    rig.products.seed(
+      makeProduct({
+        productType: 'edible',
+        thcMgPerUnit: '500.000',
+        thcMgPerServing: '100.000',
+        servingCount: 5,
+        weightGramsPerUnit: '20.000',
+      }),
+    );
+    rig.listings.seed(makeListing({ quantityAvailable: 10 }));
+    rig.items.seed(makeCartItem({ quantity: 2 }));
+
+    await expect(
+      rig.service.checkout(USER_ID, CART_ID, { deliveryAddressId: ADDRESS_ID, driverTipCents: 0 }),
+    ).rejects.toBeInstanceOf(ComplianceError);
+    // No payment row written when compliance gates the order.
+    expect(rig.paymentTransactions.rows).toHaveLength(0);
   });
 });
 

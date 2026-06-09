@@ -177,6 +177,12 @@ export class CheckoutService {
     private readonly db: Database,
     private readonly reposFor: CheckoutScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
+    /**
+     * Test-only payment bypass (env `PAYMENTS_BYPASS_ENABLED`, default
+     * `false`). When on, step 16 skips the real Aeropay charge and the
+     * linked-bank-account requirement. Never relaxes compliance.
+     */
+    private readonly paymentsBypassEnabled: boolean,
   ) {}
 
   async checkout(userId: string, cartId: string, body: CheckoutRequest): Promise<CheckoutResponse> {
@@ -385,43 +391,31 @@ export class CheckoutService {
       // Step 15: delete the cart (cart_items cascades).
       await scoped.carts.deleteById(cart.id);
 
-      // Step 16: payment-method resolution + real Aeropay charge. The
-      // resolved method must be `active` and carry a linked bank
-      // account; a missing or unlinked method fails the checkout (we
-      // cannot complete payment without one). The payment_transactions
-      // id is generated up front so we can pass it as the Aeropay
-      // idempotency key — retries coalesce to the same charge.
-      const paymentMethod = await this.resolveActiveAeropayMethod(scoped, userId, body);
+      // Step 16: payment. The normal path resolves the user's funding
+      // source and runs the real Aeropay charge (the method must be
+      // `active` and carry a linked bank account). The test-only bypass
+      // path (env `PAYMENTS_BYPASS_ENABLED`, default OFF) skips both the
+      // charge and the linked-method requirement and records a synthetic
+      // `bypass` payment so an order still reaches the vendor queue for
+      // cross-app flow testing. The payment_transactions id is generated
+      // up front so the Aeropay path can pass it as the idempotency key —
+      // retries coalesce to the same charge.
       const paymentTransactionId = newId();
-      const aeropayPayment = await this.chargeAeropay({
-        paymentTransactionId,
-        paymentMethod,
-        userId,
-        orderId: order.id,
-        amountCents: pricing.totals.totalCents,
-      });
-      const paymentIntent = await scoped.paymentTransactions.create({
-        id: paymentTransactionId,
-        orderId: order.id,
-        paymentMethodId: paymentMethod.id,
-        provider: 'aeropay',
-        providerRef: aeropayPayment.id,
-        amountCents: pricing.totals.totalCents,
-        status: aeropayPaymentStatusToLocal(aeropayPayment.status),
-        initiatedAt: now,
-        authorizedAt:
-          aeropayPayment.status === 'authorized' || aeropayPayment.status === 'settled'
-            ? now
-            : null,
-        settledAt: aeropayPayment.status === 'settled' ? now : null,
-        rawResponse: {
-          aeropayPaymentId: aeropayPayment.id,
-          aeropayStatus: aeropayPayment.status,
-          bankAccountId: aeropayPayment.bankAccountId,
-        },
-        createdAt: now,
-        updatedAt: now,
-      });
+      const paymentIntent = this.paymentsBypassEnabled
+        ? await this.recordBypassPayment(scoped, {
+            paymentTransactionId,
+            orderId: order.id,
+            amountCents: pricing.totals.totalCents,
+            now,
+          })
+        : await this.recordAeropayPayment(scoped, {
+            paymentTransactionId,
+            userId,
+            body,
+            orderId: order.id,
+            amountCents: pricing.totals.totalCents,
+            now,
+          });
 
       // Step 17: balanced ledger entries. Customer DR + aeropay_clearing
       // CR for the total — both sides equal to `totalCents`, so the
@@ -657,6 +651,98 @@ export class CheckoutService {
     }
     return payment;
   }
+
+  /**
+   * Normal payment path: resolve the user's active, bank-linked Aeropay
+   * method, run the real charge, and persist the `payment_transactions`
+   * row with the lifecycle timestamps Aeropay returned. Upstream declines
+   * surface as PaymentError (via `chargeAeropay`) so the whole checkout
+   * transaction rolls back. Extracted from the inline step-16 body so the
+   * bypass path can stand beside it without duplicating the ledger step.
+   */
+  private async recordAeropayPayment(
+    scoped: CheckoutScopedRepos,
+    input: {
+      readonly paymentTransactionId: string;
+      readonly userId: string;
+      readonly body: CheckoutRequest;
+      readonly orderId: string;
+      readonly amountCents: number;
+      readonly now: Date;
+    },
+  ): Promise<PaymentTransaction> {
+    const paymentMethod = await this.resolveActiveAeropayMethod(scoped, input.userId, input.body);
+    const aeropayPayment = await this.chargeAeropay({
+      paymentTransactionId: input.paymentTransactionId,
+      paymentMethod,
+      userId: input.userId,
+      orderId: input.orderId,
+      amountCents: input.amountCents,
+    });
+    return scoped.paymentTransactions.create({
+      id: input.paymentTransactionId,
+      orderId: input.orderId,
+      paymentMethodId: paymentMethod.id,
+      provider: 'aeropay',
+      providerRef: aeropayPayment.id,
+      amountCents: input.amountCents,
+      status: aeropayPaymentStatusToLocal(aeropayPayment.status),
+      initiatedAt: input.now,
+      authorizedAt:
+        aeropayPayment.status === 'authorized' || aeropayPayment.status === 'settled'
+          ? input.now
+          : null,
+      settledAt: aeropayPayment.status === 'settled' ? input.now : null,
+      rawResponse: {
+        aeropayPaymentId: aeropayPayment.id,
+        aeropayStatus: aeropayPayment.status,
+        bankAccountId: aeropayPayment.bankAccountId,
+      },
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+  }
+
+  /**
+   * Test-only bypass path (env `PAYMENTS_BYPASS_ENABLED`, default OFF).
+   * Records a synthetic `provider: 'bypass'` payment marked `authorized`
+   * without contacting Aeropay and without requiring a linked bank
+   * account — the bypass exists precisely so a tester with no funding
+   * source can place an order. `providerRef` is the (globally-unique)
+   * payment_transactions id, which satisfies the `(provider, provider_ref)`
+   * UNIQUE constraint and keeps every bypassed row trivially queryable.
+   * No payment method is attached (the bypass is not tied to any real
+   * funding source) and no settlement webhook will ever arrive for it, so
+   * the order keeps only the placement ledger entry written in step 17.
+   */
+  private async recordBypassPayment(
+    scoped: CheckoutScopedRepos,
+    input: {
+      readonly paymentTransactionId: string;
+      readonly orderId: string;
+      readonly amountCents: number;
+      readonly now: Date;
+    },
+  ): Promise<PaymentTransaction> {
+    return scoped.paymentTransactions.create({
+      id: input.paymentTransactionId,
+      orderId: input.orderId,
+      paymentMethodId: null,
+      provider: 'bypass',
+      providerRef: input.paymentTransactionId,
+      amountCents: input.amountCents,
+      status: 'authorized',
+      initiatedAt: input.now,
+      authorizedAt: input.now,
+      settledAt: null,
+      rawResponse: {
+        bypass: true,
+        reason: 'PAYMENTS_BYPASS_ENABLED',
+      },
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+  }
 }
 
 interface HydratedLine {
@@ -798,10 +884,14 @@ function projectOrderItem(item: OrderItem): OrderItemResponse {
 }
 
 function projectPaymentIntent(intent: PaymentTransaction): PaymentIntentResponse {
+  // `provider` is free-form `text` in the DB, but this service only ever
+  // writes `'aeropay'` (normal) or `'bypass'` (test-mode) rows in the same
+  // transaction it projects from — narrow to the response discriminator.
+  const provider = intent.provider === 'bypass' ? 'bypass' : 'aeropay';
   return {
     id: intent.id,
     orderId: intent.orderId,
-    provider: 'aeropay',
+    provider,
     providerRef: intent.providerRef,
     status: intent.status,
     amountCents: intent.amountCents,

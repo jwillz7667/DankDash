@@ -156,6 +156,26 @@ export const EnvSchema = z
      * `apps/api/src/modules/drivers/services/aeropay-driver-payout.gateway.ts`.
      */
     AEROPAY_LIVE: booleanFromString.default(false),
+
+    /**
+     * Test-only payment bypass. When `true`, `POST /v1/carts/:id/checkout`
+     * skips the real Aeropay charge AND the linked-bank-account
+     * requirement, recording a `provider: 'bypass'` payment_transactions
+     * row instead. The order is still created in `placed` and reaches the
+     * vendor queue, so the consumer↔vendor↔driver order flow can be
+     * exercised end-to-end without a funded payment method.
+     *
+     * Bounded blast radius:
+     *   - Defaults `false`; turning it on is an explicit, audited operator
+     *     choice. The API logs a boot-time `warn` whenever it is enabled so
+     *     it is never silently on (see apps/api/src/main.ts).
+     *   - Every bypassed payment is queryable by `provider = 'bypass'`, so
+     *     bypassed orders are always distinguishable from real ones.
+     *   - Compliance is NEVER bypassed — only the payment leg. The
+     *     server-authoritative compliance evaluation still runs inside the
+     *     checkout transaction and is snapshotted onto the order.
+     */
+    PAYMENTS_BYPASS_ENABLED: booleanFromString.default(false),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not

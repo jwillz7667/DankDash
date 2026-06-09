@@ -58,6 +58,15 @@ async function bootstrap(): Promise<void> {
   });
   const logger = resolveLogger(env);
 
+  if (env.PAYMENTS_BYPASS_ENABLED) {
+    logger.warn(
+      'PAYMENTS_BYPASS_ENABLED is ON — checkout will SKIP the Aeropay charge and ' +
+        'record `bypass` payments. This is a test-only mode for exercising the ' +
+        'cross-app order flow; it must never run against real customers. ' +
+        'Compliance checks are unaffected and still enforced.',
+    );
+  }
+
   const adapter = new FastifyAdapter({
     logger: false, // pino is the single source of structured logs
     trustProxy: true, // Railway sits behind a TCP proxy
