@@ -181,7 +181,7 @@ private actor LiveAuthInterceptor: AuthInterceptor {
     try? keychain.setString(
       tokens.refreshToken,
       forAccount: TokenStore.AccountKey.refresh,
-      protection: .biometric
+      protection: .biometricWithDeviceFallback
     )
   }
 
