@@ -213,6 +213,15 @@ public struct RootFeature: Sendable {
           await tokens.clear()
         }
 
+      // Account deletion completed server-side: the teardown is identical to
+      // sign-out (the session is dead either way), so reset to the signed-out
+      // root and clear the keychain.
+      case .browse(.delegate(.accountDeletionCompleted)):
+        Self.resetToSignedOut(&state)
+        return .run { _ in
+          await tokens.clear()
+        }
+
       case .browse:
         return .none
 

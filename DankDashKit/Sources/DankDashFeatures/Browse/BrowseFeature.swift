@@ -102,6 +102,9 @@ public struct BrowseFeature: Sendable {
     @CasePathable
     public enum Delegate: Equatable, Sendable {
       case signOutRequested
+      /// Account deletion succeeded server-side; the root tears the session
+      /// down (clear tokens, reset to signed-out) just like sign-out.
+      case accountDeletionCompleted
     }
   }
 
@@ -325,6 +328,9 @@ public struct BrowseFeature: Sendable {
 
       case .account(.delegate(.signOutRequested)):
         return .send(.delegate(.signOutRequested))
+
+      case .account(.delegate(.accountDeletionCompleted)):
+        return .send(.delegate(.accountDeletionCompleted))
 
       case .account(.delegate(.showOrders)):
         state.selectedTab = .orders

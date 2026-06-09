@@ -129,6 +129,27 @@ struct AccountHubView: View {
         DankButton("Sign out", style: .ghost, size: .medium) {
           store.send(.signOutTapped)
         }
+        .disabled(store.isDeletingAccount)
+
+        VStack(spacing: DankSpacing.xs) {
+          AccountRow(
+            icon: "trash",
+            title: "Delete account",
+            subtitle: "Permanently delete your account and personal data.",
+            isEnabled: !store.isDeletingAccount,
+            isDestructive: true,
+            isBusy: store.isDeletingAccount,
+            action: { store.send(.deleteAccountTapped) }
+          )
+          if let error = store.deleteAccountError {
+            Text(error)
+              .font(DankFont.bodySmall)
+              .foregroundStyle(DankColor.Semantic.danger)
+              .multilineTextAlignment(.leading)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
+
         versionFooter
       }
       .padding(DankSpacing.lg)
@@ -136,6 +157,28 @@ struct AccountHubView: View {
     .background(DankColor.cream.ignoresSafeArea())
     .navigationTitle("Account")
     .navigationBarTitleDisplayMode(.inline)
+    .alert(
+      "Delete account?",
+      isPresented: Binding(
+        get: { store.isConfirmingAccountDeletion },
+        set: { isPresented in
+          if !isPresented { store.send(.deleteAccountCanceled) }
+        }
+      )
+    ) {
+      Button("Delete account", role: .destructive) {
+        store.send(.deleteAccountConfirmed)
+      }
+      Button("Cancel", role: .cancel) {
+        store.send(.deleteAccountCanceled)
+      }
+    } message: {
+      Text(
+        "This permanently deletes your account and anonymizes your personal "
+          + "data. Order records required by law are retained but no longer "
+          + "identify you. This can't be undone."
+      )
+    }
     .task { store.send(.onAppear) }
     #if DEBUG
     .sheet(isPresented: $galleryShown) {
@@ -217,33 +260,44 @@ struct AccountRow: View {
   let title: String
   let subtitle: String
   var isEnabled: Bool = true
+  /// Renders the row in the danger palette and trades the chevron for a
+  /// busy indicator when `isBusy` is set — used by the destructive
+  /// "Delete account" action.
+  var isDestructive: Bool = false
+  var isBusy: Bool = false
   let action: () -> Void
+
+  private var tint: Color { isDestructive ? DankColor.Semantic.danger : DankColor.primary }
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: DankSpacing.sm) {
         Image(systemName: icon)
           .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(DankColor.primary)
+          .foregroundStyle(tint)
           .frame(width: 32, height: 32)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: DankSpacing.xxs) {
           Text(title)
             .font(DankFont.body.weight(.semibold))
-            .foregroundStyle(DankColor.Text.primary)
+            .foregroundStyle(isDestructive ? DankColor.Semantic.danger : DankColor.Text.primary)
           Text(subtitle)
             .font(DankFont.bodySmall)
             .foregroundStyle(DankColor.Text.secondary)
             .multilineTextAlignment(.leading)
         }
         Spacer(minLength: 0)
-        Image(systemName: "chevron.right")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(DankColor.Text.muted)
-          .accessibilityHidden(true)
+        if isBusy {
+          DankLoader()
+        } else {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(DankColor.Text.muted)
+            .accessibilityHidden(true)
+        }
       }
       .padding(DankSpacing.sm)
-      .background(DankColor.primary.opacity(0.04))
+      .background(tint.opacity(0.04))
       .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
       .contentShape(Rectangle())
     }
