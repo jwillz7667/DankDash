@@ -36,15 +36,21 @@ public struct LiveMapView: View {
   private let dispensary: Pin?
   private let customer: Pin
   private let driver: Pin?
+  private let route: [Coordinate]?
+  private let deliveryLeg: [Coordinate]?
 
   public init(
     dispensary: Pin?,
     customer: Pin,
-    driver: Pin?
+    driver: Pin?,
+    route: [Coordinate]? = nil,
+    deliveryLeg: [Coordinate]? = nil
   ) {
     self.dispensary = dispensary
     self.customer = customer
     self.driver = driver
+    self.route = route
+    self.deliveryLeg = deliveryLeg
   }
 
   public var body: some View {
@@ -59,7 +65,22 @@ public struct LiveMapView: View {
         Marker(driver.title, systemImage: "car.fill", coordinate: driver.clCoordinate)
           .tint(DankColor.Semantic.warning)
       }
-      if let driver {
+      // Delivery-preview leg (dispensary → drop-off) — drawn first and
+      // dashed so the active leg reads on top where the two overlap.
+      if let deliveryLeg, deliveryLeg.count >= 2 {
+        MapPolyline(coordinates: deliveryLeg.map(\.clLocationCoordinate))
+          .stroke(
+            DankColor.primary.opacity(0.45),
+            style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [2, 9])
+          )
+      }
+      // Active leg. Prefer the road-following polyline; fall back to a
+      // straight driver → customer chord when no route is supplied (the
+      // consumer tracking map before directions resolve).
+      if let route, route.count >= 2 {
+        MapPolyline(coordinates: route.map(\.clLocationCoordinate))
+          .stroke(DankColor.primary, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+      } else if let driver {
         MapPolyline(coordinates: [driver.clCoordinate, customer.clCoordinate])
           .stroke(DankColor.primary, lineWidth: 3)
       }
@@ -71,8 +92,12 @@ public struct LiveMapView: View {
   }
 
   private var initialRegion: MKCoordinateRegion {
-    let pins = [driver, dispensary, customer].compactMap { $0 }
-    let coords = pins.map { $0.clCoordinate }
+    let pinCoordinates = [driver, dispensary, customer].compactMap { $0 }.map { $0.coordinate }
+    let lineCoordinates = (route ?? []) + (deliveryLeg ?? [])
+    let coordinates = pinCoordinates + lineCoordinates
+    let coords = coordinates.map {
+      CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+    }
     guard !coords.isEmpty else {
       return MKCoordinateRegion(
         center: customer.clCoordinate,
@@ -111,6 +136,12 @@ private extension LiveMapView.Pin {
   }
 }
 
+private extension Coordinate {
+  var clLocationCoordinate: CLLocationCoordinate2D {
+    CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+  }
+}
+
 #Preview {
   let dispensary = LiveMapView.Pin(
     id: "dispensary",
@@ -130,9 +161,27 @@ private extension LiveMapView.Pin {
     coordinate: Coordinate(latitude: 44.9805, longitude: -93.2708),
     title: "Sam"
   )
+  // Driver → dispensary active leg, plus the dispensary → drop-off
+  // preview leg the driver sees while heading to pickup.
+  let activeLeg = [
+    driver.coordinate,
+    Coordinate(latitude: 44.9790, longitude: -93.2680),
+    dispensary.coordinate,
+  ]
+  let previewLeg = [
+    dispensary.coordinate,
+    Coordinate(latitude: 44.9810, longitude: -93.2710),
+    customer.coordinate,
+  ]
   return VStack {
-    LiveMapView(dispensary: dispensary, customer: customer, driver: driver)
-      .frame(height: 220)
+    LiveMapView(
+      dispensary: dispensary,
+      customer: customer,
+      driver: driver,
+      route: activeLeg,
+      deliveryLeg: previewLeg
+    )
+    .frame(height: 220)
     LiveMapView(dispensary: dispensary, customer: customer, driver: nil)
       .frame(height: 220)
   }

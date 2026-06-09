@@ -327,6 +327,57 @@ final class Phase18ComponentSmokeTests: XCTestCase {
     XCTAssertNotNil(LiveMapView(dispensary: dispensary, customer: customer, driver: driver).body)
     XCTAssertNotNil(LiveMapView(dispensary: dispensary, customer: customer, driver: nil).body)
     XCTAssertNotNil(LiveMapView(dispensary: nil, customer: customer, driver: nil).body)
+
+    // Driver-app variant: both the active leg and the dispensary → drop-off
+    // preview leg supplied.
+    let activeLeg = [driver.coordinate, dispensary.coordinate]
+    let previewLeg = [dispensary.coordinate, customer.coordinate]
+    XCTAssertNotNil(
+      LiveMapView(
+        dispensary: dispensary,
+        customer: customer,
+        driver: driver,
+        route: activeLeg,
+        deliveryLeg: previewLeg
+      ).body
+    )
+    // A single-point leg must not draw a polyline — exercises the count >= 2 guard.
+    XCTAssertNotNil(
+      LiveMapView(
+        dispensary: dispensary,
+        customer: customer,
+        driver: driver,
+        route: [driver.coordinate],
+        deliveryLeg: nil
+      ).body
+    )
+  }
+
+  // MARK: - DeliveryDetailsCard
+
+  func test_deliveryDetailsCard_rendersWithAndWithoutTip() {
+    XCTAssertNotNil(
+      DeliveryDetailsCard(
+        orderShortCode: "ABC123",
+        itemSummary: "Blue Dream 1/8 ×2 · Sour Gummies ×1",
+        itemCount: 3,
+        tipCents: 850
+      ).body
+    )
+    XCTAssertNotNil(
+      DeliveryDetailsCard(
+        orderShortCode: "ZZZ999",
+        itemSummary: nil,
+        itemCount: 1,
+        tipCents: 0
+      ).body
+    )
+  }
+
+  func test_deliveryDetailsCard_formatPriceMatchesUSD() {
+    XCTAssertEqual(DeliveryDetailsCard.formatPrice(850), "$8.50")
+    XCTAssertEqual(DeliveryDetailsCard.formatPrice(0), "$0.00")
+    XCTAssertEqual(DeliveryDetailsCard.formatPrice(1234), "$12.34")
   }
 
   // MARK: - RatingSheet

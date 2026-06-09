@@ -48,6 +48,11 @@ public struct ActiveRouteFeature: Sendable {
     public var orderId: UUID
     public var route: ActiveRoute?
     public var directions: RouteDirections?
+    /// The dispensary → drop-off leg, pre-computed while the driver heads
+    /// to pickup so the map shows the whole trip (route-to-store line plus
+    /// the onward delivery line). Cleared once the driver is en route to
+    /// the customer — the primary leg then covers it.
+    public var deliveryLegDirections: RouteDirections?
     public var currentStep: RouteStep?
     public var driverLocation: Coordinate?
     public var phase: LocalPhase
@@ -64,6 +69,7 @@ public struct ActiveRouteFeature: Sendable {
       orderId: UUID,
       route: ActiveRoute? = nil,
       directions: RouteDirections? = nil,
+      deliveryLegDirections: RouteDirections? = nil,
       currentStep: RouteStep? = nil,
       driverLocation: Coordinate? = nil,
       phase: LocalPhase = .enRouteToPickup,
@@ -77,6 +83,7 @@ public struct ActiveRouteFeature: Sendable {
       self.orderId = orderId
       self.route = route
       self.directions = directions
+      self.deliveryLegDirections = deliveryLegDirections
       self.currentStep = currentStep
       self.driverLocation = driverLocation
       self.phase = phase
@@ -112,6 +119,25 @@ public struct ActiveRouteFeature: Sendable {
     public var canMarkArrived: Bool {
       phase == .enRouteToDropoff && !arriveInFlight && route != nil
     }
+
+    /// Stops for an external Apple Maps hand-off, in travel order. While
+    /// heading to pickup the driver wants the full trip (store → home);
+    /// once en route to the customer only the remaining drop matters.
+    /// `nil` once the scan gate is reached (no more navigation) or before
+    /// the route loads — the screen hides the "Open in Maps" button then.
+    public var mapDestinations: [MapDestination]? {
+      guard let route else { return nil }
+      let pickup = MapDestination(coordinate: route.dispensary.location, name: route.dispensary.name)
+      let dropoff = MapDestination(coordinate: route.dropoff.location, name: route.dropoff.line1)
+      switch phase {
+      case .enRouteToPickup, .awaitingHandoff, .readyToDepart:
+        return [pickup, dropoff]
+      case .enRouteToDropoff:
+        return [dropoff]
+      case .awaitingIdScan, .completed:
+        return nil
+      }
+    }
   }
 
   public enum Action: Equatable, Sendable {
@@ -121,6 +147,10 @@ public struct ActiveRouteFeature: Sendable {
     case routeFetched(Result<ActiveRoute, RouteErrorBox>)
     case directionsRequested
     case directionsCalculated(Result<RouteDirections, RouteErrorBox>)
+    /// The dispensary → drop-off preview leg finished computing. Best-
+    /// effort: a failure is swallowed (the map simply omits the preview
+    /// line) so a directions hiccup never surfaces a banner mid-pickup.
+    case deliveryLegCalculated(Result<RouteDirections, RouteErrorBox>)
     case locationStreamYielded(Coordinate)
 
     /// A status change for this order observed on the `/driver` socket or
@@ -139,6 +169,8 @@ public struct ActiveRouteFeature: Sendable {
     case backTapped
     case errorBannerDismissed
     case retryTapped
+    /// Hand the current leg(s) off to Apple Maps for turn-by-turn.
+    case openInMapsTapped
 
     case delegate(Delegate)
 
@@ -159,6 +191,7 @@ public struct ActiveRouteFeature: Sendable {
     case fetchRoute
     case locationStream
     case calculateDirections
+    case calculateDeliveryLeg
     case confirmPickup
     case depart
     case arrive
@@ -170,6 +203,7 @@ public struct ActiveRouteFeature: Sendable {
   @Dependency(\.driverRealtimeClient) var driverRealtime
   @Dependency(\.directionsClient) var directionsClient
   @Dependency(\.backgroundLocationClient) var locationClient
+  @Dependency(\.mapClient) var mapClient
   @Dependency(\.continuousClock) var clock
   @Dependency(\.date.now) var now
 
@@ -199,6 +233,7 @@ public struct ActiveRouteFeature: Sendable {
         return .merge(
           .cancel(id: CancelID.locationStream),
           .cancel(id: CancelID.calculateDirections),
+          .cancel(id: CancelID.calculateDeliveryLeg),
           .cancel(id: CancelID.fetchRoute),
           .cancel(id: CancelID.confirmPickup),
           .cancel(id: CancelID.depart),
@@ -222,6 +257,12 @@ public struct ActiveRouteFeature: Sendable {
         }
         if let driverLocation = state.driverLocation, state.directions == nil {
           effects.append(calculateDirectionsEffect(from: driverLocation, route: route, phase: phase))
+        }
+        // While heading to the store, pre-compute the onward store → home
+        // leg so the map can preview the whole trip. Skip once we're past
+        // pickup (the primary directions cover the drop) or already have it.
+        if Self.isPickupJourney(phase), state.deliveryLegDirections == nil {
+          effects.append(calculateDeliveryLegEffect(route: route))
         }
         return effects.isEmpty ? .none : .merge(effects)
 
@@ -258,6 +299,16 @@ public struct ActiveRouteFeature: Sendable {
       case .directionsCalculated(.failure(let box)):
         state.isCalculatingDirections = false
         state.errorBanner = box.userFacingMessage()
+        return .none
+
+      case .deliveryLegCalculated(.success(let directions)):
+        state.deliveryLegDirections = directions
+        return .none
+
+      case .deliveryLegCalculated(.failure):
+        // Best-effort preview — swallow. The map omits the onward line;
+        // no banner, so an unavailable directions service mid-pickup never
+        // interrupts the driver.
         return .none
 
       case .locationStreamYielded(let coord):
@@ -306,12 +357,14 @@ public struct ActiveRouteFeature: Sendable {
         // Server jumped us onto the dropoff leg without a local depart
         // (e.g. depart confirmed on another device, or a lost response):
         // recalc dropoff directions from the latest fix.
-        if mapped == .enRouteToDropoff,
-           let location = state.driverLocation,
-           let route = state.route {
-          state.directions = nil
-          state.currentStep = nil
-          effects.append(calculateDirectionsEffect(from: location, route: route, phase: .enRouteToDropoff))
+        if mapped == .enRouteToDropoff {
+          // The drop is now the active leg — the preview line is redundant.
+          state.deliveryLegDirections = nil
+          if let location = state.driverLocation, let route = state.route {
+            state.directions = nil
+            state.currentStep = nil
+            effects.append(calculateDirectionsEffect(from: location, route: route, phase: .enRouteToDropoff))
+          }
         }
         return effects.isEmpty ? .none : .merge(effects)
 
@@ -390,9 +443,11 @@ public struct ActiveRouteFeature: Sendable {
         state.departInFlight = false
         state.route = updatedRoute
         state.phase = .enRouteToDropoff
-        // Fresh leg → discard the (absent) prior directions and route to
-        // the customer from the current fix.
+        // Fresh leg → discard the (absent) prior directions and the now-
+        // redundant store → home preview, then route to the customer from
+        // the current fix.
         state.directions = nil
+        state.deliveryLegDirections = nil
         state.currentStep = nil
         if let location = state.driverLocation {
           return calculateDirectionsEffect(from: location, route: updatedRoute, phase: .enRouteToDropoff)
@@ -461,6 +516,10 @@ public struct ActiveRouteFeature: Sendable {
         state.isLoadingRoute = state.route == nil
         state.errorBanner = nil
         return fetchRouteEffect(orderId: orderId)
+
+      case .openInMapsTapped:
+        guard let destinations = state.mapDestinations, !destinations.isEmpty else { return .none }
+        return .run { [mapClient] _ in mapClient.openInMaps(destinations) }
 
       case .delegate:
         return .none
@@ -562,6 +621,23 @@ public struct ActiveRouteFeature: Sendable {
     .cancellable(id: CancelID.calculateDirections, cancelInFlight: true)
   }
 
+  /// Computes the dispensary → drop-off leg for the map preview while the
+  /// driver heads to pickup. Independent of the primary directions effect
+  /// (its own cancel id) so the two legs compute in parallel.
+  private func calculateDeliveryLegEffect(route: ActiveRoute) -> Effect<Action> {
+    let from = route.dispensary.location
+    let to = route.dropoff.location
+    return .run { [directionsClient] send in
+      do {
+        let directions = try await directionsClient.calculateRoute(from, to, .automobile)
+        await send(.deliveryLegCalculated(.success(directions)))
+      } catch {
+        await send(.deliveryLegCalculated(.failure(RouteErrorBox(error))))
+      }
+    }
+    .cancellable(id: CancelID.calculateDeliveryLeg, cancelInFlight: true)
+  }
+
   // MARK: - Phase derivation
 
   /// Maps a server `order.status` to the local delivery phase. Returns
@@ -587,6 +663,13 @@ public struct ActiveRouteFeature: Sendable {
   /// advance-only.
   static func rank(_ phase: LocalPhase) -> Int {
     LocalPhase.allCases.firstIndex(of: phase) ?? 0
+  }
+
+  /// Whether the driver is still on (or before) the leg to the store, so
+  /// the onward store → home delivery leg is worth pre-computing for the
+  /// map preview. False once the drop becomes the active leg.
+  static func isPickupJourney(_ phase: LocalPhase) -> Bool {
+    rank(phase) < rank(.enRouteToDropoff)
   }
 
   /// Whether the server status is at the ID-scan gate (arrived through
