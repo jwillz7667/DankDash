@@ -23,6 +23,7 @@ import {
   DriversRepository,
   LedgerEntriesRepository,
   MetrcTransactionsRepository,
+  NotificationPreferencesRepository,
   NotificationsRepository,
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
@@ -1318,6 +1319,38 @@ describe('repository coverage', () => {
       expect(removedCount).toBeGreaterThanOrEqual(1);
       const afterT2 = await tokens.findById(t2.id);
       expect(afterT2?.isActive).toBe(false);
+    });
+
+    it('NotificationPreferences: findByUserId null before write, upsert inserts then patches', async () => {
+      const pool = getPool();
+      const prefs = new NotificationPreferencesRepository(pool.db);
+
+      // No row yet — the opt-out model treats absence as all-on at the
+      // service layer, so the repo simply reports null.
+      expect(await prefs.findByUserId(BEN)).toBeNull();
+
+      // First upsert with a single toggle inserts the row; the unspecified
+      // columns fall to their NOT NULL DEFAULT true.
+      const inserted = await prefs.upsert({ userId: BEN, promotionsEnabled: false });
+      expect(inserted.userId).toBe(BEN);
+      expect(inserted.promotionsEnabled).toBe(false);
+      expect(inserted.orderUpdatesEnabled).toBe(true);
+      expect(inserted.pushEnabled).toBe(true);
+      expect(inserted.smsEnabled).toBe(true);
+      expect(inserted.emailEnabled).toBe(true);
+
+      const roundtrip = await prefs.findByUserId(BEN);
+      expect(roundtrip?.id).toBe(inserted.id);
+      expect(roundtrip?.promotionsEnabled).toBe(false);
+
+      // Second upsert for the same user updates in place (unique user_id) —
+      // same row id, only the supplied column changes, updatedAt advances.
+      const updated = await prefs.upsert({ userId: BEN, smsEnabled: false });
+      expect(updated.id).toBe(inserted.id);
+      expect(updated.smsEnabled).toBe(false);
+      // The earlier patched column is preserved across the second upsert.
+      expect(updated.promotionsEnabled).toBe(false);
+      expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(inserted.updatedAt.getTime());
     });
   });
 

@@ -40,7 +40,7 @@ export function getPool(): Pool {
 const TRUNCATE_SQL = `
   TRUNCATE TABLE
     audit_log,
-    notifications, push_tokens,
+    notifications, push_tokens, notification_preferences,
     metrc_transactions, age_verifications, compliance_checks,
     dispatch_offers, driver_location_history, driver_shifts, drivers,
     refunds, payouts, ledger_entries, payment_transactions, payment_methods,
