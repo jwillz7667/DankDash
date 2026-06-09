@@ -42,12 +42,16 @@
  * and the in-app surface still works.
  */
 import {
+  type NotificationPreference,
+  type NotificationPreferencesRepository,
   type NotificationsRepository,
   type PushTokensRepository,
   type UsersRepository,
 } from '@dankdash/db';
 import {
+  isNotificationDeliverable,
   renderTemplate,
+  type NotificationPreferenceState,
   type NotificationProvider,
   type NotificationTemplateKey,
   type ProviderSendResult,
@@ -75,6 +79,7 @@ export interface NotificationDispatcherDeps {
   readonly config: NotificationDispatcherConfig;
   readonly dedupe: NotificationDedupeStore;
   readonly notifications: NotificationsRepository;
+  readonly notificationPreferences: NotificationPreferencesRepository;
   readonly pushTokens: PushTokensRepository;
   readonly users: UsersRepository;
   /** Provider table. Any channel without a provider records `provider_unavailable`. */
@@ -102,8 +107,18 @@ export type DispatchOutcome =
 
 export interface DispatchChannelResult {
   readonly channel: RenderedNotification['channel'];
-  readonly notificationId: string;
-  readonly outcome: ProviderSendResult | { readonly ok: false; readonly error: string };
+  /**
+   * The persisted `notifications` row id, or `null` when the channel was
+   * suppressed by the user's preferences — a suppressed delivery is an
+   * intentional user choice, not a failed attempt, so it writes no row (which
+   * also keeps the in-app inbox, read from `notifications`, free of opt-out
+   * noise).
+   */
+  readonly notificationId: string | null;
+  readonly outcome:
+    | ProviderSendResult
+    | { readonly ok: false; readonly error: string }
+    | { readonly ok: false; readonly suppressed: true };
 }
 
 @Injectable()
@@ -132,8 +147,32 @@ export class NotificationDispatcher {
 
     const rendered = renderTemplate(input.templateKey, input.payload);
 
+    // One preferences lookup per dispatch, shared across every rendered
+    // channel. A missing row is the common case (most users never open the
+    // settings screen) and resolves to deliver-everything in the policy.
+    const preferenceRow = await this.deps.notificationPreferences.findByUserId(input.userId);
+    const preferences = preferenceRow === null ? null : toPreferenceState(preferenceRow);
+
     const results: DispatchChannelResult[] = [];
     for (const notification of rendered) {
+      if (
+        !isNotificationDeliverable({
+          templateKey: input.templateKey,
+          channel: notification.channel,
+          preferences,
+        })
+      ) {
+        this.logger.debug(
+          `notifications: suppressed ${notification.channel} for ${input.templateKey} (user ${input.userId} preference)`,
+        );
+        results.push({
+          channel: notification.channel,
+          notificationId: null,
+          outcome: { ok: false, suppressed: true },
+        });
+        continue;
+      }
+
       const result = await this.deliverOne({
         userId: input.userId,
         templateKey: input.templateKey,
@@ -260,6 +299,22 @@ export class NotificationDispatcher {
         return { channel: 'in_app', userId: input.userId };
     }
   }
+}
+
+/**
+ * Projects the persisted preferences row onto the pure policy's structural
+ * shape. Kept narrow on purpose: the policy must not see `userId`, timestamps,
+ * or the row id, so a future column can't accidentally leak into a delivery
+ * decision.
+ */
+function toPreferenceState(row: NotificationPreference): NotificationPreferenceState {
+  return {
+    orderUpdatesEnabled: row.orderUpdatesEnabled,
+    promotionsEnabled: row.promotionsEnabled,
+    pushEnabled: row.pushEnabled,
+    smsEnabled: row.smsEnabled,
+    emailEnabled: row.emailEnabled,
+  };
 }
 
 function serializeRendered(rendered: RenderedNotification): Record<string, unknown> {

@@ -25,6 +25,8 @@
 import {
   type NewNotification,
   type Notification,
+  type NotificationPreference,
+  type NotificationPreferencesRepository,
   type NotificationsRepository,
   type PushToken,
   type PushTokensRepository,
@@ -132,6 +134,31 @@ class FakeUsersRepository {
   };
 }
 
+class FakeNotificationPreferencesRepository {
+  calls = { findByUserId: [] as string[] };
+  rowsByUser = new Map<string, NotificationPreference>();
+
+  findByUserId = (userId: string): Promise<NotificationPreference | null> => {
+    this.calls.findByUserId.push(userId);
+    return Promise.resolve(this.rowsByUser.get(userId) ?? null);
+  };
+}
+
+function buildPreference(overrides: Partial<NotificationPreference> = {}): NotificationPreference {
+  return {
+    id: '01935f3d-0000-7000-8000-0000000000cc',
+    userId: USER_ID,
+    orderUpdatesEnabled: true,
+    promotionsEnabled: true,
+    pushEnabled: true,
+    smsEnabled: true,
+    emailEnabled: true,
+    createdAt: CREATED_AT,
+    updatedAt: CREATED_AT,
+    ...overrides,
+  };
+}
+
 class FakeProvider implements NotificationProvider {
   calls: Array<{ recipient: Recipient; rendered: RenderedNotification }> = [];
   responses: ProviderSendResult[] = [];
@@ -194,6 +221,7 @@ interface Harness {
   readonly dispatcher: NotificationDispatcher;
   readonly dedupe: FakeDedupe;
   readonly notifications: FakeNotificationsRepository;
+  readonly preferences: FakeNotificationPreferencesRepository;
   readonly pushTokens: FakePushTokensRepository;
   readonly users: FakeUsersRepository;
   readonly pushProvider: FakeProvider;
@@ -210,6 +238,7 @@ function buildHarness(
 ): Harness {
   const dedupe = new FakeDedupe();
   const notifications = new FakeNotificationsRepository();
+  const preferences = new FakeNotificationPreferencesRepository();
   const pushTokens = new FakePushTokensRepository();
   const users = new FakeUsersRepository();
   const pushProvider = new FakeProvider('push');
@@ -225,6 +254,7 @@ function buildHarness(
     },
     dedupe,
     notifications: notifications as unknown as NotificationsRepository,
+    notificationPreferences: preferences as unknown as NotificationPreferencesRepository,
     pushTokens: pushTokens as unknown as PushTokensRepository,
     users: users as unknown as UsersRepository,
     ...(opts.omitPushProvider === true ? {} : { pushProvider }),
@@ -235,6 +265,7 @@ function buildHarness(
     dispatcher,
     dedupe,
     notifications,
+    preferences,
     pushTokens,
     users,
     pushProvider,
@@ -547,5 +578,166 @@ describe('NotificationDispatcher.dispatch', () => {
       channel: 'in_app',
       title: 'Delivered',
     });
+  });
+});
+
+describe('NotificationDispatcher.dispatch preference gating', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = buildHarness();
+    h.users.rowsById.set(USER_ID, buildUser());
+    h.pushTokens.tokensByUser.set(`${USER_ID}:consumer`, [buildPushToken()]);
+  });
+
+  it('delivers everything when the user has no preferences row (opt-out default)', async () => {
+    h.pushProvider.responses = [{ ok: true, providerRef: 'apns-1' }];
+
+    const result = await h.dispatcher.dispatch({
+      userId: USER_ID,
+      templateKey: 'order.accepted',
+      payload: { orderId: ORDER_ID, dispensaryName: 'Green Roots' },
+      appVariant: 'consumer',
+      idempotencyKey: `${ORDER_ID}:accepted`,
+    });
+
+    if (result.skipped) throw new TypeError('expected delivery');
+    expect(h.preferences.calls.findByUserId).toEqual([USER_ID]);
+    expect(result.results.map((r) => r.channel).sort()).toEqual(['in_app', 'push']);
+    expect(h.pushProvider.calls).toHaveLength(1);
+  });
+
+  it('suppresses push but keeps the in_app inbox row when order_updates is off', async () => {
+    h.preferences.rowsByUser.set(USER_ID, buildPreference({ orderUpdatesEnabled: false }));
+
+    const result = await h.dispatcher.dispatch({
+      userId: USER_ID,
+      templateKey: 'order.accepted',
+      payload: { orderId: ORDER_ID, dispensaryName: 'Green Roots' },
+      appVariant: 'consumer',
+      idempotencyKey: `${ORDER_ID}:accepted`,
+    });
+
+    if (result.skipped) throw new TypeError('expected delivery');
+    const push = result.results.find((r) => r.channel === 'push');
+    expect(push?.outcome).toEqual({ ok: false, suppressed: true });
+    expect(push?.notificationId).toBeNull();
+    expect(h.pushProvider.calls).toHaveLength(0);
+    // No notifications row is written for the suppressed channel.
+    expect(h.notifications.calls.create.find((c) => c.channel === 'push')).toBeUndefined();
+
+    // in_app is never suppressible — the inbox record is always written.
+    const inApp = result.results.find((r) => r.channel === 'in_app');
+    expect(inApp?.outcome).toEqual({ ok: true, providerRef: 'in_app' });
+    expect(h.notifications.calls.create.find((c) => c.channel === 'in_app')).toBeDefined();
+  });
+
+  it('suppresses push when the push channel is off even though the category is on', async () => {
+    h.preferences.rowsByUser.set(
+      USER_ID,
+      buildPreference({ orderUpdatesEnabled: true, pushEnabled: false }),
+    );
+
+    const result = await h.dispatcher.dispatch({
+      userId: USER_ID,
+      templateKey: 'order.accepted',
+      payload: { orderId: ORDER_ID, dispensaryName: 'Green Roots' },
+      appVariant: 'consumer',
+      idempotencyKey: `${ORDER_ID}:accepted`,
+    });
+
+    if (result.skipped) throw new TypeError('expected delivery');
+    expect(result.results.find((r) => r.channel === 'push')?.outcome).toEqual({
+      ok: false,
+      suppressed: true,
+    });
+    expect(h.pushProvider.calls).toHaveLength(0);
+    expect(result.results.find((r) => r.channel === 'in_app')?.outcome).toEqual({
+      ok: true,
+      providerRef: 'in_app',
+    });
+  });
+
+  it('suppresses the sms leg but delivers push for a picked_up when sms is off', async () => {
+    h.preferences.rowsByUser.set(USER_ID, buildPreference({ smsEnabled: false }));
+    h.pushProvider.responses = [{ ok: true, providerRef: 'apns-1' }];
+
+    const result = await h.dispatcher.dispatch({
+      userId: USER_ID,
+      templateKey: 'order.picked_up',
+      payload: { orderId: ORDER_ID, driverFirstName: 'Alex' },
+      appVariant: 'consumer',
+      idempotencyKey: `${ORDER_ID}:picked_up`,
+    });
+
+    if (result.skipped) throw new TypeError('expected delivery');
+    expect(result.results.find((r) => r.channel === 'push')?.outcome).toEqual({
+      ok: true,
+      providerRef: 'apns-1',
+    });
+    expect(result.results.find((r) => r.channel === 'sms')?.outcome).toEqual({
+      ok: false,
+      suppressed: true,
+    });
+    expect(h.smsProvider.calls).toHaveLength(0);
+  });
+
+  it('suppresses the promotional dispensary.new_nearby push when promotions is off', async () => {
+    h.preferences.rowsByUser.set(USER_ID, buildPreference({ promotionsEnabled: false }));
+
+    const result = await h.dispatcher.dispatch({
+      userId: USER_ID,
+      templateKey: 'dispensary.new_nearby',
+      payload: { dispensaryId: ORDER_ID, dispensaryName: 'Green Roots', distanceMiles: 1.2 },
+      appVariant: 'consumer',
+      idempotencyKey: `${ORDER_ID}:new_nearby`,
+    });
+
+    if (result.skipped) throw new TypeError('expected delivery');
+    expect(result.results.find((r) => r.channel === 'push')?.outcome).toEqual({
+      ok: false,
+      suppressed: true,
+    });
+    // in_app still lands so the discovery still shows in the inbox.
+    expect(result.results.find((r) => r.channel === 'in_app')?.outcome).toEqual({
+      ok: true,
+      providerRef: 'in_app',
+    });
+  });
+
+  it('never suppresses a transactional payment.failed even with every toggle off', async () => {
+    h.preferences.rowsByUser.set(
+      USER_ID,
+      buildPreference({
+        orderUpdatesEnabled: false,
+        promotionsEnabled: false,
+        pushEnabled: false,
+        smsEnabled: false,
+        emailEnabled: false,
+      }),
+    );
+    h.pushProvider.responses = [{ ok: true, providerRef: 'apns-1' }];
+    h.emailProvider.responses = [{ ok: true, providerRef: 'resend-1' }];
+
+    const result = await h.dispatcher.dispatch({
+      userId: USER_ID,
+      templateKey: 'payment.failed',
+      payload: { orderId: ORDER_ID, amountCents: 4_200, reason: 'insufficient funds' },
+      appVariant: 'consumer',
+      idempotencyKey: `${ORDER_ID}:payment_failed`,
+    });
+
+    if (result.skipped) throw new TypeError('expected delivery');
+    // payment.failed is the `account` category — non-suppressible on every
+    // channel regardless of the user's (all-off) preferences.
+    expect(result.results.find((r) => r.channel === 'push')?.outcome).toEqual({
+      ok: true,
+      providerRef: 'apns-1',
+    });
+    expect(result.results.find((r) => r.channel === 'email')?.outcome).toEqual({
+      ok: true,
+      providerRef: 'resend-1',
+    });
+    expect(h.pushProvider.calls).toHaveLength(1);
+    expect(h.emailProvider.calls).toHaveLength(1);
   });
 });

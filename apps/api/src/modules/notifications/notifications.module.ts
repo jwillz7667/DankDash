@@ -29,6 +29,7 @@
 import {
   DispensariesRepository,
   DriversRepository,
+  NotificationPreferencesRepository,
   NotificationsRepository,
   PushTokensRepository,
   UsersRepository,
@@ -59,6 +60,8 @@ import {
   type NotificationDedupeStore,
 } from './notification-dedupe.store.js';
 import { NotificationDispatcher } from './notification-dispatcher.service.js';
+import { NotificationPreferencesController } from './notification-preferences.controller.js';
+import { NotificationPreferencesService } from './notification-preferences.service.js';
 import { NullNotificationProvider } from './null-notification.provider.js';
 import { OrderNotificationsListener } from './order-notifications.listener.js';
 import { PushTokensController } from './push-tokens.controller.js';
@@ -81,6 +84,13 @@ const notificationsRepoProvider: FactoryProvider<NotificationsRepository> = {
   provide: NotificationsRepository,
   inject: [DRIZZLE_DB],
   useFactory: (db: Database): NotificationsRepository => new NotificationsRepository(db),
+};
+
+const notificationPreferencesRepoProvider: FactoryProvider<NotificationPreferencesRepository> = {
+  provide: NotificationPreferencesRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): NotificationPreferencesRepository =>
+    new NotificationPreferencesRepository(db),
 };
 
 const usersRepoProvider: FactoryProvider<UsersRepository> = {
@@ -111,6 +121,13 @@ const pushTokensServiceProvider: FactoryProvider<PushTokensService> = {
   provide: PushTokensService,
   inject: [PushTokensRepository],
   useFactory: (repo: PushTokensRepository): PushTokensService => new PushTokensService(repo),
+};
+
+const notificationPreferencesServiceProvider: FactoryProvider<NotificationPreferencesService> = {
+  provide: NotificationPreferencesService,
+  inject: [NotificationPreferencesRepository],
+  useFactory: (repo: NotificationPreferencesRepository): NotificationPreferencesService =>
+    new NotificationPreferencesService(repo),
 };
 
 const dedupeProvider: FactoryProvider<NotificationDedupeStore> = {
@@ -192,6 +209,7 @@ const dispatcherProvider: FactoryProvider<NotificationDispatcher> = {
     ConfigService,
     NOTIFICATION_DEDUPE,
     NotificationsRepository,
+    NotificationPreferencesRepository,
     PushTokensRepository,
     UsersRepository,
     PUSH_PROVIDER,
@@ -202,6 +220,7 @@ const dispatcherProvider: FactoryProvider<NotificationDispatcher> = {
     config: ConfigService,
     dedupe: NotificationDedupeStore,
     notifications: NotificationsRepository,
+    notificationPreferences: NotificationPreferencesRepository,
     pushTokens: PushTokensRepository,
     users: UsersRepository,
     pushProvider: NotificationProvider,
@@ -218,6 +237,7 @@ const dispatcherProvider: FactoryProvider<NotificationDispatcher> = {
       },
       dedupe,
       notifications,
+      notificationPreferences,
       pushTokens,
       users,
       pushProvider,
@@ -248,11 +268,13 @@ const orderListenerProvider: FactoryProvider<OrderNotificationsListener> = {
 const providers: Provider[] = [
   pushTokensRepoProvider,
   notificationsRepoProvider,
+  notificationPreferencesRepoProvider,
   usersRepoProvider,
   dispensariesRepoProvider,
   driversRepoProvider,
   ordersRepoProvider,
   pushTokensServiceProvider,
+  notificationPreferencesServiceProvider,
   dedupeProvider,
   pushProviderFactory,
   smsProviderFactory,
@@ -263,8 +285,8 @@ const providers: Provider[] = [
 
 @Module({
   imports: [AuthModule],
-  controllers: [PushTokensController],
+  controllers: [PushTokensController, NotificationPreferencesController],
   providers,
-  exports: [PushTokensService, NotificationDispatcher],
+  exports: [PushTokensService, NotificationPreferencesService, NotificationDispatcher],
 })
 export class NotificationsModule {}
