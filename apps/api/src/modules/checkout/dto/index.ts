@@ -1,4 +1,8 @@
 export {
+  CheckoutCapabilitiesResponseSchema,
+  type CheckoutCapabilitiesResponse,
+} from './checkout-capabilities.dto.js';
+export {
   CheckoutRequestDto,
   CheckoutRequestSchema,
   MAX_DELIVERY_INSTRUCTIONS_LENGTH,

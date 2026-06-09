@@ -136,6 +136,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Decimal } from 'decimal.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../payments/tokens.js';
 import type {
+  CheckoutCapabilitiesResponse,
   CheckoutRequest,
   CheckoutResponse,
   OrderItemResponse,
@@ -184,6 +185,17 @@ export class CheckoutService {
      */
     private readonly paymentsBypassEnabled: boolean,
   ) {}
+
+  /**
+   * Advertises checkout-time capabilities to the client. Currently a single
+   * bit: whether the test-only payment bypass is active. The value is the
+   * *same* injected flag `checkout()` enforces at step 16, so a client can
+   * never be told it may place a bypassed order while the server would
+   * still demand payment (or vice-versa). Synchronous — no I/O, no tx.
+   */
+  getCapabilities(): CheckoutCapabilitiesResponse {
+    return { paymentBypassEnabled: this.paymentsBypassEnabled };
+  }
 
   async checkout(userId: string, cartId: string, body: CheckoutRequest): Promise<CheckoutResponse> {
     return this.db.transaction(async (tx) => {

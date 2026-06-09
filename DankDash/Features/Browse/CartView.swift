@@ -269,6 +269,20 @@ struct CartView: View {
         .font(DankFont.caption)
         .foregroundStyle(DankColor.Text.muted)
         .multilineTextAlignment(.center)
+      if store.paymentBypassEnabled {
+        DankButton(
+          "Place test order",
+          style: .secondary,
+          size: .large,
+          isLoading: store.isPlacingTestOrder,
+          isDisabled: !store.canPlaceTestOrder,
+          action: { store.send(.placeTestOrderTapped) }
+        )
+        Text("Test mode: places the order without payment.")
+          .font(DankFont.caption)
+          .foregroundStyle(DankColor.Text.muted)
+          .multilineTextAlignment(.center)
+      }
     }
     .padding(DankSpacing.md)
     .background(DankColor.cream)

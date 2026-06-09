@@ -366,6 +366,130 @@ final class CartFeatureTests: XCTestCase {
     // No delegate received — the canCheckout guard rejected the tap.
   }
 
+  // MARK: - Payment-bypass capabilities + test order
+
+  func test_capabilitiesResponse_success_setsFlag() async {
+    let store = TestStore(initialState: CartFeature.State()) {
+      CartFeature()
+    }
+
+    await store.send(.capabilitiesResponse(.success(true))) {
+      $0.paymentBypassEnabled = true
+    }
+  }
+
+  func test_capabilitiesResponse_failure_keepsBypassHidden() async {
+    let store = TestStore(
+      initialState: CartFeature.State(paymentBypassEnabled: true)
+    ) {
+      CartFeature()
+    }
+
+    await store.send(.capabilitiesResponse(.failure(EquatableError(message: "offline")))) {
+      $0.paymentBypassEnabled = false
+    }
+  }
+
+  func test_placeTestOrderTapped_bypassEnabled_delegatesTestOrderPlaced() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(items: [makeCartItem()], expiresAt: referenceDate.addingTimeInterval(1_800))
+    let address = makeAddress()
+    let passing = makeEvaluation(passed: true)
+    let orderId = UUID()
+    let checkoutRecorder = CheckoutArgsRecorder()
+
+    let store = TestStore(
+      initialState: CartFeature.State(
+        serverCart: cart,
+        availableAddresses: [address],
+        selectedAddressId: address.id,
+        evaluation: passing,
+        paymentBypassEnabled: true
+      )
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+      $0.checkoutAPIClient.checkout = { cartId, addressId, tip in
+        await checkoutRecorder.record(cartId: cartId, addressId: addressId, tip: tip)
+        return orderId
+      }
+    }
+
+    XCTAssertTrue(store.state.canPlaceTestOrder)
+    await store.send(.placeTestOrderTapped) {
+      $0.isPlacingTestOrder = true
+    }
+    await store.receive(\.testOrderResponse.success) {
+      $0.isPlacingTestOrder = false
+    }
+    await store.receive(\.delegate.testOrderPlaced)
+
+    let recorded = await checkoutRecorder.calls
+    XCTAssertEqual(recorded.count, 1)
+    XCTAssertEqual(recorded.first?.cartId, cart.id)
+    XCTAssertEqual(recorded.first?.addressId, address.id)
+    XCTAssertEqual(recorded.first?.tip, 0)
+  }
+
+  func test_placeTestOrderTapped_bypassDisabled_doesNothing() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(items: [makeCartItem()], expiresAt: referenceDate.addingTimeInterval(1_800))
+    let address = makeAddress()
+    let passing = makeEvaluation(passed: true)
+
+    let store = TestStore(
+      initialState: CartFeature.State(
+        serverCart: cart,
+        availableAddresses: [address],
+        selectedAddressId: address.id,
+        evaluation: passing,
+        paymentBypassEnabled: false
+      )
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+    }
+
+    XCTAssertFalse(store.state.canPlaceTestOrder)
+    await store.send(.placeTestOrderTapped)
+    // No effect — the paymentBypassEnabled guard rejected the tap.
+  }
+
+  func test_placeTestOrderTapped_failure_setsErrorAndClearsPlacing() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(items: [makeCartItem()], expiresAt: referenceDate.addingTimeInterval(1_800))
+    let address = makeAddress()
+    let passing = makeEvaluation(passed: true)
+
+    let store = TestStore(
+      initialState: CartFeature.State(
+        serverCart: cart,
+        availableAddresses: [address],
+        selectedAddressId: address.id,
+        evaluation: passing,
+        paymentBypassEnabled: true
+      )
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+      $0.checkoutAPIClient.checkout = { _, _, _ in
+        struct StubError: LocalizedError { var errorDescription: String? { "checkout failed" } }
+        throw StubError()
+      }
+    }
+
+    await store.send(.placeTestOrderTapped) {
+      $0.isPlacingTestOrder = true
+    }
+    await store.receive(\.testOrderResponse.failure) {
+      $0.isPlacingTestOrder = false
+      $0.error = "Couldn't place test order: checkout failed"
+    }
+  }
+
   // MARK: - Address selection
 
   func test_selectAddress_withServerCart_firesValidate() async {
@@ -656,5 +780,13 @@ private actor PatchRecorder {
 
   func record(itemId: UUID, quantity: Int) {
     calls.append((itemId, quantity))
+  }
+}
+
+private actor CheckoutArgsRecorder {
+  private(set) var calls: [(cartId: UUID, addressId: UUID, tip: Int)] = []
+
+  func record(cartId: UUID, addressId: UUID, tip: Int) {
+    calls.append((cartId, addressId, tip))
   }
 }

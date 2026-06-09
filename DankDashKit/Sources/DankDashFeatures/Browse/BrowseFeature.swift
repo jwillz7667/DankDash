@@ -290,6 +290,15 @@ public struct BrowseFeature: Sendable {
         )
         return .none
 
+      case .cart(.delegate(.testOrderPlaced(let orderId))):
+        // Test-mode bypass: the order was created in-app (no Safari
+        // hand-off). Mirror the hand-off-completed cleanup — clear the
+        // cart and route to the order-tracking screen.
+        state.cart = CartFeature.State()
+        state.selectedTab = .orders
+        state.orderDetail = OrderDetailFeature.State(orderId: orderId)
+        return .none
+
       case .cart:
         return .none
 
