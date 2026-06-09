@@ -110,10 +110,14 @@ function makeShift(overrides: Partial<DriverShift> = {}): DriverShift {
   };
 }
 
-class FakeDriversRepo implements Pick<DriversRepository, 'findByIdForUpdate' | 'setStatus'> {
+class FakeDriversRepo implements Pick<
+  DriversRepository,
+  'findByIdForUpdate' | 'setStatus' | 'updateLocation'
+> {
   public row: Driver | null = null;
   public lockCalls: string[] = [];
   public statusCalls: { id: string; status: DriverStatus }[] = [];
+  public locationCalls: { id: string; location: GeoPoint; at: Date | undefined }[] = [];
 
   findByIdForUpdate(id: string): Promise<Driver | null> {
     this.lockCalls.push(id);
@@ -124,6 +128,18 @@ class FakeDriversRepo implements Pick<DriversRepository, 'findByIdForUpdate' | '
     this.statusCalls.push({ id, status });
     if (this.row !== null) {
       this.row = { ...this.row, currentStatus: status, lastStatusChangeAt: NOW };
+    }
+    return Promise.resolve();
+  }
+
+  updateLocation(id: string, location: GeoPoint, recordedAt?: Date): Promise<void> {
+    this.locationCalls.push({ id, location, at: recordedAt });
+    if (this.row !== null) {
+      this.row = {
+        ...this.row,
+        currentLocation: location,
+        currentLocationUpdatedAt: recordedAt ?? NOW,
+      };
     }
     return Promise.resolve();
   }
@@ -208,6 +224,22 @@ describe('DriverShiftService.start', () => {
     expect(res.driverId).toBe(DRIVER_ID);
     expect(res.endedAt).toBeNull();
     expect(res.startingLocation).toEqual(START_LOC);
+  });
+
+  it('seeds current_location from the starting point so dispatch can see the driver', async () => {
+    // Regression: an online driver with current_location IS NULL is
+    // invisible to findDispatchCandidatesNearDispensary, so every nearby
+    // order fast-failed to dispatch_failed. Starting a shift must seed the
+    // live location from the shift's starting point, stamped at `now`.
+    const rig = makeRig();
+    rig.drivers.row = makeDriver();
+
+    await rig.service.start(makeContext(), { startingLocation: START_LOC }, NOW);
+
+    expect(rig.drivers.locationCalls).toEqual([{ id: DRIVER_ID, location: START_LOC, at: NOW }]);
+    // The seeded row must be both online and locatable for eligibility.
+    expect(rig.drivers.row?.currentStatus).toBe('online');
+    expect(rig.drivers.row?.currentLocation).toEqual(START_LOC);
   });
 
   it.each(['online', 'on_break', 'unavailable', 'en_route_pickup', 'en_route_dropoff'] as const)(

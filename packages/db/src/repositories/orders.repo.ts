@@ -161,7 +161,7 @@ const STATUS_TIMESTAMP_COLUMN: Readonly<Partial<Record<OrderStatus, keyof NewOrd
  * order-status mirror test guards both declarations against drift. Used by
  * `countActiveForUser` to find orders still in flight.
  */
-const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [
+export const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [
   'payment_failed',
   'rejected',
   'dispatch_failed',
@@ -169,6 +169,28 @@ const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [
   'returned_to_store',
   'canceled',
   'disputed',
+];
+
+/**
+ * Statuses that belong in the customer "Past" (history) tab — and are
+ * therefore excluded from the "Active" tab — in `listForUserCursored`.
+ *
+ * Derived from the state-machine terminal set rather than re-typed by
+ * hand: a hand-maintained second copy is exactly what let `dispatch_failed`
+ * fall through the cracks (it was terminal in the machine but missing
+ * here, so a failed-dispatch order showed as perpetually "Active" and was
+ * silently dropped by the lossy iOS list decoder). Deriving keeps the two
+ * in lockstep — any future terminal state flows in automatically.
+ *
+ * The one deliberate addition is `id_scan_failed`: the state machine does
+ * NOT treat it as terminal (a failed door scan can still transition to
+ * `returned_to_store`), but from the customer's history perspective the
+ * delivery is done, so it reads as "Past" here. Keep this superset
+ * relationship explicit so the divergence is intentional, not drift.
+ */
+export const LISTING_TERMINAL_STATUSES: readonly OrderStatus[] = [
+  ...TERMINAL_ORDER_STATUSES,
+  'id_scan_failed',
 ];
 
 export class OrdersRepository extends BaseRepository {
@@ -266,20 +288,11 @@ export class OrdersRepository extends BaseRepository {
     readonly statusFilter: 'active' | 'completed' | 'all';
     readonly cursor: { readonly placedAt: Date; readonly id: string } | null;
   }): Promise<readonly Order[]> {
-    const TERMINAL_STATUSES: readonly OrderStatus[] = [
-      'delivered',
-      'canceled',
-      'rejected',
-      'returned_to_store',
-      'disputed',
-      'id_scan_failed',
-      'payment_failed',
-    ];
     const statusPredicate =
       input.statusFilter === 'active'
-        ? not(inArray(orders.status, TERMINAL_STATUSES))
+        ? not(inArray(orders.status, LISTING_TERMINAL_STATUSES))
         : input.statusFilter === 'completed'
-          ? inArray(orders.status, TERMINAL_STATUSES)
+          ? inArray(orders.status, LISTING_TERMINAL_STATUSES)
           : undefined;
     const cursorPredicate =
       input.cursor === null

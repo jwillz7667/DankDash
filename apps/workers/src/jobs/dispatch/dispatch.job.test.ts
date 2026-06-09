@@ -34,7 +34,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDispatchJob } from './dispatch.job.js';
 
 interface CapturedLog {
-  readonly level: 'info' | 'warn' | 'error';
+  readonly level: 'debug' | 'info' | 'warn' | 'error';
   readonly fields: Record<string, unknown>;
   readonly message: string;
 }
@@ -46,12 +46,16 @@ function makeLogger(): { logger: ReturnType<typeof loggerInner>; logs: CapturedL
 
 function loggerInner(logs: CapturedLog[]): {
   child: (fields: Record<string, unknown>) => unknown;
+  debug: (fields: Record<string, unknown>, message: string) => void;
   info: (fields: Record<string, unknown>, message: string) => void;
   warn: (fields: Record<string, unknown>, message: string) => void;
   error: (fields: Record<string, unknown>, message: string) => void;
 } {
   return {
     child: (): unknown => loggerInner(logs),
+    debug: (fields, message): void => {
+      logs.push({ level: 'debug', fields, message });
+    },
     info: (fields, message): void => {
       logs.push({ level: 'info', fields, message });
     },
@@ -225,6 +229,7 @@ describe('runDispatchJob', () => {
       considered: 0,
       offered: 0,
       waited: 0,
+      waitedNoCandidates: 0,
       failedNoDrivers: 0,
       failedBudgetExhausted: 0,
       skippedMissingTimestamp: 0,
@@ -310,7 +315,12 @@ describe('runDispatchJob', () => {
     expect(fakes.applyTransition).not.toHaveBeenCalled();
   });
 
-  it('transitions to dispatch_failed when the candidate pool is empty', async () => {
+  it('waits (no transition) when the candidate pool is empty but budget remains', async () => {
+    // The order entered awaiting_driver 30s ago; the 3-minute budget is
+    // far from spent. An empty pool this tick must NOT fail the order —
+    // it stays in awaiting_driver so a driver who comes online before the
+    // budget elapses still gets it. This is the regression guard for the
+    // production "order failed dispatch ~3s after placement" incident.
     const order = makeOrder();
     const fakes = makeFakes({ awaitingOrders: [order], candidates: [] });
     const { logger } = makeLogger();
@@ -325,8 +335,33 @@ describe('runDispatchJob', () => {
       },
     });
 
-    expect(summary.failedNoDrivers).toBe(1);
+    expect(summary.waitedNoCandidates).toBe(1);
+    expect(summary.failedNoDrivers).toBe(0);
     expect(summary.offered).toBe(0);
+    expect(fakes.applyTransition).not.toHaveBeenCalled();
+    expect(fakes.createOffer).not.toHaveBeenCalled();
+  });
+
+  it('transitions to dispatch_failed (no_eligible_drivers) when the pool stays empty past the budget', async () => {
+    // Order entered awaiting_driver 4 minutes ago (default budget 3min)
+    // and no offer was ever sent (empty history) → no_eligible_drivers.
+    const ancient = new Date(NOW.getTime() - 4 * 60_000);
+    const order = makeOrder({ awaitingDriverAt: ancient });
+    const fakes = makeFakes({ awaitingOrders: [order], candidates: [] });
+    const { logger } = makeLogger();
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+      },
+    });
+
+    expect(summary.failedNoDrivers).toBe(1);
+    expect(summary.waitedNoCandidates).toBe(0);
     expect(fakes.applyTransition).toHaveBeenCalledTimes(1);
 
     const [orderId, resolver] = fakes.applyTransition.mock.calls[0] as [string, TransitionResolver];
@@ -346,13 +381,28 @@ describe('runDispatchJob', () => {
     });
   });
 
-  it('transitions to dispatch_failed when the total attempt budget is exhausted', async () => {
-    // Order entered awaiting_driver 4 minutes ago (default budget is 3min).
+  it('transitions to dispatch_failed (budget_exhausted) when offers were made but the budget runs out', async () => {
+    // Order entered awaiting_driver 4 minutes ago (default budget 3min);
+    // an offer was made earlier and expired (non-empty history) → the
+    // failure reason is budget_exhausted, not no_eligible_drivers.
     const ancient = new Date(NOW.getTime() - 4 * 60_000);
     const order = makeOrder({ awaitingDriverAt: ancient });
+    const expiredOffer: DispatchOffer = {
+      id: 'offer-expired',
+      orderId: 'order-1',
+      driverId: 'driver-1',
+      offeredAt: new Date(NOW.getTime() - 3 * 60_000),
+      expiresAt: new Date(NOW.getTime() - 2.5 * 60_000),
+      payoutEstimateCents: 1000,
+      distanceMiles: '1.00',
+      status: 'expired',
+      respondedAt: null,
+      declineReason: null,
+    };
     const fakes = makeFakes({
       awaitingOrders: [order],
       candidates: [makeCandidate()],
+      history: [expiredOffer],
     });
     const { logger } = makeLogger();
 
@@ -505,7 +555,11 @@ describe('runDispatchJob', () => {
   });
 
   it('logs and swallows OrderError raised by applyTransition (concurrent transition)', async () => {
-    const order = makeOrder();
+    // Budget exhausted (entered awaiting_driver 4min ago) + empty pool →
+    // the tick reaches DISPATCH_FAILED, where applyTransition races a
+    // concurrent transition and throws OrderError.
+    const ancient = new Date(NOW.getTime() - 4 * 60_000);
+    const order = makeOrder({ awaitingDriverAt: ancient });
     const fakes = makeFakes({
       awaitingOrders: [order],
       candidates: [],
@@ -539,7 +593,11 @@ describe('runDispatchJob', () => {
   });
 
   it('rethrows non-OrderError failures from applyTransition (caught at tick level)', async () => {
-    const order = makeOrder();
+    // Budget exhausted + empty pool → the tick reaches DISPATCH_FAILED;
+    // a non-OrderError from applyTransition escapes failOrder and is
+    // caught at the per-order boundary (errors counter, not failedNoDrivers).
+    const ancient = new Date(NOW.getTime() - 4 * 60_000);
+    const order = makeOrder({ awaitingDriverAt: ancient });
     const fakes = makeFakes({
       awaitingOrders: [order],
       candidates: [],
