@@ -30,6 +30,18 @@ struct AccountTabView: View {
           ProfileEditView(store: editStore)
         }
       }
+      .navigationDestination(
+        isPresented: Binding(
+          get: { store.account.addresses != nil },
+          set: { isPresented in
+            if !isPresented { store.send(.account(.addressesDismissed)) }
+          }
+        )
+      ) {
+        if let addressesStore = store.scope(state: \.account.addresses, action: \.account.addresses) {
+          AddressesView(store: addressesStore)
+        }
+      }
     }
   }
 }
@@ -56,6 +68,12 @@ struct AccountHubView: View {
             subtitle: "Update the name shown on your orders.",
             isEnabled: store.user != nil,
             action: { store.send(.editProfileTapped) }
+          )
+          AccountRow(
+            icon: "mappin.and.ellipse",
+            title: "Saved addresses",
+            subtitle: "Manage delivery addresses and your default.",
+            action: { store.send(.manageAddressesTapped) }
           )
           AccountRow(
             icon: "clock.arrow.circlepath",
