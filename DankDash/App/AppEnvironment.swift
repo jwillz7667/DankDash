@@ -71,6 +71,10 @@ struct AppEnvironment {
     dependencies.ordersAPIClient = .live(apiClient: apiClient)
     dependencies.meAPIClient = .live(apiClient: apiClient)
     dependencies.addressAPIClient = .live(apiClient: apiClient)
+    dependencies.paymentMethodAPIClient = .live(
+      apiClient: apiClient,
+      returnURL: Self.resolvedPaymentLinkReturnURL()
+    )
     dependencies.handoffAPIClient = .live(apiClient: apiClient)
     dependencies.realtimeClient = .live(
       baseURL: realtimeBaseURL,
@@ -106,6 +110,21 @@ struct AppEnvironment {
       return url
     }
     return URL(string: "https://app.dankdash.com/checkout")!
+  }
+
+  /// Absolute URL Aeropay redirects to after the user finishes the hosted
+  /// bank-link flow. The SFSafariViewController flow doesn't intercept the
+  /// redirect — the `bank_account.linked` webhook is the source of truth —
+  /// so this just needs to be a real landing page on the app web host.
+  /// Overridable via the `DANKDASH_PAYMENT_LINK_RETURN_URL` Info.plist key
+  /// so staging / preview builds can point at a non-production host.
+  private static func resolvedPaymentLinkReturnURL() -> URL {
+    if let override = Bundle.main.object(
+      forInfoDictionaryKey: "DANKDASH_PAYMENT_LINK_RETURN_URL"
+    ) as? String, let url = URL(string: override) {
+      return url
+    }
+    return URL(string: "https://app.dankdash.com/payment-methods/linked")!
   }
 
   /// Socket.io endpoint for ``RealtimeClient``. Debug builds default to
