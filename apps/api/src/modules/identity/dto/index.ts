@@ -1,4 +1,8 @@
 export {
+  AccountDeletionResponseSchema,
+  type AccountDeletionResponse,
+} from './account-deletion.dto.js';
+export {
   CreateAddressRequestDto,
   CreateAddressRequestSchema,
   ListAddressesResponseSchema,

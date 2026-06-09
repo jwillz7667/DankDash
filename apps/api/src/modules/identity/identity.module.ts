@@ -20,6 +20,10 @@
 import {
   DispensariesRepository,
   DispensaryStaffRepository,
+  OrdersRepository,
+  PasswordResetTokensRepository,
+  PaymentMethodsRepository,
+  SessionsRepository,
   UserAddressesRepository,
   UsersRepository,
   WebhookEventsProcessedRepository,
@@ -28,6 +32,10 @@ import {
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import {
+  AccountDeletionService,
+  type AccountDeletionScopedRepos,
+} from './account-deletion.service.js';
 import { AddressesController } from './addresses.controller.js';
 import { AddressesService, type AddressesScopedRepos } from './addresses.service.js';
 import { IdentityController } from './identity.controller.js';
@@ -78,6 +86,23 @@ const addressesServiceProvider: FactoryProvider<AddressesService> = {
     ),
 };
 
+const accountDeletionServiceProvider: FactoryProvider<AccountDeletionService> = {
+  provide: AccountDeletionService,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): AccountDeletionService =>
+    new AccountDeletionService(
+      db,
+      (scopedDb): AccountDeletionScopedRepos => ({
+        users: new UsersRepository(scopedDb),
+        sessions: new SessionsRepository(scopedDb),
+        passwordResetTokens: new PasswordResetTokensRepository(scopedDb),
+        userAddresses: new UserAddressesRepository(scopedDb),
+        paymentMethods: new PaymentMethodsRepository(scopedDb),
+        orders: new OrdersRepository(scopedDb),
+      }),
+    ),
+};
+
 @Module({
   imports: [AuthModule, PersonaModule],
   controllers: [IdentityController, KycWebhookController, AddressesController],
@@ -87,7 +112,8 @@ const addressesServiceProvider: FactoryProvider<AddressesService> = {
     webhookEventsRepositoryProvider,
     identityServiceProvider,
     addressesServiceProvider,
+    accountDeletionServiceProvider,
   ],
-  exports: [IdentityService, AddressesService],
+  exports: [IdentityService, AddressesService, AccountDeletionService],
 })
 export class IdentityModule {}
