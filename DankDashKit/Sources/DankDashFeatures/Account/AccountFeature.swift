@@ -19,19 +19,22 @@ public struct AccountFeature: Sendable {
     public var profileEdit: ProfileEditFeature.State?
     public var addresses: AddressesFeature.State?
     public var paymentMethods: PaymentMethodsFeature.State?
+    public var notifications: NotificationPreferencesFeature.State?
 
     public init(
       user: UserSummaryDTO? = nil,
       isLoadingProfile: Bool = false,
       profileEdit: ProfileEditFeature.State? = nil,
       addresses: AddressesFeature.State? = nil,
-      paymentMethods: PaymentMethodsFeature.State? = nil
+      paymentMethods: PaymentMethodsFeature.State? = nil,
+      notifications: NotificationPreferencesFeature.State? = nil
     ) {
       self.user = user
       self.isLoadingProfile = isLoadingProfile
       self.profileEdit = profileEdit
       self.addresses = addresses
       self.paymentMethods = paymentMethods
+      self.notifications = notifications
     }
   }
 
@@ -44,11 +47,14 @@ public struct AccountFeature: Sendable {
     case addressesDismissed
     case managePaymentMethodsTapped
     case paymentMethodsDismissed
+    case manageNotificationsTapped
+    case notificationsDismissed
     case orderHistoryTapped
     case signOutTapped
     case profileEdit(ProfileEditFeature.Action)
     case addresses(AddressesFeature.Action)
     case paymentMethods(PaymentMethodsFeature.Action)
+    case notifications(NotificationPreferencesFeature.Action)
     case delegate(Delegate)
 
     @CasePathable
@@ -120,6 +126,14 @@ public struct AccountFeature: Sendable {
         state.paymentMethods = nil
         return .none
 
+      case .manageNotificationsTapped:
+        state.notifications = NotificationPreferencesFeature.State()
+        return .none
+
+      case .notificationsDismissed:
+        state.notifications = nil
+        return .none
+
       case .orderHistoryTapped:
         return .send(.delegate(.showOrders))
 
@@ -144,6 +158,9 @@ public struct AccountFeature: Sendable {
       case .paymentMethods:
         return .none
 
+      case .notifications:
+        return .none
+
       case .delegate:
         return .none
       }
@@ -156,6 +173,9 @@ public struct AccountFeature: Sendable {
     }
     .ifLet(\.paymentMethods, action: \.paymentMethods) {
       PaymentMethodsFeature()
+    }
+    .ifLet(\.notifications, action: \.notifications) {
+      NotificationPreferencesFeature()
     }
   }
 }

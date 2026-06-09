@@ -57,6 +57,21 @@ struct AccountTabView: View {
           PaymentMethodsView(store: paymentStore)
         }
       }
+      .navigationDestination(
+        isPresented: Binding(
+          get: { store.account.notifications != nil },
+          set: { isPresented in
+            if !isPresented { store.send(.account(.notificationsDismissed)) }
+          }
+        )
+      ) {
+        if let notificationsStore = store.scope(
+          state: \.account.notifications,
+          action: \.account.notifications
+        ) {
+          NotificationPreferencesView(store: notificationsStore)
+        }
+      }
     }
   }
 }
@@ -95,6 +110,12 @@ struct AccountHubView: View {
             title: "Payment methods",
             subtitle: "Link a bank account and set your default.",
             action: { store.send(.managePaymentMethodsTapped) }
+          )
+          AccountRow(
+            icon: "bell",
+            title: "Notifications",
+            subtitle: "Choose which alerts you get and how they reach you.",
+            action: { store.send(.manageNotificationsTapped) }
           )
           AccountRow(
             icon: "clock.arrow.circlepath",
