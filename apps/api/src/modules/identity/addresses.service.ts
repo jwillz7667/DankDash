@@ -14,6 +14,13 @@
  *                                       404 (same shape as missing row,
  *                                       so a probe cannot distinguish
  *                                       ownership from existence).
+ *   remove(userId, id)               → soft-delete. Same ownership pre-flight
+ *                                       as update (cross-user / missing /
+ *                                       already-deleted → 404). The row is
+ *                                       retained (deleted_at set, default
+ *                                       flag cleared) so historical orders
+ *                                       that referenced it keep a valid FK;
+ *                                       listForUser already filters it out.
  *
  * The service uses the FactoryProvider + scoped-repos closure pattern
  * established by CartModule + OrdersModule: the DI container supplies the
@@ -149,6 +156,24 @@ export class AddressesService {
       throw new NotFoundError('UserAddress', id);
     }
     return toResponse(refreshed);
+  }
+
+  async remove(userId: string, id: string): Promise<void> {
+    const repos = this.reposFor(this.db).userAddresses;
+    // Same ownership pre-flight as update: a cross-user, missing, or
+    // already-deleted row is indistinguishable (all 404). Without this an
+    // attacker could probe address existence by delete-status code.
+    const existing = await repos.findById(id);
+    if (existing?.userId !== userId || existing.deletedAt !== null) {
+      throw new NotFoundError('UserAddress', id);
+    }
+
+    // softDelete clears `is_default` as part of the same write, so deleting
+    // the current default never violates the one-default partial unique
+    // index. The user is left with no default until they promote another —
+    // checkout's address picker handles that explicitly; we do not silently
+    // auto-promote a different row (that would be a surprising mutation).
+    await repos.softDelete(id);
   }
 }
 

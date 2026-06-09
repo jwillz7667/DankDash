@@ -67,7 +67,7 @@ function makeAddress(overrides: Partial<UserAddress> = {}): UserAddress {
 
 class FakeUserAddressesRepo implements Pick<
   UserAddressesRepository,
-  'findById' | 'listForUser' | 'create' | 'update' | 'setDefault'
+  'findById' | 'listForUser' | 'create' | 'update' | 'setDefault' | 'softDelete'
 > {
   public listResponse: readonly UserAddress[] = [];
   public createResponse: UserAddress = makeAddress();
@@ -79,6 +79,7 @@ class FakeUserAddressesRepo implements Pick<
   public createCalls: CreateUserAddressInput[] = [];
   public updateCalls: { id: string; patch: UpdateUserAddressPatch }[] = [];
   public setDefaultCalls: { userId: string; addressId: string }[] = [];
+  public softDeleteCalls: string[] = [];
 
   findById = (id: string): Promise<UserAddress | null> => {
     return Promise.resolve(this.byId.get(id) ?? null);
@@ -102,6 +103,11 @@ class FakeUserAddressesRepo implements Pick<
 
   setDefault = (userId: string, addressId: string): Promise<void> => {
     this.setDefaultCalls.push({ userId, addressId });
+    return Promise.resolve();
+  };
+
+  softDelete = (id: string): Promise<void> => {
+    this.softDeleteCalls.push(id);
     return Promise.resolve();
   };
 }
@@ -378,5 +384,39 @@ describe('AddressesService.update', () => {
 
     expect(result.label).toBe('Renamed');
     expect(result.city).toBe('Saint Paul');
+  });
+});
+
+describe('AddressesService.remove', () => {
+  it('soft-deletes a row the caller owns', async () => {
+    const { service, repo } = makeService();
+    repo.byId.set(ADDRESS_ID, makeAddress());
+
+    await service.remove(USER_ID, ADDRESS_ID);
+
+    expect(repo.softDeleteCalls).toEqual([ADDRESS_ID]);
+  });
+
+  it('throws NotFoundError when the address belongs to a different user', async () => {
+    const { service, repo } = makeService();
+    repo.byId.set(ADDRESS_ID, makeAddress({ userId: OTHER_USER_ID }));
+
+    await expect(service.remove(USER_ID, ADDRESS_ID)).rejects.toThrow(NotFoundError);
+    expect(repo.softDeleteCalls).toEqual([]);
+  });
+
+  it('throws NotFoundError when the address is already soft-deleted', async () => {
+    const { service, repo } = makeService();
+    repo.byId.set(ADDRESS_ID, makeAddress({ deletedAt: new Date('2026-05-14T00:00:00.000Z') }));
+
+    await expect(service.remove(USER_ID, ADDRESS_ID)).rejects.toThrow(NotFoundError);
+    expect(repo.softDeleteCalls).toEqual([]);
+  });
+
+  it('throws NotFoundError when the address does not exist', async () => {
+    const { service, repo } = makeService();
+
+    await expect(service.remove(USER_ID, ADDRESS_ID)).rejects.toThrow(NotFoundError);
+    expect(repo.softDeleteCalls).toEqual([]);
   });
 });

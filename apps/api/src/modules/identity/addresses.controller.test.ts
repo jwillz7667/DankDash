@@ -10,6 +10,7 @@
  *   - GET /                  → forwards (userId), returns the list response
  *   - POST /                 → forwards (userId, body), returns the created row
  *   - PATCH /:id             → forwards (userId, id, body), returns the row
+ *   - DELETE /:id            → forwards (userId, id), resolves void (204)
  *   - admin principals       → controller pins reads to admin's own userId
  *                              (admin-impersonation is a separate audited
  *                              surface not in Phase 18)
@@ -58,6 +59,7 @@ class FakeAddressesService {
   public listCalls: { userId: string }[] = [];
   public createCalls: { userId: string; body: CreateAddressRequestDto }[] = [];
   public updateCalls: { userId: string; id: string; body: PatchAddressRequestDto }[] = [];
+  public removeCalls: { userId: string; id: string }[] = [];
 
   listForUser = (userId: string): Promise<ListAddressesResponse> => {
     this.listCalls.push({ userId });
@@ -76,6 +78,11 @@ class FakeAddressesService {
   ): Promise<UserAddressResponse> => {
     this.updateCalls.push({ userId, id, body });
     return Promise.resolve(ROW);
+  };
+
+  remove = (userId: string, id: string): Promise<void> => {
+    this.removeCalls.push({ userId, id });
+    return Promise.resolve();
   };
 }
 
@@ -126,6 +133,15 @@ describe('AddressesController', () => {
 
     expect(result).toBe(ROW);
     expect(service.updateCalls).toEqual([{ userId: USER_ID, id: ADDRESS_ID, body }]);
+  });
+
+  it('DELETE /:id forwards the principal userId and the path param', async () => {
+    const { controller, service } = makeController();
+
+    const result = await controller.remove(PRINCIPAL, ADDRESS_ID);
+
+    expect(result).toBeUndefined();
+    expect(service.removeCalls).toEqual([{ userId: USER_ID, id: ADDRESS_ID }]);
   });
 
   it('PATCH /:id pins reads to the principal userId even for admin support principals', async () => {

@@ -286,6 +286,78 @@ describe('IDOR — consumer surface (cross-user 404)', () => {
   });
 
   // --------------------------------------------------------------------
+  // /v1/addresses — DELETE /:id
+  // --------------------------------------------------------------------
+  it('DELETE /v1/addresses/:id → 404 when probed by a different customer', async () => {
+    const aliceToken = signTokenFor(app, {
+      userId: SEED_IDS.user.customer1,
+      role: 'customer',
+    });
+    const create = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses',
+      headers: { ...bearer(aliceToken), 'content-type': 'application/json' },
+      payload: {
+        label: 'Office',
+        line1: '200 Washington Ave',
+        city: 'Minneapolis',
+        region: 'MN',
+        postalCode: '55401',
+        country: 'US',
+        latitude: 44.985,
+        longitude: -93.256,
+      },
+    });
+    expect(create.statusCode, create.body).toBe(201);
+    const address = create.json<AddressBody>();
+
+    const probeToken = signTokenFor(app, {
+      userId: SEED_IDS.user.customer4,
+      role: 'customer',
+    });
+    const probe = await app.inject({
+      method: 'DELETE',
+      url: `/v1/addresses/${address.id}`,
+      headers: bearer(probeToken),
+    });
+    expect(probe.statusCode).toBe(404);
+
+    // Alice's address survives the failed cross-user delete.
+    const verify = await app.inject({
+      method: 'GET',
+      url: '/v1/addresses',
+      headers: bearer(aliceToken),
+    });
+    const list = verify.json<{ addresses: ReadonlyArray<{ id: string }> }>();
+    expect(list.addresses.some((a) => a.id === address.id)).toBe(true);
+
+    // The owner can delete it, and it then vanishes from the book (204).
+    const owned = await app.inject({
+      method: 'DELETE',
+      url: `/v1/addresses/${address.id}`,
+      headers: bearer(aliceToken),
+    });
+    expect(owned.statusCode).toBe(204);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/v1/addresses',
+      headers: bearer(aliceToken),
+    });
+    const afterList = after.json<{ addresses: ReadonlyArray<{ id: string }> }>();
+    expect(afterList.addresses.some((a) => a.id === address.id)).toBe(false);
+
+    // A second delete of the now-soft-deleted row is a 404 (idempotent-ish:
+    // the row is gone from the caller's perspective).
+    const again = await app.inject({
+      method: 'DELETE',
+      url: `/v1/addresses/${address.id}`,
+      headers: bearer(aliceToken),
+    });
+    expect(again.statusCode).toBe(404);
+  });
+
+  // --------------------------------------------------------------------
   // /v1/payment-methods — DELETE /:id
   // --------------------------------------------------------------------
   it('DELETE /v1/payment-methods/:id → 404 when probed by a different customer', async () => {
