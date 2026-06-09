@@ -68,6 +68,7 @@ struct AppEnvironment {
     // pulls these via `@Dependency`, so they need a live binding
     // before the root store is constructed.
     dependencies.cartAPIClient = .live(apiClient: apiClient)
+    dependencies.checkoutAPIClient = .live(apiClient: apiClient)
     dependencies.ordersAPIClient = .live(apiClient: apiClient)
     dependencies.meAPIClient = .live(apiClient: apiClient)
     dependencies.addressAPIClient = .live(apiClient: apiClient)

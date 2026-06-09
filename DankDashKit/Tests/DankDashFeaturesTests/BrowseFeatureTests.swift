@@ -359,6 +359,35 @@ final class BrowseFeatureTests: XCTestCase {
     XCTAssertNil(store.state.cart.dispensaryId)
   }
 
+  func test_cartTestOrderPlacedDelegate_jumpsToOrdersAndPushesDetail() async {
+    let orderId = UUID()
+    var initial = BrowseFeature.State()
+    initial.cart.draft.add(
+      LocalCartDraft.Line(
+        listingId: UUID(),
+        productId: UUID(),
+        productName: "x",
+        brand: "y",
+        priceCents: 1000,
+        quantity: 1,
+        maxAvailable: 5
+      )
+    )
+    initial.cart.dispensaryId = UUID()
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cart(.delegate(.testOrderPlaced(orderId: orderId))))
+    XCTAssertEqual(store.state.selectedTab, .orders)
+    XCTAssertEqual(store.state.orderDetail?.orderId, orderId)
+    XCTAssertTrue(store.state.cart.draft.isEmpty, "Test order consumes the local cart, same as a hand-off.")
+    XCTAssertNil(store.state.cart.dispensaryId)
+  }
+
   func test_checkoutHandoffDelegateDismissed_unmountsSheet() async {
     let initial = BrowseFeature.State(
       checkoutHandoff: CheckoutHandoffFeature.State(cartId: UUID(), deliveryAddressId: UUID())

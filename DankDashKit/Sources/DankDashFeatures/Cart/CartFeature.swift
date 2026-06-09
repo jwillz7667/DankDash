@@ -74,6 +74,17 @@ public struct CartFeature: Sendable {
     /// dismissed when the picker emits its delegate.
     public var addressPicker: AddressPickerFeature.State?
 
+    /// Whether the server is running the test-only payment bypass. Loaded
+    /// on ``onAppear`` from `GET /v1/checkout/capabilities`. Defaults to
+    /// `false` so the in-app "place test order" affordance stays hidden in
+    /// production and whenever the probe fails — checkout then goes through
+    /// the Apple §10.4 Safari hand-off only.
+    public var paymentBypassEnabled: Bool
+
+    /// In-flight flag for the bypass "place test order" call. Drives the
+    /// button spinner and guards against a double tap creating two orders.
+    public var isPlacingTestOrder: Bool
+
     public init(
       draft: LocalCartDraft = LocalCartDraft(),
       dispensaryId: UUID? = nil,
@@ -87,7 +98,9 @@ public struct CartFeature: Sendable {
       error: String? = nil,
       expirySecondsRemaining: Int? = nil,
       productInfo: [UUID: ListingProductInfo] = [:],
-      addressPicker: AddressPickerFeature.State? = nil
+      addressPicker: AddressPickerFeature.State? = nil,
+      paymentBypassEnabled: Bool = false,
+      isPlacingTestOrder: Bool = false
     ) {
       self.draft = draft
       self.dispensaryId = dispensaryId
@@ -102,6 +115,8 @@ public struct CartFeature: Sendable {
       self.expirySecondsRemaining = expirySecondsRemaining
       self.productInfo = productInfo
       self.addressPicker = addressPicker
+      self.paymentBypassEnabled = paymentBypassEnabled
+      self.isPlacingTestOrder = isPlacingTestOrder
     }
 
     /// Convenience selector — the picked address row, if any.
@@ -119,11 +134,21 @@ public struct CartFeature: Sendable {
       guard let evaluation, evaluation.passed else { return false }
       return !isPromoting && !isValidating
     }
+
+    /// Renders the test-mode "Place test order" CTA enabled. Requires the
+    /// server bypass to be on, the same server-authoritative gates as
+    /// ``canCheckout`` (the order must be compliant — the bypass only skips
+    /// *payment*, never compliance), and "not already placing".
+    public var canPlaceTestOrder: Bool {
+      paymentBypassEnabled && canCheckout && !isPlacingTestOrder
+    }
   }
 
   public enum Action: Sendable {
     case onAppear
     case onDisappear
+
+    case capabilitiesResponse(Result<Bool, EquatableError>)
 
     case addressesLoaded(Result<[UserAddress], EquatableError>)
     case selectAddress(UUID)
@@ -149,11 +174,18 @@ public struct CartFeature: Sendable {
 
     case checkoutTapped
 
+    case placeTestOrderTapped
+    case testOrderResponse(Result<UUID, EquatableError>)
+
     case delegate(Delegate)
 
     @CasePathable
     public enum Delegate: Sendable, Equatable {
       case checkoutRequested(cartId: UUID, deliveryAddressId: UUID)
+      /// Test-mode only: the bypass checkout created an order in-app.
+      /// The parent routes to order tracking, same as a completed
+      /// Safari hand-off.
+      case testOrderPlaced(orderId: UUID)
     }
   }
 
@@ -167,6 +199,7 @@ public struct CartFeature: Sendable {
   // MARK: - Dependencies
   @Dependency(\.cartAPIClient) var cartAPIClient
   @Dependency(\.addressAPIClient) var addressAPIClient
+  @Dependency(\.checkoutAPIClient) var checkoutAPIClient
   @Dependency(\.continuousClock) var clock
   @Dependency(\.date) var date
 
@@ -178,12 +211,24 @@ public struct CartFeature: Sendable {
       case .onAppear:
         var effects: [Effect<Action>] = [
           loadAddresses(),
+          loadCapabilities(),
           .send(.expiryTimerStarted)
         ]
         if shouldPromote(state) {
           effects.append(.send(.promotionRequested))
         }
         return .merge(effects)
+
+      case .capabilitiesResponse(.success(let enabled)):
+        state.paymentBypassEnabled = enabled
+        return .none
+
+      case .capabilitiesResponse(.failure):
+        // The capabilities probe is non-critical: a failure just means we
+        // can't offer the in-app test affordance, so keep it hidden and
+        // let the user fall back to the Safari hand-off. No error banner.
+        state.paymentBypassEnabled = false
+        return .none
 
       case .onDisappear:
         return .merge(
@@ -395,6 +440,34 @@ public struct CartFeature: Sendable {
               let addressId = state.selectedAddressId else { return .none }
         return .send(.delegate(.checkoutRequested(cartId: cart.id, deliveryAddressId: addressId)))
 
+      case .placeTestOrderTapped:
+        // Test-mode only. `canPlaceTestOrder` folds in the bypass flag,
+        // the compliance gates (the server re-runs the full evaluation
+        // inside the order transaction — the bypass skips payment, never
+        // compliance), and the double-tap guard.
+        guard state.canPlaceTestOrder,
+              let cart = state.serverCart,
+              let addressId = state.selectedAddressId else { return .none }
+        state.isPlacingTestOrder = true
+        state.error = nil
+        return .run { [checkoutAPIClient] send in
+          do {
+            let orderId = try await checkoutAPIClient.checkout(cart.id, addressId, 0)
+            await send(.testOrderResponse(.success(orderId)))
+          } catch {
+            await send(.testOrderResponse(.failure(EquatableError(error))))
+          }
+        }
+
+      case .testOrderResponse(.success(let orderId)):
+        state.isPlacingTestOrder = false
+        return .send(.delegate(.testOrderPlaced(orderId: orderId)))
+
+      case .testOrderResponse(.failure(let error)):
+        state.isPlacingTestOrder = false
+        state.error = "Couldn't place test order: \(error.message)"
+        return .none
+
       case .delegate:
         return .none
       }
@@ -413,6 +486,17 @@ public struct CartFeature: Sendable {
         await send(.addressesLoaded(.success(addresses)))
       } catch {
         await send(.addressesLoaded(.failure(EquatableError(error))))
+      }
+    }
+  }
+
+  private func loadCapabilities() -> Effect<Action> {
+    .run { [checkoutAPIClient] send in
+      do {
+        let enabled = try await checkoutAPIClient.capabilities()
+        await send(.capabilitiesResponse(.success(enabled)))
+      } catch {
+        await send(.capabilitiesResponse(.failure(EquatableError(error))))
       }
     }
   }
