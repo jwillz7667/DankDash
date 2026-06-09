@@ -33,3 +33,12 @@ export {
   type TemplatePayloads,
   type TemplateRegistry,
 } from './templates/index.js';
+export {
+  NOTIFICATION_CATEGORY_BY_TEMPLATE,
+  SUPPRESSIBLE_CATEGORIES,
+  categoryForTemplate,
+  isCategorySuppressible,
+  isNotificationDeliverable,
+  type NotificationCategory,
+  type NotificationPreferenceState,
+} from './preferences.js';

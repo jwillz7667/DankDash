@@ -75,6 +75,7 @@ struct AppEnvironment {
       apiClient: apiClient,
       returnURL: Self.resolvedPaymentLinkReturnURL()
     )
+    dependencies.notificationPreferencesAPIClient = .live(apiClient: apiClient)
     dependencies.handoffAPIClient = .live(apiClient: apiClient)
     dependencies.realtimeClient = .live(
       baseURL: realtimeBaseURL,

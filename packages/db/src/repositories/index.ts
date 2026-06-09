@@ -44,7 +44,11 @@ export {
   UserIdDocumentsRepository,
   UsersRepository,
 } from './identity.repo.js';
-export { NotificationsRepository, PushTokensRepository } from './notifications.repo.js';
+export {
+  NotificationPreferencesRepository,
+  NotificationsRepository,
+  PushTokensRepository,
+} from './notifications.repo.js';
 export {
   type LockedOrderSnapshot,
   OrderEventsRepository,

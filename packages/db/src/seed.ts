@@ -1270,6 +1270,7 @@ const TRUNCATE_TABLES: readonly string[] = [
   'webhook_events_processed',
   'notifications',
   'push_tokens',
+  'notification_preferences',
   'age_verifications',
   'metrc_transactions',
   'compliance_checks',
