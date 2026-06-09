@@ -86,14 +86,29 @@ export interface AttemptState {
  *                    `expiresAt` in the future). The worker should
  *                    sleep until `until` and reconsult.
  *
+ * `WAIT_FOR_CANDIDATES` — the eligible pool is momentarily empty (no
+ *                   driver is online + in range + free that we haven't
+ *                   already offered), but the total budget has *not*
+ *                   elapsed. The worker should leave the order in
+ *                   `awaiting_driver` and reconsult on the next tick —
+ *                   a driver may come online or drive into range before
+ *                   the budget runs out. `until` is the budget deadline
+ *                   (when this will turn into FAILED if the pool stays
+ *                   empty). This is the difference between "no driver
+ *                   *right now*" and "no driver for the whole window":
+ *                   only the latter is a dispatch failure.
+ *
  * `ACCEPTED`      — an offer in history has `status='accepted'`. The
  *                   attempt is done; the worker should record the
  *                   driver assignment via OrderTransitionService.
  *
- * `FAILED`        — total budget exhausted OR no eligible candidates
- *                   remain. The worker should trigger
+ * `FAILED`        — total budget exhausted. The worker should trigger
  *                   `DISPATCH_FAILED` on the order. The `reason`
- *                   distinguishes the two failure modes for telemetry.
+ *                   distinguishes the two failure modes for telemetry:
+ *                   `no_eligible_drivers` when we never managed to send
+ *                   a single offer in the whole window (the pool was
+ *                   empty throughout), `budget_exhausted` when we did
+ *                   offer but nobody accepted in time.
  */
 export type AttemptDecision =
   | {
@@ -103,6 +118,7 @@ export type AttemptDecision =
       readonly score: number;
     }
   | { readonly kind: 'WAIT_FOR_OFFER'; readonly until: Date; readonly driverId: string }
+  | { readonly kind: 'WAIT_FOR_CANDIDATES'; readonly until: Date }
   | { readonly kind: 'ACCEPTED'; readonly driverId: string }
   | {
       readonly kind: 'FAILED';
@@ -125,11 +141,21 @@ export type AttemptDecision =
  *      — the spec is single-offer-at-a-time so the driver who accepts
  *      isn't fighting another driver who also accepted.
  *
- *   3. If `now - attemptStartedAt >= totalBudgetMs` → FAILED(budget).
+ *   3. If `now - attemptStartedAt >= totalBudgetMs` → FAILED. The
+ *      reason is read off the history, not the current pool: an empty
+ *      history after the full window means we never sent a single
+ *      offer (nobody was ever eligible) → `no_eligible_drivers`; a
+ *      non-empty history means we offered but nobody accepted in time
+ *      → `budget_exhausted`.
  *
  *   4. Score the eligible pool (everyone except those in history's
- *      terminal statuses — declined / expired / superseded). If empty
- *      → FAILED(no_eligible_drivers). Otherwise → OFFER_NEXT.
+ *      terminal statuses — declined / expired / superseded). If a
+ *      driver is available → OFFER_NEXT. If the pool is momentarily
+ *      empty but the budget still has time left → WAIT_FOR_CANDIDATES:
+ *      we hold the order in `awaiting_driver` and reconsult next tick,
+ *      because a driver can come online or drive into range before the
+ *      budget runs out. We only fail at rule 3, when the window has
+ *      actually elapsed — never on the first empty-pool tick.
  *
  * Why the budget check sits between (2) and (4): an offer can be
  * `offered` past the total budget if the per-driver expiry runs over
@@ -159,14 +185,24 @@ export function decideNextStep(
     };
   }
 
-  if (now.getTime() - state.attemptStartedAt.getTime() >= params.totalBudgetMs) {
-    return { kind: 'FAILED', reason: 'budget_exhausted' };
+  const budgetDeadline = new Date(state.attemptStartedAt.getTime() + params.totalBudgetMs);
+  if (now.getTime() >= budgetDeadline.getTime()) {
+    // History empty after the full window = we never had anyone to
+    // offer to; non-empty = we offered but the window closed without an
+    // acceptance. Two distinct ops signals, same terminal outcome.
+    const reason = state.history.length === 0 ? 'no_eligible_drivers' : 'budget_exhausted';
+    return { kind: 'FAILED', reason };
   }
 
   const excluded = excludedDriverIds(state.history);
   const top = pickTopCandidate(state.candidates, excluded, now, scoringParams);
   if (top === null) {
-    return { kind: 'FAILED', reason: 'no_eligible_drivers' };
+    // No one to offer *this tick*, but the budget still has time. Hold
+    // the order and reconsult — a driver may appear before `until`.
+    // Failing here would abandon orders the instant they outrun the
+    // current online pool, which violates the 3-minute dispatch window
+    // (DankDash-Technical-Spec.md §8.3).
+    return { kind: 'WAIT_FOR_CANDIDATES', until: budgetDeadline };
   }
 
   const expiresAt = new Date(now.getTime() + params.perDriverBudgetMs);

@@ -80,7 +80,15 @@ export interface DispatchJobSummary {
   readonly offered: number;
   /** Order had a live offer; tick left it alone. */
   readonly waited: number;
-  /** Order exhausted candidates → transitioned to `dispatch_failed`. */
+  /**
+   * Order had no eligible driver this tick but its dispatch budget has
+   * time left — left in `awaiting_driver` to retry next tick. This is
+   * the healthy "waiting for a driver to come online" state, not a
+   * failure; an order sits here until a driver appears or the budget
+   * elapses (then it counts under `failedNoDrivers`).
+   */
+  readonly waitedNoCandidates: number;
+  /** Order never had an eligible driver across its budget → `dispatch_failed`. */
   readonly failedNoDrivers: number;
   /** Order exhausted total budget → transitioned to `dispatch_failed`. */
   readonly failedBudgetExhausted: number;
@@ -105,6 +113,7 @@ export async function runDispatchJob(input: DispatchJobInput): Promise<DispatchJ
     considered: awaiting.length,
     offered: 0,
     waited: 0,
+    waitedNoCandidates: 0,
     failedNoDrivers: 0,
     failedBudgetExhausted: 0,
     skippedMissingTimestamp: 0,
@@ -144,6 +153,7 @@ export async function runDispatchJob(input: DispatchJobInput): Promise<DispatchJ
 type PerOrderOutcome =
   | 'offered'
   | 'waited'
+  | 'waitedNoCandidates'
   | 'failedNoDrivers'
   | 'failedBudgetExhausted'
   | 'skippedAcceptInFlight';
@@ -203,6 +213,19 @@ async function dispatchSingleOrder(
 
     case 'WAIT_FOR_OFFER':
       return 'waited';
+
+    case 'WAIT_FOR_CANDIDATES':
+      // No eligible driver this tick, but the dispatch budget still has
+      // time. Leave the order in awaiting_driver; the next tick re-runs
+      // the candidate query, so a driver who comes online or drives into
+      // range before `decision.until` gets the offer. No DB write — the
+      // order stays put. Logged at debug to keep the tick quiet while an
+      // order legitimately waits out a thin driver pool.
+      deps.logger.debug(
+        { orderId: order.id, until: decision.until },
+        'dispatch: no eligible driver this tick — waiting within budget',
+      );
+      return 'waitedNoCandidates';
 
     case 'ACCEPTED':
       // The offer-accept endpoint runs synchronously: it locks the row,

@@ -206,22 +206,79 @@ describe('decideNextStep — ACCEPTED', () => {
 });
 
 describe('decideNextStep — FAILED', () => {
-  it('fails with budget_exhausted when totalBudgetMs has elapsed', () => {
+  it('fails with budget_exhausted when the budget elapses after at least one offer', () => {
+    // We did send offers (history non-empty) but the whole window closed
+    // without an acceptance → budget_exhausted.
     const started = new Date(NOW.getTime() - DEFAULT_ATTEMPT_PARAMS.totalBudgetMs - 1_000);
-    const result = decideNextStep(state({ attemptStartedAt: started }), NOW);
+    const history: OfferRecord[] = [
+      offer({
+        driverId: 'tried',
+        status: 'expired',
+        offeredAt: new Date(NOW.getTime() - 120_000),
+        expiresAt: new Date(NOW.getTime() - 90_000),
+      }),
+    ];
+    const result = decideNextStep(state({ attemptStartedAt: started, history }), NOW);
     expect(result.kind).toBe('FAILED');
     assertKind(result, 'FAILED');
     expect(result.reason).toBe('budget_exhausted');
   });
 
-  it('fails with no_eligible_drivers when the candidate pool is empty', () => {
-    const result = decideNextStep(state({ candidates: [] }), NOW);
+  it('fails with no_eligible_drivers when the budget elapses without a single offer', () => {
+    // Empty history after the entire window means nobody was ever
+    // eligible to receive an offer — not "we tried and timed out."
+    const started = new Date(NOW.getTime() - DEFAULT_ATTEMPT_PARAMS.totalBudgetMs - 1_000);
+    const result = decideNextStep(state({ attemptStartedAt: started, candidates: [] }), NOW);
     expect(result.kind).toBe('FAILED');
     assertKind(result, 'FAILED');
     expect(result.reason).toBe('no_eligible_drivers');
   });
 
-  it('fails with no_eligible_drivers when every candidate is in history', () => {
+  it('fails no_eligible_drivers at the exact budget deadline with empty history', () => {
+    // Boundary: now === attemptStartedAt + totalBudgetMs counts as
+    // elapsed (the check is `>=`), and empty history → no_eligible_drivers.
+    const started = new Date(NOW.getTime() - DEFAULT_ATTEMPT_PARAMS.totalBudgetMs);
+    const result = decideNextStep(state({ attemptStartedAt: started, candidates: [] }), NOW);
+    expect(result.kind).toBe('FAILED');
+    assertKind(result, 'FAILED');
+    expect(result.reason).toBe('no_eligible_drivers');
+  });
+
+  it('fails budget_exhausted once the budget elapses even if a fresh candidate is now present', () => {
+    // A candidate appearing at the instant the budget expires does not
+    // rescue the attempt — rule 3 fires before rule 4. History is
+    // non-empty (we offered earlier) so the reason is budget_exhausted.
+    const started = new Date(NOW.getTime() - DEFAULT_ATTEMPT_PARAMS.totalBudgetMs - 1_000);
+    const history: OfferRecord[] = [
+      offer({
+        driverId: 'tried',
+        status: 'declined',
+        offeredAt: new Date(NOW.getTime() - 120_000),
+        expiresAt: new Date(NOW.getTime() - 90_000),
+      }),
+    ];
+    const candidates: DispatchCandidate[] = [candidate({ driverId: 'late', distanceMeters: 400 })];
+    const result = decideNextStep(state({ attemptStartedAt: started, history, candidates }), NOW);
+    expect(result.kind).toBe('FAILED');
+    assertKind(result, 'FAILED');
+    expect(result.reason).toBe('budget_exhausted');
+  });
+});
+
+describe('decideNextStep — WAIT_FOR_CANDIDATES', () => {
+  it('waits when the candidate pool is empty but the budget has time left', () => {
+    // ATTEMPT_STARTED is 60s ago; default budget is 3min, so ~2min
+    // remain. An empty pool *this tick* is not a failure — a driver may
+    // come online before the window closes.
+    const result = decideNextStep(state({ candidates: [] }), NOW);
+    expect(result.kind).toBe('WAIT_FOR_CANDIDATES');
+    assertKind(result, 'WAIT_FOR_CANDIDATES');
+    expect(result.until.getTime()).toBe(
+      ATTEMPT_STARTED.getTime() + DEFAULT_ATTEMPT_PARAMS.totalBudgetMs,
+    );
+  });
+
+  it('waits when every candidate is already in history but the budget has time left', () => {
     const candidates: DispatchCandidate[] = [
       candidate({ driverId: 'a' }),
       candidate({ driverId: 'b' }),
@@ -231,18 +288,21 @@ describe('decideNextStep — FAILED', () => {
       offer({ driverId: 'b', status: 'expired' }),
     ];
     const result = decideNextStep(state({ candidates, history }), NOW);
-    expect(result.kind).toBe('FAILED');
-    assertKind(result, 'FAILED');
-    expect(result.reason).toBe('no_eligible_drivers');
+    expect(result.kind).toBe('WAIT_FOR_CANDIDATES');
   });
 
-  it('treats a `superseded` history row the same as declined/expired (excluded)', () => {
+  it('treats a `superseded` history row as excluded and waits while budget remains', () => {
     const candidates: DispatchCandidate[] = [candidate({ driverId: 'sup' })];
     const history: OfferRecord[] = [offer({ driverId: 'sup', status: 'superseded' })];
     const result = decideNextStep(state({ candidates, history }), NOW);
-    expect(result.kind).toBe('FAILED');
-    assertKind(result, 'FAILED');
-    expect(result.reason).toBe('no_eligible_drivers');
+    expect(result.kind).toBe('WAIT_FOR_CANDIDATES');
+  });
+
+  it('derives the wait deadline from a custom totalBudgetMs', () => {
+    const params: AttemptParams = { totalBudgetMs: 90_000, perDriverBudgetMs: 30_000 };
+    const result = decideNextStep(state({ candidates: [], params }), NOW);
+    assertKind(result, 'WAIT_FOR_CANDIDATES');
+    expect(result.until.getTime()).toBe(ATTEMPT_STARTED.getTime() + 90_000);
   });
 });
 
@@ -273,15 +333,16 @@ describe('decideNextStep — rule precedence', () => {
     expect(result.kind).toBe('WAIT_FOR_OFFER');
   });
 
-  it('budget_exhausted beats no_eligible_drivers (clearer failure mode)', () => {
-    // If both fail conditions hold, prefer the budget reason — the
-    // pool emptiness is downstream from "we ran out of time to find
-    // anyone."
+  it('budget check (rule 3) beats the empty-pool wait (rule 4)', () => {
+    // Once the window has elapsed we FAIL — we do not return
+    // WAIT_FOR_CANDIDATES just because the pool is empty this instant.
+    // With an empty history the reason is no_eligible_drivers (we never
+    // offered anyone across the whole window).
     const started = new Date(NOW.getTime() - DEFAULT_ATTEMPT_PARAMS.totalBudgetMs - 1_000);
     const result = decideNextStep(state({ attemptStartedAt: started, candidates: [] }), NOW);
     expect(result.kind).toBe('FAILED');
     assertKind(result, 'FAILED');
-    expect(result.reason).toBe('budget_exhausted');
+    expect(result.reason).toBe('no_eligible_drivers');
   });
 
   it('OFFER_NEXT fires when no offers are live and budget remains', () => {
@@ -308,7 +369,18 @@ describe('decideNextStep — params override', () => {
   it('respects a custom totalBudgetMs supplied via state.params', () => {
     const params: AttemptParams = { totalBudgetMs: 10_000, perDriverBudgetMs: 5_000 };
     const started = new Date(NOW.getTime() - 11_000); // past the custom budget
-    const result = decideNextStep(state({ attemptStartedAt: started, params }), NOW);
+    // Non-empty history so the failure reason is budget_exhausted (we
+    // offered, then the short custom budget elapsed) rather than the
+    // never-offered no_eligible_drivers reason.
+    const history: OfferRecord[] = [
+      offer({
+        driverId: 'tried',
+        status: 'expired',
+        offeredAt: new Date(NOW.getTime() - 10_000),
+        expiresAt: new Date(NOW.getTime() - 5_000),
+      }),
+    ];
+    const result = decideNextStep(state({ attemptStartedAt: started, params, history }), NOW);
     expect(result.kind).toBe('FAILED');
     assertKind(result, 'FAILED');
     expect(result.reason).toBe('budget_exhausted');
