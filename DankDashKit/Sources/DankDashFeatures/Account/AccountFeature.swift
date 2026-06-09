@@ -18,17 +18,20 @@ public struct AccountFeature: Sendable {
     public var isLoadingProfile: Bool
     public var profileEdit: ProfileEditFeature.State?
     public var addresses: AddressesFeature.State?
+    public var paymentMethods: PaymentMethodsFeature.State?
 
     public init(
       user: UserSummaryDTO? = nil,
       isLoadingProfile: Bool = false,
       profileEdit: ProfileEditFeature.State? = nil,
-      addresses: AddressesFeature.State? = nil
+      addresses: AddressesFeature.State? = nil,
+      paymentMethods: PaymentMethodsFeature.State? = nil
     ) {
       self.user = user
       self.isLoadingProfile = isLoadingProfile
       self.profileEdit = profileEdit
       self.addresses = addresses
+      self.paymentMethods = paymentMethods
     }
   }
 
@@ -39,10 +42,13 @@ public struct AccountFeature: Sendable {
     case profileEditDismissed
     case manageAddressesTapped
     case addressesDismissed
+    case managePaymentMethodsTapped
+    case paymentMethodsDismissed
     case orderHistoryTapped
     case signOutTapped
     case profileEdit(ProfileEditFeature.Action)
     case addresses(AddressesFeature.Action)
+    case paymentMethods(PaymentMethodsFeature.Action)
     case delegate(Delegate)
 
     @CasePathable
@@ -106,6 +112,14 @@ public struct AccountFeature: Sendable {
         state.addresses = nil
         return .none
 
+      case .managePaymentMethodsTapped:
+        state.paymentMethods = PaymentMethodsFeature.State()
+        return .none
+
+      case .paymentMethodsDismissed:
+        state.paymentMethods = nil
+        return .none
+
       case .orderHistoryTapped:
         return .send(.delegate(.showOrders))
 
@@ -127,6 +141,9 @@ public struct AccountFeature: Sendable {
       case .addresses:
         return .none
 
+      case .paymentMethods:
+        return .none
+
       case .delegate:
         return .none
       }
@@ -136,6 +153,9 @@ public struct AccountFeature: Sendable {
     }
     .ifLet(\.addresses, action: \.addresses) {
       AddressesFeature()
+    }
+    .ifLet(\.paymentMethods, action: \.paymentMethods) {
+      PaymentMethodsFeature()
     }
   }
 }
