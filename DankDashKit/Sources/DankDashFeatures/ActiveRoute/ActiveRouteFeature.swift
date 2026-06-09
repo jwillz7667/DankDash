@@ -576,8 +576,8 @@ public struct ActiveRouteFeature: Sendable {
     case .arrivedAtDropoff, .idScanPending, .idScanPassed: return .awaitingIdScan
     case .delivered: return .completed
     case .placed, .paymentFailed, .accepted, .rejected, .prepping,
-         .readyForPickup, .awaitingDriver, .idScanFailed, .returnedToStore,
-         .canceled, .disputed:
+         .readyForPickup, .awaitingDriver, .dispatchFailed, .idScanFailed,
+         .returnedToStore, .canceled, .disputed:
       return nil
     }
   }

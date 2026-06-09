@@ -493,8 +493,8 @@ public struct OrderTrackingFeature: Sendable {
          .delivered:
       return true
     case .placed, .paymentFailed, .accepted, .rejected, .prepping,
-         .readyForPickup, .awaitingDriver, .returnedToStore, .canceled,
-         .disputed:
+         .readyForPickup, .awaitingDriver, .dispatchFailed, .returnedToStore,
+         .canceled, .disputed:
       return false
     }
   }

@@ -1,7 +1,7 @@
 import XCTest
 @testable import DankDashDomain
 
-/// `OrderStatus` is the 19-case mirror of the server's `order_status`
+/// `OrderStatus` is the 20-case mirror of the server's `order_status`
 /// enum. Three contracts to cover:
 ///
 ///   - Wire raw values match (a rename breaks the realtime + REST
@@ -10,8 +10,8 @@ import XCTest
 ///     delivery path — the OrderStatusTimeline UI walks the path
 ///     forwards and uses `canonicalOrder` to decide which milestones
 ///     are already complete.
-///   - `isTerminal` is true only for the seven documented terminal
-///     states (`delivered` + six failure terminals). Polling on the
+///   - `isTerminal` is true only for the eight documented terminal
+///     states (`delivered` + seven failure terminals). Polling on the
 ///     tracking screen stops on `isTerminal`, so a regression here
 ///     burns server cycles.
 final class OrderStatusTests: XCTestCase {
@@ -23,6 +23,7 @@ final class OrderStatusTests: XCTestCase {
     XCTAssertEqual(OrderStatus.prepping.rawValue, "prepping")
     XCTAssertEqual(OrderStatus.readyForPickup.rawValue, "ready_for_pickup")
     XCTAssertEqual(OrderStatus.awaitingDriver.rawValue, "awaiting_driver")
+    XCTAssertEqual(OrderStatus.dispatchFailed.rawValue, "dispatch_failed")
     XCTAssertEqual(OrderStatus.driverAssigned.rawValue, "driver_assigned")
     XCTAssertEqual(OrderStatus.enRoutePickup.rawValue, "en_route_pickup")
     XCTAssertEqual(OrderStatus.pickedUp.rawValue, "picked_up")
@@ -37,8 +38,8 @@ final class OrderStatusTests: XCTestCase {
     XCTAssertEqual(OrderStatus.disputed.rawValue, "disputed")
   }
 
-  func test_allCasesCountIsNineteen() {
-    XCTAssertEqual(OrderStatus.allCases.count, 19)
+  func test_allCasesCountIsTwenty() {
+    XCTAssertEqual(OrderStatus.allCases.count, 20)
   }
 
   func test_canonicalOrderMonotoneOnHappyDeliveryPath() {
@@ -67,6 +68,7 @@ final class OrderStatusTests: XCTestCase {
     let failureTerminals: [OrderStatus] = [
       .paymentFailed,
       .rejected,
+      .dispatchFailed,
       .canceled,
       .idScanFailed,
       .returnedToStore,
@@ -81,11 +83,12 @@ final class OrderStatusTests: XCTestCase {
     }
   }
 
-  func test_isTerminalCoversExactlyTheSevenTerminalStates() {
+  func test_isTerminalCoversExactlyTheEightTerminalStates() {
     let expectedTerminals: Set<OrderStatus> = [
       .delivered,
       .paymentFailed,
       .rejected,
+      .dispatchFailed,
       .canceled,
       .idScanFailed,
       .returnedToStore,
