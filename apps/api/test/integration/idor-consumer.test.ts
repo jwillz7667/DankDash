@@ -393,4 +393,58 @@ describe('IDOR — consumer surface (cross-user 404)', () => {
     );
     expect(rows[0]?.status).toBe('active');
   });
+
+  // --------------------------------------------------------------------
+  // /v1/payment-methods — PATCH /:id (set default)
+  // --------------------------------------------------------------------
+  it('PATCH /v1/payment-methods/:id → 404 when probed by a different customer', async () => {
+    // The set-default repo op clears the user's *current* default before
+    // keying the promotion by id. If the ownership guard were missing, a
+    // cross-user PATCH would strip the real owner's default while promoting
+    // nothing — so the invariant this pins is "a 404 leaves the row untouched".
+    const pool = getPool();
+    await pool.sql.unsafe(
+      `INSERT INTO payment_methods (id, user_id, type, status,
+                                    aeropay_payment_method_ref,
+                                    bank_name, last4, is_default)
+       VALUES ($1::uuid, $2::uuid, 'aeropay_ach', 'active',
+               'aeropay_pm_ext_002',
+               'US Bank', '5678', false)`,
+      ['01935f3d-0000-7000-9000-000000000bb2', SEED_IDS.user.customer1],
+    );
+
+    const probeToken = signTokenFor(app, {
+      userId: SEED_IDS.user.customer4,
+      role: 'customer',
+    });
+    const probe = await app.inject({
+      method: 'PATCH',
+      url: '/v1/payment-methods/01935f3d-0000-7000-9000-000000000bb2',
+      headers: { ...bearer(probeToken), 'content-type': 'application/json' },
+      payload: { isDefault: true },
+    });
+    expect(probe.statusCode).toBe(404);
+
+    // The cross-user promotion must not have flipped the flag.
+    const after = await pool.sql.unsafe<{ is_default: boolean }[]>(
+      `SELECT is_default FROM payment_methods WHERE id = $1::uuid`,
+      ['01935f3d-0000-7000-9000-000000000bb2'],
+    );
+    expect(after[0]?.is_default).toBe(false);
+
+    // The owner can promote it (200) and the flag flips.
+    const ownerToken = signTokenFor(app, {
+      userId: SEED_IDS.user.customer1,
+      role: 'customer',
+    });
+    const owned = await app.inject({
+      method: 'PATCH',
+      url: '/v1/payment-methods/01935f3d-0000-7000-9000-000000000bb2',
+      headers: { ...bearer(ownerToken), 'content-type': 'application/json' },
+      payload: { isDefault: true },
+    });
+    expect(owned.statusCode, owned.body).toBe(200);
+    const ownedBody = owned.json<{ paymentMethod: { id: string; isDefault: boolean } }>();
+    expect(ownedBody.paymentMethod.isDefault).toBe(true);
+  });
 });
