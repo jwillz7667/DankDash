@@ -17,15 +17,18 @@ public struct AccountFeature: Sendable {
     public var user: UserSummaryDTO?
     public var isLoadingProfile: Bool
     public var profileEdit: ProfileEditFeature.State?
+    public var addresses: AddressesFeature.State?
 
     public init(
       user: UserSummaryDTO? = nil,
       isLoadingProfile: Bool = false,
-      profileEdit: ProfileEditFeature.State? = nil
+      profileEdit: ProfileEditFeature.State? = nil,
+      addresses: AddressesFeature.State? = nil
     ) {
       self.user = user
       self.isLoadingProfile = isLoadingProfile
       self.profileEdit = profileEdit
+      self.addresses = addresses
     }
   }
 
@@ -34,9 +37,12 @@ public struct AccountFeature: Sendable {
     case profileLoaded(Result<UserSummaryDTO, APIErrorBox>)
     case editProfileTapped
     case profileEditDismissed
+    case manageAddressesTapped
+    case addressesDismissed
     case orderHistoryTapped
     case signOutTapped
     case profileEdit(ProfileEditFeature.Action)
+    case addresses(AddressesFeature.Action)
     case delegate(Delegate)
 
     @CasePathable
@@ -92,6 +98,14 @@ public struct AccountFeature: Sendable {
         state.profileEdit = nil
         return .none
 
+      case .manageAddressesTapped:
+        state.addresses = AddressesFeature.State()
+        return .none
+
+      case .addressesDismissed:
+        state.addresses = nil
+        return .none
+
       case .orderHistoryTapped:
         return .send(.delegate(.showOrders))
 
@@ -110,12 +124,18 @@ public struct AccountFeature: Sendable {
       case .profileEdit:
         return .none
 
+      case .addresses:
+        return .none
+
       case .delegate:
         return .none
       }
     }
     .ifLet(\.profileEdit, action: \.profileEdit) {
       ProfileEditFeature()
+    }
+    .ifLet(\.addresses, action: \.addresses) {
+      AddressesFeature()
     }
   }
 }

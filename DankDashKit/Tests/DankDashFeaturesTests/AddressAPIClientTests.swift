@@ -16,6 +16,14 @@ final class AddressAPIClientTests: XCTestCase {
       try await client.patchAddress(UUID(), PatchAddressRequestDTO(isDefault: true)),
       expectedMatch: "patchAddress"
     )
+    await assertThrows(
+      try await client.editAddress(UUID(), stubEditBody()),
+      expectedMatch: "editAddress"
+    )
+    await assertThrows(
+      try await client.deleteAddress(UUID()),
+      expectedMatch: "deleteAddress"
+    )
   }
 
   func test_customClient_passesArgumentsThrough() async throws {
@@ -27,7 +35,9 @@ final class AddressAPIClientTests: XCTestCase {
       patchAddress: { id, body in
         await probe.set((id, body))
         return stub
-      }
+      },
+      editAddress: { _, _ in stub },
+      deleteAddress: { _ in }
     )
 
     let id = UUID()
@@ -37,6 +47,45 @@ final class AddressAPIClientTests: XCTestCase {
     XCTAssertEqual(observed?.0, id)
     XCTAssertEqual(observed?.1.label, "Home")
     XCTAssertEqual(observed?.1.isDefault, true)
+  }
+
+  func test_editAddress_passesArgumentsThrough() async throws {
+    let probe = Locker<(UUID, EditAddressRequestDTO)?>(value: nil)
+    let stub = makeStubAddress()
+    let client = AddressAPIClient(
+      listAddresses: { [stub] },
+      createAddress: { _ in stub },
+      patchAddress: { _, _ in stub },
+      editAddress: { id, body in
+        await probe.set((id, body))
+        return stub
+      },
+      deleteAddress: { _ in }
+    )
+
+    let id = UUID()
+    let body = stubEditBody()
+    _ = try await client.editAddress(id, body)
+    let observed = await probe.value
+    XCTAssertEqual(observed?.0, id)
+    XCTAssertEqual(observed?.1, body)
+  }
+
+  func test_deleteAddress_passesIdThrough() async throws {
+    let probe = Locker<UUID?>(value: nil)
+    let stub = makeStubAddress()
+    let client = AddressAPIClient(
+      listAddresses: { [stub] },
+      createAddress: { _ in stub },
+      patchAddress: { _, _ in stub },
+      editAddress: { _, _ in stub },
+      deleteAddress: { id in await probe.set(id) }
+    )
+
+    let id = UUID()
+    try await client.deleteAddress(id)
+    let observed = await probe.value
+    XCTAssertEqual(observed, id)
   }
 
   // MARK: - Helpers
@@ -75,6 +124,21 @@ final class AddressAPIClientTests: XCTestCase {
       latitude: 44.98,
       longitude: -93.27,
       setAsDefault: true
+    )
+  }
+
+  private func stubEditBody() -> EditAddressRequestDTO {
+    EditAddressRequestDTO(
+      label: "Home",
+      line1: "123 Main St",
+      line2: nil,
+      city: "Minneapolis",
+      region: "MN",
+      postalCode: "55401",
+      latitude: 44.98,
+      longitude: -93.27,
+      deliveryInstructions: nil,
+      isDefault: true
     )
   }
 
