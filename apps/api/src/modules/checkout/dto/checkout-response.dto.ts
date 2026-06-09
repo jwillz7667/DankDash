@@ -121,12 +121,18 @@ export type OrderResponse = z.infer<typeof OrderResponseSchema>;
  * call (Aeropay webhook callbacks). The `clientSecret` slot is null for
  * Phase 5 (stubbed) and remains optional so Aeropay can populate it
  * with its hosted-iframe token in Phase 6 without a schema change.
+ *
+ * `provider` is `'aeropay'` in every normal flow. `'bypass'` only appears
+ * when the test-only `PAYMENTS_BYPASS_ENABLED` flag is on (default OFF):
+ * the checkout skipped the real charge and recorded a synthetic payment so
+ * the order could still reach the vendor queue. Clients use the
+ * discriminator to label/skip the funding step accordingly.
  */
 export const PaymentIntentResponseSchema = z
   .object({
     id: z.string().uuid(),
     orderId: z.string().uuid(),
-    provider: z.literal('aeropay'),
+    provider: z.enum(['aeropay', 'bypass']),
     providerRef: z.string().min(1),
     status: z.enum([
       'initiated',
