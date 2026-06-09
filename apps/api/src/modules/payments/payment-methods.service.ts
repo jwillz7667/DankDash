@@ -157,6 +157,58 @@ export class PaymentMethodsService {
   }
 
   /**
+   * Promote a payment method to the user's default, demoting whatever held
+   * the flag before. Backs `PATCH /v1/payment-methods/:id { isDefault: true }`.
+   *
+   * Ownership is validated here before delegating to the repo: `repo.setDefault`
+   * clears the user's current default *first* and only then keys the promotion
+   * by id, so handing it an id the caller does not own (or a deleted row) would
+   * silently strip the existing default while promoting nothing — leaving the
+   * user with no default at all. The findById guard makes that unreachable;
+   * cross-user / missing ids surface as 404 (same shape as `delete`).
+   *
+   * Only an `active` method can be defaulted. A `pending` Aeropay link isn't a
+   * usable funding source yet, and `failed`/`revoked` rows are dead — defaulting
+   * any of them would point checkout at a method it can't charge. Those surface
+   * as 409 `PAYMENT_METHOD_NOT_ACTIVE` rather than silently succeeding.
+   *
+   * Already-default is an idempotent no-op: we return the row untouched instead
+   * of opening a redundant transaction, so a double-tap from the client is free.
+   */
+  async setDefault(
+    userId: string,
+    paymentMethodId: string,
+  ): Promise<{ paymentMethod: PaymentMethodResponse }> {
+    const existing = await this.repo.findById(paymentMethodId);
+    if (existing?.userId !== userId || existing.deletedAt !== null) {
+      throw new NotFoundError('payment_method', paymentMethodId);
+    }
+    if (existing.status !== 'active') {
+      throw new ConflictError(
+        'PAYMENT_METHOD_NOT_ACTIVE',
+        'only an active payment method can be set as default',
+        { paymentMethodId, status: existing.status },
+      );
+    }
+    if (existing.isDefault) {
+      return { paymentMethod: toResponse(existing) };
+    }
+
+    await this.repo.setDefault(userId, paymentMethodId);
+
+    const updated = await this.repo.findById(paymentMethodId);
+    if (updated === null) {
+      throw new PaymentError(
+        'PAYMENT_METHOD_INVALID',
+        'payment_methods row vanished mid-setDefault',
+        { paymentMethodId },
+        500,
+      );
+    }
+    return { paymentMethod: toResponse(updated) };
+  }
+
+  /**
    * Apply an Aeropay-verified webhook outcome. The webhook controller
    * runs `AeropayWebhookVerifier.verify()` first — by the time we get
    * here the signature, timestamp, and envelope shape are all known

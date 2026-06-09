@@ -250,6 +250,34 @@ class FakePaymentMethodsRepo {
     return Promise.resolve();
   };
 
+  setDefaultCalls: Array<{ userId: string; paymentMethodId: string }> = [];
+  // When true, the target row is dropped during setDefault so the service's
+  // follow-up findById returns null — exercises the "row vanished mid-flight"
+  // PaymentError branch.
+  vanishOnSetDefault = false;
+
+  setDefault = (userId: string, paymentMethodId: string): Promise<void> => {
+    this.setDefaultCalls.push({ userId, paymentMethodId });
+    // Mirror the repo: clear the user's current default first, then promote
+    // the target keyed by id within the same user scope.
+    for (const r of this.rows) {
+      if (r.userId === userId && r.isDefault) {
+        r.isDefault = false;
+        r.updatedAt = new Date('2026-05-01T02:00:00.000Z');
+      }
+    }
+    if (this.vanishOnSetDefault) {
+      this.rows = this.rows.filter((r) => r.id !== paymentMethodId);
+      return Promise.resolve();
+    }
+    const row = this.rows.find((r) => r.id === paymentMethodId && r.userId === userId);
+    if (row !== undefined) {
+      row.isDefault = true;
+      row.updatedAt = new Date('2026-05-01T02:00:00.000Z');
+    }
+    return Promise.resolve();
+  };
+
   updateStatus = (id: string, status: PaymentMethod['status']): Promise<PaymentMethod | null> => {
     this.updateStatusCalls.push({ id, status });
     if (this.returnNullOnUpdate) return Promise.resolve(null);
@@ -589,6 +617,92 @@ describe('PaymentMethodsService.delete', () => {
     await expect(
       service.delete(USER_ID, '01935f3d-0000-7000-8000-000000000aaa'),
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('PaymentMethodsService.setDefault', () => {
+  const TARGET_ID = '01935f3d-0000-7000-8000-000000000aaa';
+  const PRIOR_DEFAULT_ID = '01935f3d-0000-7000-8000-000000000bbb';
+
+  it('promotes the target and demotes the previous default', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: PRIOR_DEFAULT_ID, isDefault: true }));
+    repo.rows.push(makeMethod({ id: TARGET_ID, isDefault: false }));
+
+    const res = await service.setDefault(USER_ID, TARGET_ID);
+
+    expect(res.paymentMethod.id).toBe(TARGET_ID);
+    expect(res.paymentMethod.isDefault).toBe(true);
+    expect(repo.setDefaultCalls).toEqual([{ userId: USER_ID, paymentMethodId: TARGET_ID }]);
+    expect(repo.rows.find((r) => r.id === PRIOR_DEFAULT_ID)?.isDefault).toBe(false);
+    expect(repo.rows.find((r) => r.id === TARGET_ID)?.isDefault).toBe(true);
+  });
+
+  it('is an idempotent no-op when the method is already default', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: TARGET_ID, isDefault: true }));
+
+    const res = await service.setDefault(USER_ID, TARGET_ID);
+
+    expect(res.paymentMethod.id).toBe(TARGET_ID);
+    expect(res.paymentMethod.isDefault).toBe(true);
+    // No redundant transaction for a method that already holds the flag.
+    expect(repo.setDefaultCalls).toHaveLength(0);
+  });
+
+  it('returns 404-shape for a method owned by another user', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: TARGET_ID, userId: OTHER_USER_ID }));
+
+    await expect(service.setDefault(USER_ID, TARGET_ID)).rejects.toBeInstanceOf(NotFoundError);
+    expect(repo.setDefaultCalls).toHaveLength(0);
+  });
+
+  it('returns 404-shape for a method that does not exist', async () => {
+    const { service, repo } = build();
+
+    await expect(
+      service.setDefault(USER_ID, '01935f3d-0000-7000-8000-000000000fff'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(repo.setDefaultCalls).toHaveLength(0);
+  });
+
+  it('returns 404-shape for an already-deleted method', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: TARGET_ID, deletedAt: new Date('2026-04-01T00:00:00.000Z') }));
+
+    await expect(service.setDefault(USER_ID, TARGET_ID)).rejects.toBeInstanceOf(NotFoundError);
+    expect(repo.setDefaultCalls).toHaveLength(0);
+  });
+
+  it('refuses to default a pending method (409 PAYMENT_METHOD_NOT_ACTIVE)', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: TARGET_ID, status: 'pending', isDefault: false }));
+
+    await expect(service.setDefault(USER_ID, TARGET_ID)).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_NOT_ACTIVE',
+    });
+    expect(repo.setDefaultCalls).toHaveLength(0);
+  });
+
+  it('refuses to default a failed method (409 PAYMENT_METHOD_NOT_ACTIVE)', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: TARGET_ID, status: 'failed', isDefault: false }));
+
+    await expect(service.setDefault(USER_ID, TARGET_ID)).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.setDefaultCalls).toHaveLength(0);
+  });
+
+  it('throws a 500 PaymentError when the row vanishes mid-promotion', async () => {
+    const { service, repo } = build();
+    repo.rows.push(makeMethod({ id: TARGET_ID, isDefault: false }));
+    repo.vanishOnSetDefault = true;
+
+    await expect(service.setDefault(USER_ID, TARGET_ID)).rejects.toMatchObject({
+      code: 'PAYMENT_METHOD_INVALID',
+      statusCode: 500,
+    });
+    expect(repo.setDefaultCalls).toHaveLength(1);
   });
 });
 

@@ -6,7 +6,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PaymentMethodsController } from './payment-methods.controller.js';
-import type { LinkAeropayResponse, ListPaymentMethodsResponse } from './dto/index.js';
+import type {
+  LinkAeropayResponse,
+  ListPaymentMethodsResponse,
+  PaymentMethodEnvelopeResponse,
+} from './dto/index.js';
 import type { PaymentMethodsService } from './payment-methods.service.js';
 import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
 
@@ -36,11 +40,26 @@ const LINK_RESPONSE: LinkAeropayResponse = {
   },
 };
 
+const SET_DEFAULT_RESPONSE: PaymentMethodEnvelopeResponse = {
+  paymentMethod: {
+    id: '01935f3d-0000-7000-8000-000000000aaa',
+    type: 'aeropay_ach',
+    aeropayPaymentMethodRef: 'ba_test_123',
+    bankName: 'Test Bank',
+    last4: '1234',
+    isDefault: true,
+    status: 'active',
+    createdAt: '2026-05-01T00:00:00.000Z',
+    updatedAt: '2026-05-01T02:00:00.000Z',
+  },
+};
+
 class FakePaymentMethodsService {
   calls = {
     list: [] as string[],
     link: [] as Array<{ userId: string; returnUrl: string }>,
     delete: [] as Array<{ userId: string; paymentMethodId: string }>,
+    setDefault: [] as Array<{ userId: string; paymentMethodId: string }>,
   };
 
   list = (userId: string): Promise<ListPaymentMethodsResponse> => {
@@ -56,6 +75,14 @@ class FakePaymentMethodsService {
   delete = (userId: string, paymentMethodId: string): Promise<void> => {
     this.calls.delete.push({ userId, paymentMethodId });
     return Promise.resolve();
+  };
+
+  setDefault = (
+    userId: string,
+    paymentMethodId: string,
+  ): Promise<PaymentMethodEnvelopeResponse> => {
+    this.calls.setDefault.push({ userId, paymentMethodId });
+    return Promise.resolve(SET_DEFAULT_RESPONSE);
   };
 }
 
@@ -91,6 +118,20 @@ describe('PaymentMethodsController', () => {
     await controller.delete(USER, '01935f3d-0000-7000-8000-000000000aaa');
 
     expect(svc.calls.delete).toEqual([
+      { userId: USER.userId, paymentMethodId: '01935f3d-0000-7000-8000-000000000aaa' },
+    ]);
+  });
+
+  it('setDefault forwards the path param and userId, returning the envelope', async () => {
+    const svc = new FakePaymentMethodsService();
+    const controller = new PaymentMethodsController(svc as unknown as PaymentMethodsService);
+
+    const res = await controller.setDefault(USER, '01935f3d-0000-7000-8000-000000000aaa', {
+      isDefault: true,
+    });
+
+    expect(res).toBe(SET_DEFAULT_RESPONSE);
+    expect(svc.calls.setDefault).toEqual([
       { userId: USER.userId, paymentMethodId: '01935f3d-0000-7000-8000-000000000aaa' },
     ]);
   });

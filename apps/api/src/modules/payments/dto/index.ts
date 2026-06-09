@@ -18,6 +18,13 @@ export {
   type LinkAeropayResponse,
 } from './link-aeropay.dto.js';
 export {
+  PaymentMethodEnvelopeResponseSchema,
+  SetDefaultPaymentMethodRequestDto,
+  SetDefaultPaymentMethodRequestSchema,
+  type PaymentMethodEnvelopeResponse,
+  type SetDefaultPaymentMethodRequest,
+} from './set-default-payment-method.dto.js';
+export {
   InitiateRefundRequestDto,
   InitiateRefundRequestSchema,
   REFUND_AUTO_APPROVE_LIMIT_CENTS,

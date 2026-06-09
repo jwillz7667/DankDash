@@ -166,6 +166,28 @@ final class AccountFeatureTests: XCTestCase {
     await store.send(.addressesDismissed) { $0.addresses = nil }
   }
 
+  // MARK: - payment methods
+
+  func test_managePaymentMethodsTapped_opensPaymentMethods() async {
+    let store = TestStore(initialState: AccountFeature.State()) {
+      AccountFeature()
+    }
+
+    await store.send(.managePaymentMethodsTapped) {
+      $0.paymentMethods = PaymentMethodsFeature.State()
+    }
+  }
+
+  func test_paymentMethodsDismissed_clearsPaymentMethods() async {
+    let store = TestStore(
+      initialState: AccountFeature.State(paymentMethods: PaymentMethodsFeature.State())
+    ) {
+      AccountFeature()
+    }
+
+    await store.send(.paymentMethodsDismissed) { $0.paymentMethods = nil }
+  }
+
   // MARK: - delegated concerns
 
   func test_orderHistoryTapped_emitsShowOrdersDelegate() async {

@@ -42,6 +42,21 @@ struct AccountTabView: View {
           AddressesView(store: addressesStore)
         }
       }
+      .navigationDestination(
+        isPresented: Binding(
+          get: { store.account.paymentMethods != nil },
+          set: { isPresented in
+            if !isPresented { store.send(.account(.paymentMethodsDismissed)) }
+          }
+        )
+      ) {
+        if let paymentStore = store.scope(
+          state: \.account.paymentMethods,
+          action: \.account.paymentMethods
+        ) {
+          PaymentMethodsView(store: paymentStore)
+        }
+      }
     }
   }
 }
@@ -74,6 +89,12 @@ struct AccountHubView: View {
             title: "Saved addresses",
             subtitle: "Manage delivery addresses and your default.",
             action: { store.send(.manageAddressesTapped) }
+          )
+          AccountRow(
+            icon: "creditcard",
+            title: "Payment methods",
+            subtitle: "Link a bank account and set your default.",
+            action: { store.send(.managePaymentMethodsTapped) }
           )
           AccountRow(
             icon: "clock.arrow.circlepath",
