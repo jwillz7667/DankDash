@@ -29,9 +29,12 @@ struct ActiveRouteScreen: View {
         mapSection
           .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-        bottomCard
-          .padding(.horizontal, DankSpacing.md)
-          .padding(.bottom, DankSpacing.md)
+        VStack(spacing: DankSpacing.sm) {
+          detailsCard
+          bottomCard
+        }
+        .padding(.horizontal, DankSpacing.md)
+        .padding(.bottom, DankSpacing.md)
       }
 
       VStack(spacing: DankSpacing.sm) {
@@ -81,8 +84,16 @@ struct ActiveRouteScreen: View {
             coordinate: coord,
             title: "You"
           )
-        }
+        },
+        route: store.directions?.polyline,
+        deliveryLeg: store.deliveryLegDirections?.polyline
       )
+      .overlay(alignment: .bottomTrailing) {
+        if store.mapDestinations != nil {
+          openInMapsButton
+            .padding(DankSpacing.lg)
+        }
+      }
       .padding(DankSpacing.md)
     } else {
       VStack(spacing: DankSpacing.md) {
@@ -93,6 +104,56 @@ struct ActiveRouteScreen: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+  }
+
+  private var openInMapsButton: some View {
+    Button {
+      store.send(.openInMapsTapped)
+    } label: {
+      HStack(spacing: DankSpacing.xs) {
+        Image(systemName: "map.fill")
+          .font(DankFont.bodySmall)
+        Text("Open in Maps")
+          .font(DankFont.bodySmall.weight(.semibold))
+      }
+      .foregroundStyle(DankColor.Text.onPrimary)
+      .padding(.horizontal, DankSpacing.md)
+      .padding(.vertical, DankSpacing.sm)
+      .background(DankColor.primary)
+      .clipShape(Capsule())
+      .shadow(color: DankColor.Text.primary.opacity(0.18), radius: 6, x: 0, y: 2)
+    }
+    .accessibilityLabel("Open route in Maps")
+  }
+
+  // MARK: - Delivery details
+
+  /// Order code + contents + tip, shown above the phase card once the
+  /// route loads and while there's still a leg to drive. Hidden at the
+  /// scan gate / completion (``ActiveRouteFeature/State/mapDestinations``
+  /// is `nil` there, same gate the map button uses).
+  @ViewBuilder
+  private var detailsCard: some View {
+    if let route = store.route, store.mapDestinations != nil {
+      DeliveryDetailsCard(
+        orderShortCode: route.order.shortCode,
+        itemSummary: itemSummary(route),
+        itemCount: itemCount(route),
+        tipCents: route.order.driverTipCents
+      )
+    }
+  }
+
+  private func itemSummary(_ route: ActiveRoute) -> String? {
+    let parts = route.order.items.map { item -> String in
+      let name = item.productSnapshot.object?["name"]?.string ?? "Item"
+      return "\(name) ×\(item.quantity)"
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  private func itemCount(_ route: ActiveRoute) -> Int {
+    route.order.items.reduce(0) { $0 + $1.quantity }
   }
 
   // MARK: - Bottom card

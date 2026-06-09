@@ -81,6 +81,10 @@ struct AppEnvironment {
     dependencies.backgroundLocationClient = .live
     dependencies.batteryMonitorClient = .live
 
+    // Map helpers — bounding-region math + the Apple Maps hand-off the
+    // active-route "Open in Maps" button shells out to.
+    dependencies.mapClient = .live
+
     // Delivery-scoped realtime: publishes the driver's live location to
     // the `/driver` Socket.io namespace (the consumer's tracking map
     // consumes it) and observes `order:status_changed` so the vendor
