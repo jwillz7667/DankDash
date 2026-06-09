@@ -142,6 +142,71 @@ final class AddressDTODecodingTests: XCTestCase {
     XCTAssertFalse(payload.keys.contains("longitude"))
   }
 
+  func test_editAddressRequest_emitsExplicitNullForClearedOptionals() throws {
+    // The whole reason EditAddressRequestDTO exists: unlike the patch
+    // body (which omits nil keys), a nil label / line2 / deliveryInstructions
+    // must ship as JSON `null` so the edit actually clears the column.
+    let body = EditAddressRequestDTO(
+      label: nil,
+      line1: "1100 Hennepin Ave",
+      line2: nil,
+      city: "Minneapolis",
+      region: "MN",
+      postalCode: "55403",
+      latitude: 44.9778,
+      longitude: -93.2650,
+      deliveryInstructions: nil
+    )
+    let json = try encoder.encode(body)
+    // JSONSerialization keeps explicit-null keys as NSNull, so key
+    // membership distinguishes "null" from "omitted".
+    let payload = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: json) as? [String: Any]
+    )
+    XCTAssertTrue(payload["label"] is NSNull, "cleared label must ship as null, not omitted")
+    XCTAssertTrue(payload["line2"] is NSNull, "cleared line2 must ship as null")
+    XCTAssertTrue(
+      payload["deliveryInstructions"] is NSNull,
+      "cleared deliveryInstructions must ship as null"
+    )
+    // Required scalars are always present and concrete.
+    XCTAssertEqual(payload["line1"] as? String, "1100 Hennepin Ave")
+    XCTAssertEqual(payload["city"] as? String, "Minneapolis")
+    XCTAssertEqual(payload["region"] as? String, "MN")
+    XCTAssertEqual(payload["postalCode"] as? String, "55403")
+    XCTAssertEqual(payload["country"] as? String, "US")
+    XCTAssertEqual(payload["latitude"] as? Double, 44.9778)
+    XCTAssertEqual(payload["longitude"] as? Double, -93.2650)
+    // isDefault omitted (server rejects `false`; only a `true` promote ships).
+    XCTAssertFalse(
+      payload.keys.contains("isDefault"),
+      "isDefault must be omitted unless promoting — the server rejects isDefault:false"
+    )
+  }
+
+  func test_editAddressRequest_keepsValuesAndEmitsIsDefaultWhenPromoting() throws {
+    let body = EditAddressRequestDTO(
+      label: "Work",
+      line1: "250 Marquette Ave",
+      line2: "Suite 500",
+      city: "Minneapolis",
+      region: "MN",
+      postalCode: "55401",
+      latitude: 44.9800,
+      longitude: -93.2700,
+      deliveryInstructions: "Front desk",
+      isDefault: true
+    )
+    let json = try encoder.encode(body)
+    let payload = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: json) as? [String: Any]
+    )
+    XCTAssertEqual(payload["label"] as? String, "Work")
+    XCTAssertEqual(payload["line2"] as? String, "Suite 500")
+    XCTAssertEqual(payload["deliveryInstructions"] as? String, "Front desk")
+    XCTAssertEqual(payload["isDefault"] as? Bool, true)
+  }
+
   // MARK: - Fixtures
 
   private static let singleAddressJSON = """

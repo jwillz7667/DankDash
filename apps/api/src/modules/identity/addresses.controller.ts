@@ -8,6 +8,11 @@
  *   PATCH /v1/addresses/:id    — partial update; mutable surface excludes
  *                                 system fields. `isDefault: true` routes
  *                                 through the atomic singleton flip.
+ *   DELETE /v1/addresses/:id   — soft-delete (sets `deleted_at`, clears the
+ *                                 default flag). 204 on success. The row is
+ *                                 retained for order-history referential
+ *                                 integrity; `listForUser` already excludes
+ *                                 deleted rows so it vanishes from the book.
  *
  * Guards: JwtAuthGuard binds globally so `req.user` is populated before this
  * controller. RolesGuard narrows to roles that can plausibly own a delivery
@@ -29,7 +34,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -78,5 +86,15 @@ export class AddressesController {
     @Body() body: PatchAddressRequestDto,
   ): Promise<UserAddressResponse> {
     return this.addresses.update(user.userId, id, body);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RateLimit({ name: 'addresses-delete', tracker: 'user', limit: 30, windowMs: 60_000 })
+  remove(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<void> {
+    return this.addresses.remove(user.userId, id);
   }
 }

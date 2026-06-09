@@ -144,6 +144,28 @@ final class AccountFeatureTests: XCTestCase {
     XCTAssertNil(store.state.profileEdit)
   }
 
+  // MARK: - saved addresses
+
+  func test_manageAddressesTapped_opensAddresses() async {
+    let store = TestStore(initialState: AccountFeature.State()) {
+      AccountFeature()
+    }
+
+    await store.send(.manageAddressesTapped) {
+      $0.addresses = AddressesFeature.State()
+    }
+  }
+
+  func test_addressesDismissed_clearsAddresses() async {
+    let store = TestStore(
+      initialState: AccountFeature.State(addresses: AddressesFeature.State())
+    ) {
+      AccountFeature()
+    }
+
+    await store.send(.addressesDismissed) { $0.addresses = nil }
+  }
+
   // MARK: - delegated concerns
 
   func test_orderHistoryTapped_emitsShowOrdersDelegate() async {
