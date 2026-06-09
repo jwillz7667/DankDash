@@ -11,3 +11,10 @@ export {
   type RegisterPushTokenRequest,
   type RegisterPushTokenResponse,
 } from './push-token.dto.js';
+export {
+  NotificationPreferencesResponseSchema,
+  UpdateNotificationPreferencesRequestDto,
+  UpdateNotificationPreferencesRequestSchema,
+  type NotificationPreferencesResponse,
+  type UpdateNotificationPreferencesRequest,
+} from './notification-preferences.dto.js';
