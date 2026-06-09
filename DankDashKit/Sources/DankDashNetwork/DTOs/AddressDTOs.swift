@@ -238,3 +238,87 @@ public struct PatchAddressRequestDTO: Encodable, Sendable, Equatable {
     try container.encodeIfPresent(isDefault, forKey: .isDefault)
   }
 }
+
+/// Body for a full-form edit of an existing address. Targets the same
+/// `PATCH /v1/addresses/:id` endpoint as ``PatchAddressRequestDTO`` but
+/// carries the entire address rather than a sparse field set — the edit
+/// screen always submits every field the user can see.
+///
+/// The encoder difference is the whole reason this is a distinct type:
+/// ``PatchAddressRequestDTO`` uses `encodeIfPresent`, so a `nil`
+/// optional is *omitted* — which can never *clear* a server-side value.
+/// Here `label`, `line2`, and `deliveryInstructions` encode as explicit
+/// JSON `null` when nil, so deleting the text in the edit form actually
+/// persists the clear (the server's PATCH schema marks all three
+/// `.nullable()`). The required fields (`line1`/`city`/`region`/
+/// `postalCode`/`country`/`latitude`/`longitude`) are always present, so
+/// the body satisfies both server refines — "at least one field" and
+/// "latitude + longitude together".
+///
+/// `isDefault` is the lone `encodeIfPresent` field: the server rejects
+/// `isDefault: false` (the only way to drop the default is to promote
+/// another row), so the edit form sets it to `true` only when promoting
+/// a non-default address and otherwise leaves it `nil` (omitted).
+public struct EditAddressRequestDTO: Encodable, Sendable, Equatable {
+  public let label: String?
+  public let line1: String
+  public let line2: String?
+  public let city: String
+  public let region: String
+  public let postalCode: String
+  public let country: String
+  public let latitude: Double
+  public let longitude: Double
+  public let deliveryInstructions: String?
+  public let isDefault: Bool?
+
+  public init(
+    label: String?,
+    line1: String,
+    line2: String?,
+    city: String,
+    region: String,
+    postalCode: String,
+    country: String = "US",
+    latitude: Double,
+    longitude: Double,
+    deliveryInstructions: String?,
+    isDefault: Bool? = nil
+  ) {
+    self.label = label
+    self.line1 = line1
+    self.line2 = line2
+    self.city = city
+    self.region = region
+    self.postalCode = postalCode
+    self.country = country
+    self.latitude = latitude
+    self.longitude = longitude
+    self.deliveryInstructions = deliveryInstructions
+    self.isDefault = isDefault
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case label, line1, line2, city, region, postalCode, country
+    case latitude, longitude, deliveryInstructions, isDefault
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    // `encode` (not `encodeIfPresent`) on the nullable fields: Optional's
+    // Encodable conformance writes `encodeNil()` for `.none`, so a nil
+    // here ships as JSON `null` and clears the column server-side.
+    try container.encode(label, forKey: .label)
+    try container.encode(line1, forKey: .line1)
+    try container.encode(line2, forKey: .line2)
+    try container.encode(city, forKey: .city)
+    try container.encode(region, forKey: .region)
+    try container.encode(postalCode, forKey: .postalCode)
+    try container.encode(country, forKey: .country)
+    try container.encode(latitude, forKey: .latitude)
+    try container.encode(longitude, forKey: .longitude)
+    try container.encode(deliveryInstructions, forKey: .deliveryInstructions)
+    // Omit unless promoting — the server rejects `isDefault: false`.
+    try container.encodeIfPresent(isDefault, forKey: .isDefault)
+  }
+}

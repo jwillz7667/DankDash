@@ -1,10 +1,14 @@
 import Foundation
 
-/// Addresses endpoint catalog — read, create, partial-update the saved
-/// delivery addresses for the authenticated user. All require auth; RLS
-/// hides addresses owned by other users. Deletion isn't exposed in
-/// Phase 18 (the address picker uses isDefault / archive flags
-/// server-side; hard delete lives in a later phase).
+/// Addresses endpoint catalog — read, create, edit, promote, and delete
+/// the saved delivery addresses for the authenticated user. All require
+/// auth; RLS hides addresses owned by other users, and the service layer
+/// returns 404 (not 403) on a cross-user id so a probe can't distinguish
+/// ownership from existence.
+///
+/// Delete is a soft-delete (`deleted_at` stamped, default flag cleared);
+/// the row is retained for order-history referential integrity and simply
+/// vanishes from `listAddresses`.
 public enum AddressesEndpoints {
   /// `GET /v1/addresses` — server returns non-archived addresses,
   /// default-first. The picker uses the same ordering so the row at
@@ -45,6 +49,36 @@ public enum AddressesEndpoints {
       method: .PATCH,
       path: "v1/addresses/\(id.uuidString.lowercased())",
       body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
+
+  /// `PATCH /v1/addresses/:id` — full-form edit. Same route as
+  /// ``patchAddress(id:body:)`` but the ``EditAddressRequestDTO`` body
+  /// ships every field, encoding `label` / `line2` / `deliveryInstructions`
+  /// as explicit `null` when the user cleared them so the edit actually
+  /// removes the prior value (a `PatchAddressRequestDTO` would omit the
+  /// key and leave it intact).
+  public static func editAddress(
+    id: UUID,
+    body: EditAddressRequestDTO
+  ) -> Endpoint<UserAddressResponseDTO> {
+    Endpoint(
+      method: .PATCH,
+      path: "v1/addresses/\(id.uuidString.lowercased())",
+      body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
+
+  /// `DELETE /v1/addresses/:id` — soft-delete. 204 No Content on success
+  /// (hence `EmptyResponse`). A cross-user / missing / already-deleted id
+  /// returns 404. Deleting the current default leaves the account with no
+  /// default until the user promotes another address.
+  public static func deleteAddress(id: UUID) -> Endpoint<EmptyResponse> {
+    Endpoint(
+      method: .DELETE,
+      path: "v1/addresses/\(id.uuidString.lowercased())",
       requiresAuth: true
     )
   }
