@@ -1569,6 +1569,20 @@ describe('CheckoutService.checkout — payment bypass (PAYMENTS_BYPASS_ENABLED)'
   });
 });
 
+describe('CheckoutService.getCapabilities', () => {
+  it('reports the bypass on when constructed with the flag enabled', () => {
+    const rig = makeRig({ paymentsBypassEnabled: true });
+
+    expect(rig.service.getCapabilities()).toEqual({ paymentBypassEnabled: true });
+  });
+
+  it('reports the bypass off by default', () => {
+    const rig = makeRig();
+
+    expect(rig.service.getCapabilities()).toEqual({ paymentBypassEnabled: false });
+  });
+});
+
 describe('CheckoutService.checkout — short code generation', () => {
   let rig: Rig;
   beforeEach(() => {
