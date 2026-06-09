@@ -188,6 +188,28 @@ final class AccountFeatureTests: XCTestCase {
     await store.send(.paymentMethodsDismissed) { $0.paymentMethods = nil }
   }
 
+  // MARK: - notifications
+
+  func test_manageNotificationsTapped_opensNotifications() async {
+    let store = TestStore(initialState: AccountFeature.State()) {
+      AccountFeature()
+    }
+
+    await store.send(.manageNotificationsTapped) {
+      $0.notifications = NotificationPreferencesFeature.State()
+    }
+  }
+
+  func test_notificationsDismissed_clearsNotifications() async {
+    let store = TestStore(
+      initialState: AccountFeature.State(notifications: NotificationPreferencesFeature.State())
+    ) {
+      AccountFeature()
+    }
+
+    await store.send(.notificationsDismissed) { $0.notifications = nil }
+  }
+
   // MARK: - delegated concerns
 
   func test_orderHistoryTapped_emitsShowOrdersDelegate() async {
