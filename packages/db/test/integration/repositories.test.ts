@@ -25,6 +25,8 @@ import {
   MetrcTransactionsRepository,
   NotificationPreferencesRepository,
   NotificationsRepository,
+  OrdersRepository,
+  PasswordResetTokensRepository,
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
   PayoutsRepository,
@@ -146,6 +148,197 @@ describe('repository coverage', () => {
       await addresses.softDelete(created.id);
       const after = await addresses.findById(created.id);
       expect(after?.deletedAt).not.toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Account deletion — the DELETE /v1/me orchestration's repo primitives.
+  // Each test provisions a throwaway user so it never disturbs seeded fixtures
+  // or the other suites sharing this container.
+  // ---------------------------------------------------------------------------
+  describe('Account deletion repository methods', () => {
+    async function freshUser(tag: string): Promise<string> {
+      const users = new UsersRepository(getPool().db);
+      const suffix = stableUuid('acctdel', tag).slice(0, 8);
+      const created = await users.create({
+        email: `acctdel-${tag}-${suffix}@example.test`,
+        phone: `+1612${suffix.replace(/\D/g, '0').slice(0, 7).padEnd(7, '0')}`,
+        passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$placeholder',
+        role: 'customer',
+        status: 'active',
+        firstName: 'Throwaway',
+        lastName: tag,
+        dateOfBirth: '1995-06-15',
+      });
+      return created.id;
+    }
+
+    it('UsersRepository.anonymizeAndSoftDelete scrubs PII and is single-shot', async () => {
+      const users = new UsersRepository(getPool().db);
+      const userId = await freshUser('anon');
+
+      const anonymized = await users.anonymizeAndSoftDelete(userId);
+      expect(anonymized).not.toBeNull();
+      expect(anonymized?.deletedAt).not.toBeNull();
+      expect(anonymized?.email).toBe(`deleted+${userId}@deleted.invalid`);
+      expect(anonymized?.phone).toBeNull();
+      expect(anonymized?.firstName).toBeNull();
+      expect(anonymized?.lastName).toBeNull();
+      expect(anonymized?.dateOfBirth).toBeNull();
+      expect(anonymized?.mfaEnabled).toBe(false);
+      expect(anonymized?.mfaSecretEnc).toBeNull();
+      // Password is replaced with a non-verifiable sentinel — no Argon2 prefix.
+      expect(anonymized?.passwordHash).not.toContain('argon2');
+
+      // The `deleted_at IS NULL` guard makes a second call a no-op (null).
+      const second = await users.anonymizeAndSoftDelete(userId);
+      expect(second).toBeNull();
+    });
+
+    it('UserAddressesRepository.softDeleteAllForUser clears every live row + default', async () => {
+      const addresses = new UserAddressesRepository(getPool().db);
+      const userId = await freshUser('addr');
+
+      const a1 = await addresses.create({
+        userId,
+        label: 'Home',
+        line1: '1 First St',
+        city: 'Minneapolis',
+        region: 'MN',
+        postalCode: '55401',
+        country: 'US',
+        location: { type: 'Point', coordinates: [-93.27, 44.97] },
+        isDefault: false,
+      });
+      await addresses.create({
+        userId,
+        label: 'Work',
+        line1: '2 Second St',
+        city: 'Minneapolis',
+        region: 'MN',
+        postalCode: '55402',
+        country: 'US',
+        location: { type: 'Point', coordinates: [-93.26, 44.98] },
+        isDefault: false,
+      });
+      await addresses.setDefault(userId, a1.id);
+
+      const count = await addresses.softDeleteAllForUser(userId);
+      expect(count).toBe(2);
+
+      const remaining = await addresses.listForUser(userId);
+      expect(remaining).toHaveLength(0);
+
+      const wasDefault = await addresses.findById(a1.id);
+      expect(wasDefault?.deletedAt).not.toBeNull();
+      expect(wasDefault?.isDefault).toBe(false);
+
+      // Idempotent: nothing left to clear.
+      expect(await addresses.softDeleteAllForUser(userId)).toBe(0);
+    });
+
+    it('PaymentMethodsRepository.softDeleteAllForUser clears every live row + default', async () => {
+      const pm = new PaymentMethodsRepository(getPool().db);
+      const userId = await freshUser('pm');
+
+      const m1 = await pm.create({
+        userId,
+        type: 'aeropay_ach',
+        aeropayPaymentMethodRef: `aeropay-${userId}-1`,
+        bankName: 'First Bank',
+        last4: '1111',
+        isDefault: false,
+        status: 'active',
+      });
+      await pm.create({
+        userId,
+        type: 'aeropay_ach',
+        aeropayPaymentMethodRef: `aeropay-${userId}-2`,
+        bankName: 'Second Bank',
+        last4: '2222',
+        isDefault: false,
+        status: 'active',
+      });
+      await pm.setDefault(userId, m1.id);
+
+      const count = await pm.softDeleteAllForUser(userId);
+      expect(count).toBe(2);
+
+      const remaining = await pm.listForUser(userId);
+      expect(remaining).toHaveLength(0);
+      expect(await pm.findDefaultForUser(userId)).toBeNull();
+
+      expect(await pm.softDeleteAllForUser(userId)).toBe(0);
+    });
+
+    it('PasswordResetTokensRepository.invalidateAllActiveForUser kills live tokens', async () => {
+      const tokens = new PasswordResetTokensRepository(getPool().db);
+      const userId = await freshUser('prt');
+
+      const h1 = new Uint8Array(32);
+      h1[0] = 200;
+      const h2 = new Uint8Array(32);
+      h2[0] = 201;
+      await tokens.create({
+        userId,
+        codeHash: h1,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      await tokens.create({
+        userId,
+        codeHash: h2,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+
+      const invalidated = await tokens.invalidateAllActiveForUser(userId);
+      expect(invalidated).toBe(2);
+
+      expect((await tokens.findByCodeHash(h1))?.usedAt).not.toBeNull();
+      expect(await tokens.invalidateAllActiveForUser(userId)).toBe(0);
+    });
+
+    it('OrdersRepository.countActiveForUser counts only non-terminal orders', async () => {
+      const pool = getPool();
+      const orders = new OrdersRepository(pool.db);
+      const addresses = new UserAddressesRepository(pool.db);
+      const userId = await freshUser('orders');
+
+      expect(await orders.countActiveForUser(userId)).toBe(0);
+
+      const addr = await addresses.create({
+        userId,
+        label: 'Home',
+        line1: '9 Ninth St',
+        city: 'Minneapolis',
+        region: 'MN',
+        postalCode: '55401',
+        country: 'US',
+        location: { type: 'Point', coordinates: [-93.27, 44.97] },
+        isDefault: true,
+      });
+
+      const mkOrder = async (status: string): Promise<void> => {
+        const shortCode = `AD${stableUuid('order', `${userId}-${status}`).slice(0, 8).toUpperCase()}`;
+        await pool.sql`
+          INSERT INTO orders (
+            short_code, user_id, dispensary_id, delivery_address_id, status,
+            subtotal_cents, cannabis_tax_cents, sales_tax_cents,
+            delivery_fee_cents, total_cents,
+            compliance_check_payload, delivery_address_snapshot
+          )
+          VALUES (
+            ${shortCode}, ${userId}, ${MPLS}, ${addr.id}, ${status}::order_status,
+            1000, 0, 0, 0, 1000,
+            '{}'::jsonb, '{}'::jsonb
+          )
+        `;
+      };
+
+      // One in-flight (placed) + one terminal (canceled): only the live one counts.
+      await mkOrder('placed');
+      await mkOrder('canceled');
+
+      expect(await orders.countActiveForUser(userId)).toBe(1);
     });
   });
 
