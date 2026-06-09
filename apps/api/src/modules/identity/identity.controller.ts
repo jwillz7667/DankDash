@@ -9,16 +9,23 @@
  *                                         inquiry; returns the hosted-flow URL
  *                                         the iOS client opens in
  *                                         SFSafariViewController.
+ *   DELETE /v1/me                      — Authenticated. Irreversibly deletes
+ *                                         the account: anonymizes PII,
+ *                                         revokes sessions, soft-deletes
+ *                                         addresses + payment methods. 409 if
+ *                                         an order is still in flight.
  *
  * The webhook lives on a separate controller because the body shape is raw
  * (HMAC verification requires the exact incoming bytes) and the route is
  * @Public — keeping the surfaces split avoids accidental cross-routing of
  * auth requirements.
  */
-import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Post } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
+import { AccountDeletionService } from './account-deletion.service.js';
 import {
   UpdateMeRequestDto,
+  type AccountDeletionResponse,
   type DispensaryMembershipsResponse,
   type KycStartResponse,
   type MeResponse,
@@ -28,7 +35,10 @@ import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
 
 @Controller()
 export class IdentityController {
-  constructor(private readonly identity: IdentityService) {}
+  constructor(
+    private readonly identity: IdentityService,
+    private readonly accountDeletion: AccountDeletionService,
+  ) {}
 
   @Get('me')
   getMe(@CurrentUser() user: AuthenticatedUser): Promise<MeResponse> {
@@ -58,5 +68,10 @@ export class IdentityController {
   @Post('identity/kyc/start')
   startKyc(@CurrentUser() user: AuthenticatedUser): Promise<KycStartResponse> {
     return this.identity.startKyc(user.userId);
+  }
+
+  @Delete('me')
+  deleteMe(@CurrentUser() user: AuthenticatedUser): Promise<AccountDeletionResponse> {
+    return this.accountDeletion.deleteAccount(user.userId);
   }
 }

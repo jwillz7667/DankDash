@@ -229,4 +229,87 @@ final class AccountFeatureTests: XCTestCase {
     await store.send(.signOutTapped)
     await store.receive(\.delegate.signOutRequested)
   }
+
+  // MARK: - account deletion
+
+  func test_deleteAccountTapped_clearsPriorError_andOpensConfirmation() async {
+    let store = TestStore(initialState: AccountFeature.State(deleteAccountError: "stale error")) {
+      AccountFeature()
+    }
+
+    await store.send(.deleteAccountTapped) {
+      $0.deleteAccountError = nil
+      $0.isConfirmingAccountDeletion = true
+    }
+  }
+
+  func test_deleteAccountCanceled_dismissesConfirmation() async {
+    let store = TestStore(
+      initialState: AccountFeature.State(isConfirmingAccountDeletion: true)
+    ) {
+      AccountFeature()
+    }
+
+    await store.send(.deleteAccountCanceled) { $0.isConfirmingAccountDeletion = false }
+  }
+
+  func test_deleteAccountConfirmed_success_emitsCompletedDelegate() async {
+    let deleted = Locker<Bool>(value: false)
+    let store = TestStore(initialState: AccountFeature.State()) {
+      AccountFeature()
+    } withDependencies: {
+      $0.meAPIClient.deleteAccount = { await deleted.set(true) }
+    }
+
+    await store.send(.deleteAccountTapped) { $0.isConfirmingAccountDeletion = true }
+    await store.send(.deleteAccountConfirmed) {
+      $0.isConfirmingAccountDeletion = false
+      $0.isDeletingAccount = true
+    }
+    // Teardown (token clear + screen reset) is the root's job; the feature
+    // only signals completion and leaves `isDeletingAccount` set since the
+    // whole subtree is about to be discarded.
+    await store.receive(\.delegate.accountDeletionCompleted)
+
+    let didCall = await deleted.value
+    XCTAssertTrue(didCall, "Confirming must hit DELETE /v1/me.")
+  }
+
+  func test_deleteAccountConfirmed_failure_surfacesError_andStaysSignedIn() async {
+    let store = TestStore(initialState: AccountFeature.State()) {
+      AccountFeature()
+    } withDependencies: {
+      $0.meAPIClient.deleteAccount = {
+        throw APIError.transport(URLError(.notConnectedToInternet))
+      }
+    }
+
+    await store.send(.deleteAccountTapped) { $0.isConfirmingAccountDeletion = true }
+    await store.send(.deleteAccountConfirmed) {
+      $0.isConfirmingAccountDeletion = false
+      $0.isDeletingAccount = true
+    }
+    await store.receive(\.accountDeletionFailed) {
+      $0.isDeletingAccount = false
+      $0.deleteAccountError = "We couldn't reach DankDash. Check your connection."
+    }
+  }
+
+  func test_whileDeleting_confirmAndSignOutAndTapAreNoops() async {
+    // A deletion in flight must own the teardown path: no second DELETE, no
+    // racing sign-out, no re-opening the confirmation dialog.
+    let store = TestStore(initialState: AccountFeature.State(isDeletingAccount: true)) {
+      AccountFeature()
+    }
+
+    await store.send(.deleteAccountTapped)
+    await store.send(.deleteAccountConfirmed)
+    await store.send(.signOutTapped)
+  }
+}
+
+private actor Locker<T: Sendable> {
+  private(set) var value: T
+  init(value: T) { self.value = value }
+  func set(_ newValue: T) { self.value = newValue }
 }

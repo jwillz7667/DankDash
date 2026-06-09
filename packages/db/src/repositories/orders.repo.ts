@@ -154,6 +154,23 @@ const STATUS_TIMESTAMP_COLUMN: Readonly<Partial<Record<OrderStatus, keyof NewOrd
   disputed: 'disputedAt',
 };
 
+/**
+ * Terminal order states — once reached, no further transitions occur. Mirrors
+ * `TERMINAL_ORDER_STATES` in `@dankdash/orders`; the db package sits below
+ * `@dankdash/orders` in the dependency graph so it cannot import it, and the
+ * order-status mirror test guards both declarations against drift. Used by
+ * `countActiveForUser` to find orders still in flight.
+ */
+const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [
+  'payment_failed',
+  'rejected',
+  'dispatch_failed',
+  'delivered',
+  'returned_to_store',
+  'canceled',
+  'disputed',
+];
+
 export class OrdersRepository extends BaseRepository {
   async findById(id: string): Promise<Order | null> {
     const [row] = await this.db.select().from(orders).where(eq(orders.id, id)).limit(1);
@@ -208,6 +225,22 @@ export class OrdersRepository extends BaseRepository {
       .where(eq(orders.userId, userId))
       .orderBy(desc(orders.placedAt))
       .limit(limit);
+  }
+
+  /**
+   * Counts a user's in-flight (non-terminal) orders. Account deletion uses
+   * this as a guard: a regulated delivery in progress carries a settled
+   * payment, reserved inventory, a possibly-dispatched driver, and a
+   * mandatory ID scan at handoff — anonymizing the customer mid-flight would
+   * orphan it, so deletion is refused until the order reaches a terminal
+   * state. Hits the `orders_user_placed_idx` on `user_id`.
+   */
+  async countActiveForUser(userId: string): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(orders)
+      .where(and(eq(orders.userId, userId), not(inArray(orders.status, TERMINAL_ORDER_STATUSES))));
+    return row?.count ?? 0;
   }
 
   /**

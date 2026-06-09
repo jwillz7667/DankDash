@@ -323,6 +323,37 @@ final class RootFeatureTests: XCTestCase {
     let wasCleared = await cleared.value
     XCTAssertTrue(wasCleared, "Account-tab sign-out must clear tokens just like the explicit CTA.")
   }
+
+  func test_browseDelegateAccountDeletionCompleted_clearsKeychain_resetsToAuth() async {
+    let cleared = ClearedRecorder()
+    let store = TestStore(initialState: RootFeature.State(
+      screen: .signedIn,
+      signedInUser: LoginFeatureTests.sampleUser,
+      browse: BrowseFeature.State(selectedTab: .account)
+    )) {
+      RootFeature()
+    } withDependencies: {
+      $0.tokenStore = TokenStore(
+        loadAccess: { nil },
+        loadRefresh: { nil },
+        persist: { _ in },
+        clear: { await cleared.markCleared() }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.browse(.delegate(.accountDeletionCompleted)))
+    await store.finish()
+
+    XCTAssertEqual(store.state.screen, .auth)
+    XCTAssertNil(store.state.signedInUser)
+    XCTAssertEqual(store.state.authScreen, .login)
+    let wasCleared = await cleared.value
+    XCTAssertTrue(
+      wasCleared,
+      "Account deletion must clear tokens and reset to auth — the session is dead."
+    )
+  }
 }
 
 private actor ClearedRecorder {

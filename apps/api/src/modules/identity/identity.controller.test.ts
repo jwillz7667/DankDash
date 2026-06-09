@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { IdentityController } from './identity.controller.js';
 import type {
+  AccountDeletionResponse,
   DispensaryMembershipsResponse,
   KycStartResponse,
   MeResponse,
@@ -96,47 +97,76 @@ class FakeIdentityService {
   };
 }
 
+class FakeAccountDeletionService {
+  readonly calls = { deleteAccount: [] as string[] };
+  nextResponse: AccountDeletionResponse = { deletedAt: '2026-06-09T12:00:00.000+00:00' };
+
+  deleteAccount = (userId: string): Promise<AccountDeletionResponse> => {
+    this.calls.deleteAccount.push(userId);
+    return Promise.resolve(this.nextResponse);
+  };
+}
+
+function makeController(): {
+  controller: IdentityController;
+  identity: FakeIdentityService;
+  accountDeletion: FakeAccountDeletionService;
+} {
+  const identity = new FakeIdentityService();
+  const accountDeletion = new FakeAccountDeletionService();
+  const controller = new IdentityController(
+    identity as unknown as never,
+    accountDeletion as unknown as never,
+  );
+  return { controller, identity, accountDeletion };
+}
+
 describe('IdentityController', () => {
   it('getMe pulls userId from the @CurrentUser claim', async () => {
-    const svc = new FakeIdentityService();
-    const controller = new IdentityController(svc as unknown as never);
+    const { controller, identity } = makeController();
 
     const res = await controller.getMe(USER);
 
     expect(res).toEqual(ME);
-    expect(svc.calls.getMe).toEqual([USER.userId]);
+    expect(identity.calls.getMe).toEqual([USER.userId]);
   });
 
   it('updateMe forwards both the userId and the patch body', async () => {
-    const svc = new FakeIdentityService();
-    const controller = new IdentityController(svc as unknown as never);
+    const { controller, identity } = makeController();
     const patch: UpdateMeRequestDto = { firstName: 'Janet', lastName: 'Smith' };
 
     const res = await controller.updateMe(USER, patch);
 
     expect(res.firstName).toBe('Janet');
     expect(res.lastName).toBe('Smith');
-    expect(svc.calls.updateMe).toEqual([{ userId: USER.userId, patch }]);
+    expect(identity.calls.updateMe).toEqual([{ userId: USER.userId, patch }]);
   });
 
   it('startKyc returns the hosted-flow URL for the iOS Safari hand-off', async () => {
-    const svc = new FakeIdentityService();
-    const controller = new IdentityController(svc as unknown as never);
+    const { controller, identity } = makeController();
 
     const res = await controller.startKyc(USER);
 
     expect(res.inquiryUrl).toContain('withpersona.com');
-    expect(svc.calls.startKyc).toEqual([USER.userId]);
+    expect(identity.calls.startKyc).toEqual([USER.userId]);
   });
 
   it('listDispensaries forwards the authenticated userId to the service', async () => {
-    const svc = new FakeIdentityService();
-    const controller = new IdentityController(svc as unknown as never);
+    const { controller, identity } = makeController();
 
     const res = await controller.listDispensaries(USER);
 
     expect(res.memberships).toHaveLength(1);
     expect(res.memberships[0]?.displayName).toBe('North Loop');
-    expect(svc.calls.listDispensaries).toEqual([USER.userId]);
+    expect(identity.calls.listDispensaries).toEqual([USER.userId]);
+  });
+
+  it('deleteMe forwards the authenticated userId to the deletion service', async () => {
+    const { controller, accountDeletion } = makeController();
+
+    const res = await controller.deleteMe(USER);
+
+    expect(res.deletedAt).toBe('2026-06-09T12:00:00.000+00:00');
+    expect(accountDeletion.calls.deleteAccount).toEqual([USER.userId]);
   });
 });

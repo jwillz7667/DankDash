@@ -49,6 +49,19 @@ interface UserAddressRow extends Omit<UserAddress, 'location'> {
   readonly location: string;
 }
 
+/**
+ * Non-verifiable sentinel written over `password_hash` during account
+ * deletion. It is intentionally NOT a valid argon2id PHC string, so any
+ * accidental `verify()` against it fails closed. `deleted_at` already blocks
+ * login in `auth.service` (the deleted-user check runs before the password
+ * verify), so this is pure defense-in-depth: a future DB leak cannot expose
+ * the original credential hash for offline cracking.
+ */
+const ANONYMIZED_PASSWORD_HASH = 'account-deleted:no-login';
+
+/** RFC 6761 reserved, guaranteed-non-routable domain for tombstoned emails. */
+const ANONYMIZED_EMAIL_DOMAIN = 'deleted.invalid';
+
 const ADDRESS_LOCATION_SQL = sql<string>`ST_AsGeoJSON(${userAddresses.location})`;
 
 function inflateAddress(row: UserAddressRow): UserAddress {
@@ -114,6 +127,46 @@ export class UsersRepository extends BaseRepository {
       .update(users)
       .set({ deletedAt: now, updatedAt: now })
       .where(and(eq(users.id, id), isNull(users.deletedAt)));
+  }
+
+  /**
+   * Irreversible account deletion at the identity root: scrubs the
+   * directly-identifying and Restricted-PII columns and stamps `deleted_at`
+   * in one atomic UPDATE. Returns the (now anonymized) row, or `null` when no
+   * live row matched — the `deleted_at IS NULL` guard makes a second
+   * concurrent delete a no-op instead of re-scrubbing.
+   *
+   * Scrubbed columns and rationale:
+   *   - email      → unique, non-routable tombstone token. The column is
+   *                  NOT NULL UNIQUE so it cannot be nulled; tokenizing also
+   *                  frees the user's real address for a future re-signup.
+   *   - phone, firstName, lastName → null (directly identifying).
+   *   - dateOfBirth, mfaSecretEnc  → null (Restricted PII — spec §8.1).
+   *   - mfaEnabled → false (the secret is gone; keep the flag consistent).
+   *   - passwordHash → non-verifiable sentinel (see ANONYMIZED_PASSWORD_HASH).
+   *
+   * Compliance-retained rows (orders, age_verifications, id documents,
+   * payment_transactions) are deliberately untouched — they carry their own
+   * statutory retention and now reference an anonymized shell.
+   */
+  async anonymizeAndSoftDelete(id: string, now: Date = new Date()): Promise<User | null> {
+    const [row] = await this.db
+      .update(users)
+      .set({
+        email: `deleted+${id}@${ANONYMIZED_EMAIL_DOMAIN}`,
+        phone: null,
+        firstName: null,
+        lastName: null,
+        dateOfBirth: null,
+        mfaEnabled: false,
+        mfaSecretEnc: null,
+        passwordHash: ANONYMIZED_PASSWORD_HASH,
+        deletedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(users.id, id), isNull(users.deletedAt)))
+      .returning();
+    return row ?? null;
   }
 }
 
@@ -227,6 +280,21 @@ export class UserAddressesRepository extends BaseRepository {
       .update(userAddresses)
       .set({ deletedAt: now, updatedAt: now, isDefault: false })
       .where(and(eq(userAddresses.id, id), isNull(userAddresses.deletedAt)));
+  }
+
+  /**
+   * Soft-deletes every live address a user owns in one statement — the
+   * address arm of account deletion. Clears `is_default` in the same write so
+   * the one-default partial unique index never trips. Returns the number of
+   * rows tombstoned. The rows are retained (FK from `orders` is ON DELETE
+   * RESTRICT) so historical deliveries keep a valid reference.
+   */
+  async softDeleteAllForUser(userId: string, now: Date = new Date()): Promise<number> {
+    const result = await this.db
+      .update(userAddresses)
+      .set({ deletedAt: now, updatedAt: now, isDefault: false })
+      .where(and(eq(userAddresses.userId, userId), isNull(userAddresses.deletedAt)));
+    return result.count;
   }
 }
 

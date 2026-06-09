@@ -20,6 +20,15 @@ public struct AccountFeature: Sendable {
     public var addresses: AddressesFeature.State?
     public var paymentMethods: PaymentMethodsFeature.State?
     public var notifications: NotificationPreferencesFeature.State?
+    /// Drives the destructive "Delete account?" confirmation alert.
+    public var isConfirmingAccountDeletion: Bool
+    /// True while the `DELETE /v1/me` request is in flight; disables the
+    /// row + sign-out so the user can't double-submit or race a sign-out
+    /// against the deletion.
+    public var isDeletingAccount: Bool
+    /// User-facing copy for a failed deletion (e.g. the 409 "active order"
+    /// case); cleared when a fresh attempt starts.
+    public var deleteAccountError: String?
 
     public init(
       user: UserSummaryDTO? = nil,
@@ -27,7 +36,10 @@ public struct AccountFeature: Sendable {
       profileEdit: ProfileEditFeature.State? = nil,
       addresses: AddressesFeature.State? = nil,
       paymentMethods: PaymentMethodsFeature.State? = nil,
-      notifications: NotificationPreferencesFeature.State? = nil
+      notifications: NotificationPreferencesFeature.State? = nil,
+      isConfirmingAccountDeletion: Bool = false,
+      isDeletingAccount: Bool = false,
+      deleteAccountError: String? = nil
     ) {
       self.user = user
       self.isLoadingProfile = isLoadingProfile
@@ -35,6 +47,9 @@ public struct AccountFeature: Sendable {
       self.addresses = addresses
       self.paymentMethods = paymentMethods
       self.notifications = notifications
+      self.isConfirmingAccountDeletion = isConfirmingAccountDeletion
+      self.isDeletingAccount = isDeletingAccount
+      self.deleteAccountError = deleteAccountError
     }
   }
 
@@ -51,6 +66,10 @@ public struct AccountFeature: Sendable {
     case notificationsDismissed
     case orderHistoryTapped
     case signOutTapped
+    case deleteAccountTapped
+    case deleteAccountCanceled
+    case deleteAccountConfirmed
+    case accountDeletionFailed(APIErrorBox)
     case profileEdit(ProfileEditFeature.Action)
     case addresses(AddressesFeature.Action)
     case paymentMethods(PaymentMethodsFeature.Action)
@@ -61,6 +80,10 @@ public struct AccountFeature: Sendable {
     public enum Delegate: Equatable, Sendable {
       case signOutRequested
       case showOrders
+      /// The server confirmed the account is deleted. The root tears down
+      /// the session (clear tokens, reset to the signed-out screen) exactly
+      /// as it does for sign-out — there is nothing left to stay signed into.
+      case accountDeletionCompleted
     }
   }
 
@@ -138,7 +161,45 @@ public struct AccountFeature: Sendable {
         return .send(.delegate(.showOrders))
 
       case .signOutTapped:
+        // A deletion in flight owns the teardown path; don't let a stray
+        // sign-out tap race it.
+        guard !state.isDeletingAccount else { return .none }
         return .send(.delegate(.signOutRequested))
+
+      case .deleteAccountTapped:
+        guard !state.isDeletingAccount else { return .none }
+        state.deleteAccountError = nil
+        state.isConfirmingAccountDeletion = true
+        return .none
+
+      case .deleteAccountCanceled:
+        state.isConfirmingAccountDeletion = false
+        return .none
+
+      case .deleteAccountConfirmed:
+        guard !state.isDeletingAccount else { return .none }
+        state.isConfirmingAccountDeletion = false
+        state.isDeletingAccount = true
+        state.deleteAccountError = nil
+        return .run { [meAPIClient] send in
+          do {
+            try await meAPIClient.deleteAccount()
+            // On success the account no longer exists; hand off to the root
+            // for token clear + screen reset. We deliberately do not flip
+            // `isDeletingAccount` back — the whole browse subtree is about
+            // to be discarded by `resetToSignedOut`.
+            await send(.delegate(.accountDeletionCompleted))
+          } catch {
+            await send(.accountDeletionFailed(APIErrorBox(error)))
+          }
+        }
+
+      case .accountDeletionFailed(let error):
+        state.isDeletingAccount = false
+        state.deleteAccountError = error.userFacingMessage(
+          default: "We couldn't delete your account. Please try again."
+        )
+        return .none
 
       case .profileEdit(.delegate(.saved(let user))):
         state.user = user

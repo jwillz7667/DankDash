@@ -137,6 +137,21 @@ export class PaymentMethodsRepository extends BaseRepository {
       .set({ deletedAt: now, updatedAt: now, isDefault: false })
       .where(and(eq(paymentMethods.id, id), isNull(paymentMethods.deletedAt)));
   }
+
+  /**
+   * Soft-deletes every live payment method a user owns in one statement — the
+   * payments arm of account deletion. Clears `is_default` in the same write so
+   * the one-default partial unique index never trips. Returns the number of
+   * rows tombstoned. Rows are retained (FK from `payment_transactions` is
+   * ON DELETE RESTRICT) so settled charges keep a valid reference.
+   */
+  async softDeleteAllForUser(userId: string, now: Date = new Date()): Promise<number> {
+    const result = await this.db
+      .update(paymentMethods)
+      .set({ deletedAt: now, updatedAt: now, isDefault: false })
+      .where(and(eq(paymentMethods.userId, userId), isNull(paymentMethods.deletedAt)));
+    return result.count;
+  }
 }
 
 export class PaymentTransactionsRepository extends BaseRepository {
