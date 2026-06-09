@@ -63,6 +63,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertEqual(store.state.route, initialRoute)
     XCTAssertEqual(store.state.phase, .enRouteToPickup)
     XCTAssertEqual(store.state.directions, directions)
+    XCTAssertEqual(store.state.deliveryLegDirections, directions)
     XCTAssertEqual(store.state.currentStep, directions.steps.first)
     XCTAssertEqual(store.state.driverLocation, Self.driverStart)
     XCTAssertFalse(store.state.isLoadingRoute)
@@ -72,11 +73,18 @@ final class ActiveRouteFeatureTests: XCTestCase {
     let fetchedIds = await getOrderCalls.value
     XCTAssertEqual(fetchedIds, [orderId])
 
+    // Two legs computed while heading to pickup: the active driver →
+    // dispensary leg AND the onward dispensary → drop-off preview leg.
     let calculated = await calculateCalls.value
-    XCTAssertEqual(calculated.count, 1)
-    XCTAssertEqual(calculated.first?.from, Self.driverStart)
-    XCTAssertEqual(calculated.first?.to, Self.dispensaryLocation)
-    XCTAssertEqual(calculated.first?.transport, .automobile)
+    XCTAssertEqual(calculated.count, 2)
+    XCTAssertTrue(
+      calculated.contains(CalculateCall(from: Self.driverStart, to: Self.dispensaryLocation, transport: .automobile)),
+      "expected the driver → dispensary active leg"
+    )
+    XCTAssertTrue(
+      calculated.contains(CalculateCall(from: Self.dispensaryLocation, to: Self.dropoffLocation, transport: .automobile)),
+      "expected the dispensary → drop-off preview leg"
+    )
   }
 
   func test_onAppear_routeFetchFailsWithTransportError_surfacesBanner() async {
@@ -248,9 +256,19 @@ final class ActiveRouteFeatureTests: XCTestCase {
     await store.finish()
 
     XCTAssertEqual(store.state.directions, directions)
+    XCTAssertEqual(store.state.deliveryLegDirections, directions)
+    // Both the active driver → dispensary leg and the dispensary → drop-off
+    // preview leg are computed once the route + a fix are both present.
     let calculated = await calculateCalls.value
-    XCTAssertEqual(calculated.count, 1)
-    XCTAssertEqual(calculated.first?.from, Self.driverStart)
+    XCTAssertEqual(calculated.count, 2)
+    XCTAssertTrue(
+      calculated.contains(CalculateCall(from: Self.driverStart, to: Self.dispensaryLocation, transport: .automobile)),
+      "expected the driver → dispensary active leg"
+    )
+    XCTAssertTrue(
+      calculated.contains(CalculateCall(from: Self.dispensaryLocation, to: Self.dropoffLocation, transport: .automobile)),
+      "expected the dispensary → drop-off preview leg"
+    )
   }
 
   /// Every GPS fix is fanned to the customer's live map via the `/driver`
@@ -590,6 +608,53 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertEqual(calculated.first?.to, Self.dropoffLocation)
   }
 
+  /// A server jump onto the dropoff leg also clears the store → home
+  /// preview, even with no fix to recalc against (the active leg now
+  /// covers the drop).
+  func test_serverStatusObserved_jumpToDropoff_clearsDeliveryLegPreview() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+        deliveryLegDirections: Self.fixedDirections(),
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    XCTAssertNotNil(store.state.deliveryLegDirections)
+
+    await store.send(.serverStatusObserved(.enRouteDropoff))
+    await store.finish()
+
+    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
+    XCTAssertNil(store.state.deliveryLegDirections)
+  }
+
+  /// A best-effort preview-leg failure (e.g. directions unavailable mid-
+  /// pickup) is swallowed — the map drops the onward line, no banner.
+  func test_deliveryLegCalculated_failure_isSilentNoOp() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(orderId: orderId, isLoadingRoute: false)
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.deliveryLegCalculated(.failure(RouteErrorBox(DirectionsClientError.mapKitUnavailable))))
+
+    XCTAssertNil(store.state.deliveryLegDirections)
+    XCTAssertNil(store.state.errorBanner)
+  }
+
   // MARK: - Depart
 
   /// Start Trip at `picked_up` → POST `depart` → `en_route_dropoff`, and
@@ -715,6 +780,46 @@ final class ActiveRouteFeatureTests: XCTestCase {
     }
 
     await store.send(.departTapped)
+  }
+
+  /// Once the driver departs, the drop becomes the active leg — the
+  /// pre-computed store → home preview is redundant and must be cleared.
+  func test_departTapped_clearsDeliveryLegPreview() async {
+    let orderId = Self.orderId
+    let pickedUpRoute = Self.activeRoute(status: .pickedUp, hasPickupEvent: true)
+    let departedRoute = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let preview = Self.fixedDirections()
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: pickedUpRoute,
+        deliveryLegDirections: preview,
+        driverLocation: Self.dispensaryLocation,
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(depart: { _, _ in departedRoute })
+      $0.directionsClient = DirectionsClient(
+        calculateRoute: { _, _, _ in Self.fixedDirections() },
+        liveSteps: { _, _ in AsyncStream { $0.finish() } }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    XCTAssertNotNil(store.state.deliveryLegDirections)
+
+    await store.send(.departTapped)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertEqual(store.state.phase, .enRouteToDropoff)
+    XCTAssertNil(store.state.deliveryLegDirections, "the onward preview is redundant once on the drop leg")
   }
 
   // MARK: - Arrived
@@ -1065,6 +1170,142 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertFalse(state.canMarkArrived)
   }
 
+  // MARK: - Map destinations
+
+  func test_mapDestinations_pickupJourney_isStoreThenHome() {
+    for phase in [ActiveRouteFeature.LocalPhase.enRouteToPickup, .awaitingHandoff, .readyToDepart] {
+      let state = ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: phase
+      )
+      XCTAssertEqual(
+        state.mapDestinations,
+        [
+          MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis"),
+          MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St"),
+        ],
+        "phase \(phase) should hand off store → home"
+      )
+    }
+  }
+
+  func test_mapDestinations_dropoffLeg_isHomeOnly() {
+    let state = ActiveRouteFeature.State(
+      orderId: Self.orderId,
+      route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
+      phase: .enRouteToDropoff
+    )
+    XCTAssertEqual(
+      state.mapDestinations,
+      [MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St")]
+    )
+  }
+
+  func test_mapDestinations_atScanGateOrCompleted_isNil() {
+    for phase in [ActiveRouteFeature.LocalPhase.awaitingIdScan, .completed] {
+      let state = ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: phase
+      )
+      XCTAssertNil(state.mapDestinations, "phase \(phase) has no navigation hand-off")
+    }
+  }
+
+  func test_mapDestinations_noRoute_isNil() {
+    let state = ActiveRouteFeature.State(orderId: Self.orderId, phase: .enRouteToPickup)
+    XCTAssertNil(state.mapDestinations)
+  }
+
+  // MARK: - Open in Maps
+
+  func test_openInMapsTapped_pickupJourney_handsOffStoreThenHome() async {
+    let orderId = Self.orderId
+    let opened = LockIsolated<[[MapDestination]]>([])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(),
+        phase: .enRouteToPickup,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.mapClient = MapClient(
+        boundingRegion: { _ in nil },
+        openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.openInMapsTapped)
+    await store.finish()
+
+    XCTAssertEqual(
+      opened.value,
+      [[
+        MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis"),
+        MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St"),
+      ]]
+    )
+  }
+
+  func test_openInMapsTapped_dropoffLeg_handsOffHomeOnly() async {
+    let orderId = Self.orderId
+    let opened = LockIsolated<[[MapDestination]]>([])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
+        phase: .enRouteToDropoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.mapClient = MapClient(
+        boundingRegion: { _ in nil },
+        openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.openInMapsTapped)
+    await store.finish()
+
+    XCTAssertEqual(
+      opened.value,
+      [[MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St")]]
+    )
+  }
+
+  func test_openInMapsTapped_noRoute_isNoOp() async {
+    let orderId = Self.orderId
+    let opened = LockIsolated<[[MapDestination]]>([])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(orderId: orderId, isLoadingRoute: false)
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.mapClient = MapClient(
+        boundingRegion: { _ in nil },
+        openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
+      )
+    }
+
+    await store.send(.openInMapsTapped)
+
+    XCTAssertTrue(opened.value.isEmpty, "no route → nothing to hand off")
+  }
+
   // MARK: - Step heuristic
 
   func test_nextStepIndex_advancesWhenCloserToNextStart() {
@@ -1298,6 +1539,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
     values.driverRealtimeClient = .unimplemented
     values.directionsClient = .unimplemented
     values.backgroundLocationClient = .unimplemented
+    values.mapClient = .unimplemented
     values.continuousClock = TestClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
   }
