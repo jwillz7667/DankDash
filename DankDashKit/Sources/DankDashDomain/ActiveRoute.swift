@@ -70,7 +70,8 @@ public struct ActiveRoute: Sendable, Equatable, Identifiable {
          .accepted,
          .prepping,
          .readyForPickup,
-         .awaitingDriver:
+         .awaitingDriver,
+         .dispatchFailed:
       return nil
     }
   }

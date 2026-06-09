@@ -2,12 +2,12 @@ import SwiftUI
 import DankDashDomain
 
 /// Pill-shaped status indicator for the Orders list + tracking surfaces.
-/// Maps each of the 19 `OrderStatus` cases to a single human-facing
+/// Maps each of the 20 `OrderStatus` cases to a single human-facing
 /// label + a tone bucket (in-progress, success, warning, danger).
 ///
-/// Terminal failure states (`rejected`, `canceled`, `idScanFailed`,
-/// `returnedToStore`, `disputed`, `paymentFailed`) all read as
-/// "danger" — the user-facing copy is intentionally specific
+/// Terminal failure states (`rejected`, `dispatchFailed`, `canceled`,
+/// `idScanFailed`, `returnedToStore`, `disputed`, `paymentFailed`) all
+/// read as "danger" — the user-facing copy is intentionally specific
 /// ("Canceled" vs "Returned to store") so support diagnostics tell the
 /// real story, but the tone is uniform.
 public struct OrderStatusPill: View {
@@ -57,6 +57,7 @@ public struct OrderStatusPill: View {
     case .prepping: "Preparing"
     case .readyForPickup: "Ready for pickup"
     case .awaitingDriver: "Waiting for driver"
+    case .dispatchFailed: "No driver available"
     case .driverAssigned: "Driver assigned"
     case .enRoutePickup: "Driver heading to store"
     case .pickedUp: "Picked up"
@@ -86,8 +87,8 @@ public struct OrderStatusPill: View {
       return .progress
     case .idScanPassed, .delivered:
       return .success
-    case .paymentFailed, .rejected, .idScanFailed, .returnedToStore,
-         .canceled, .disputed:
+    case .paymentFailed, .rejected, .dispatchFailed, .idScanFailed,
+         .returnedToStore, .canceled, .disputed:
       return .danger
     }
   }

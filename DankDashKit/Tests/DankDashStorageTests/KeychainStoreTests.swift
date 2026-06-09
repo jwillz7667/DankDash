@@ -122,4 +122,42 @@ final class KeychainStoreTests: XCTestCase {
       XCTAssertFalse(store.contains(account: "access_token"))
     }
   }
+
+  func test_biometricWithDeviceFallback_persistsWhenBiometryUnavailable() throws {
+    // Regression for "logged out after closing the app": under plain
+    // `.biometric` the refresh-token write throws on a host without a
+    // passcode / enrolled biometry (CI Simulators, passcode-less devices),
+    // the value is never stored, and `contains(...)` — what `hasSession()`
+    // reads — comes back false on the next launch. The fallback variant must
+    // leave the item present so the session survives.
+    let attempt: Bool? = try skipIfKeychainUnavailable {
+      try store.setString(
+        "refresh.token.value",
+        forAccount: "refresh_token",
+        protection: .biometricWithDeviceFallback
+      )
+      return store.contains(account: "refresh_token")
+    }
+    if let present = attempt {
+      XCTAssertTrue(present, "fallback must leave the item present for hasSession()")
+    }
+  }
+
+  func test_biometricWithDeviceFallback_roundTripsValue() throws {
+    // On a no-passcode host the fallback stores device-only, so reading the
+    // bytes back doesn't trigger a biometric prompt. (Where the hardware can
+    // honor biometry the value is biometric-protected and this decrypt path
+    // is exercised on-device, not in CI.)
+    let attempt = try skipIfKeychainUnavailable {
+      try store.setString(
+        "refresh.token.value",
+        forAccount: "refresh_token",
+        protection: .biometricWithDeviceFallback
+      )
+      return try store.string(forAccount: "refresh_token")
+    }
+    if let value = attempt {
+      XCTAssertEqual(value, "refresh.token.value")
+    }
+  }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 import DankDashDomain
 
 /// Vertical milestone stepper for the order-tracking screen. Collapses
-/// the 19-state `OrderStatus` enum to five user-facing stages plus a
+/// the 20-state `OrderStatus` enum to five user-facing stages plus a
 /// failure branch, so the UI doesn't whip from "ID check" to "ID
 /// verified" mid-screen — those are both `arriving` to the user.
 ///
@@ -16,10 +16,10 @@ import DankDashDomain
 /// - `arrivedAtDropoff` / `idScanPending` / `idScanPassed` → **Arriving**
 /// - `delivered` → **Delivered**
 ///
-/// Terminal failures (`rejected`, `idScanFailed`, `canceled`,
-/// `returnedToStore`, `disputed`) collapse to a single failure card
-/// rendered in place of the timeline. `paymentFailed` is its own
-/// dedicated copy because the recovery action differs (re-issue
+/// Terminal failures (`rejected`, `dispatchFailed`, `idScanFailed`,
+/// `canceled`, `returnedToStore`, `disputed`) collapse to a single
+/// failure card rendered in place of the timeline. `paymentFailed` is
+/// its own dedicated copy because the recovery action differs (re-issue
 /// handoff, not contact support).
 public struct OrderStatusTimeline: View {
   public enum Milestone: Int, CaseIterable, Sendable {
@@ -81,6 +81,8 @@ public struct OrderStatusTimeline: View {
         return "The driver couldn't complete delivery and returned the order."
       case .other(.disputed):
         return "This order is under review."
+      case .other(.dispatchFailed):
+        return "We couldn't find a driver for this order. Any charge will be reversed."
       case .other:
         return "Contact support for help with this order."
       }
@@ -111,7 +113,7 @@ public struct OrderStatusTimeline: View {
   private var failureKind: FailureKind? {
     switch status {
     case .paymentFailed: return .paymentFailed
-    case .rejected, .canceled, .idScanFailed, .returnedToStore, .disputed:
+    case .rejected, .dispatchFailed, .canceled, .idScanFailed, .returnedToStore, .disputed:
       return .other(status)
     default:
       return nil
@@ -130,7 +132,7 @@ public struct OrderStatusTimeline: View {
     case .enRoutePickup, .pickedUp, .enRouteDropoff: return .onTheWay
     case .arrivedAtDropoff, .idScanPending, .idScanPassed: return .arriving
     case .delivered: return .delivered
-    case .paymentFailed, .rejected, .canceled,
+    case .paymentFailed, .rejected, .dispatchFailed, .canceled,
          .idScanFailed, .returnedToStore, .disputed:
       return .placed
     }

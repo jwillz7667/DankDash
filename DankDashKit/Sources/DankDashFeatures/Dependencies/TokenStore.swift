@@ -1,7 +1,13 @@
 import Foundation
+import os
 import ComposableArchitecture
 import DankDashNetwork
 import DankDashStorage
+
+/// Subsystem-scoped logger for the token store. Only ever logs error
+/// *types* (a `KeychainError`/`BiometricAccessControlError`) — never the
+/// token bytes — so it carries no Restricted data.
+private let tokenStoreLog = Logger(subsystem: "com.dankdash", category: "TokenStore")
 
 /// `@DependencyClient`-style wrapper around the Keychain so reducers
 /// don't import Security directly and tests can stub the surface.
@@ -45,23 +51,33 @@ public struct TokenStore: Sendable {
 
 public extension TokenStore {
   /// Production binding backed by KeychainStore. Access token uses
-  /// afterFirstUnlock; refresh token uses biometric protection per
-  /// spec §5.1.
+  /// afterFirstUnlock; refresh token uses biometric protection per spec
+  /// §5.1, falling back to device-only where the hardware can't honor
+  /// biometry (`.biometricWithDeviceFallback`) so the session always
+  /// survives a relaunch instead of silently evaporating.
   static func live(keychain: KeychainStore) -> TokenStore {
     TokenStore(
       loadAccess: { try? keychain.optionalString(forAccount: AccountKey.access) },
       loadRefresh: { try? keychain.optionalString(forAccount: AccountKey.refresh) },
       persist: { tokens in
-        try? keychain.setString(
-          tokens.accessToken,
-          forAccount: AccountKey.access,
-          protection: .afterFirstUnlock
-        )
-        try? keychain.setString(
-          tokens.refreshToken,
-          forAccount: AccountKey.refresh,
-          protection: .biometric
-        )
+        do {
+          try keychain.setString(
+            tokens.accessToken,
+            forAccount: AccountKey.access,
+            protection: .afterFirstUnlock
+          )
+        } catch {
+          tokenStoreLog.error("Failed to persist access token: \(String(describing: error), privacy: .public)")
+        }
+        do {
+          try keychain.setString(
+            tokens.refreshToken,
+            forAccount: AccountKey.refresh,
+            protection: .biometricWithDeviceFallback
+          )
+        } catch {
+          tokenStoreLog.error("Failed to persist refresh token: \(String(describing: error), privacy: .public)")
+        }
       },
       clear: {
         try? keychain.remove(account: AccountKey.access)

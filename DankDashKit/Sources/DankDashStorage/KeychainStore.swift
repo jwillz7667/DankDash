@@ -23,6 +23,22 @@ public enum KeychainError: Error, Equatable, Sendable {
 public enum KeychainProtection: Sendable {
   case afterFirstUnlock
   case biometric
+  /// Biometric protection where the hardware can honor it, transparently
+  /// downgrading to device-only `afterFirstUnlock` where it cannot.
+  ///
+  /// The accessibility class `biometric` rides on
+  /// (`kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`) makes `SecItemAdd`
+  /// *fail* on a device with no passcode set — and on Simulators without an
+  /// enrolled biometry + passcode. Persisting the refresh token under plain
+  /// `.biometric` therefore threw, the call sites swallowed it with `try?`,
+  /// the token was never stored, `hasSession()` read false on the next cold
+  /// start, and the user was silently logged out (then re-shown the age
+  /// gate, which only signed-out users see). This variant keeps the strict
+  /// biometric guarantee wherever the device supports it and falls back to
+  /// device-only protection otherwise, so a session always survives a
+  /// relaunch. The fallback is strictly weaker than biometric but is applied
+  /// only when the hardware can't satisfy the biometric constraint at all.
+  case biometricWithDeviceFallback
 }
 
 /// Thin wrapper around the Security framework's `SecItem*` family.
@@ -42,18 +58,31 @@ public struct KeychainStore: Sendable {
     forAccount account: String,
     protection: KeychainProtection = .afterFirstUnlock
   ) throws {
-    var query: [String: Any] = [
+    let identity: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
-    SecItemDelete(query as CFDictionary)
+    SecItemDelete(identity as CFDictionary)
 
-    query[kSecValueData as String] = data
-    try applyAccessControl(protection: protection, to: &query)
-
-    let status = SecItemAdd(query as CFDictionary, nil)
-    guard status == errSecSuccess else { throw KeychainError.unhandled(status) }
+    switch protection {
+    case .afterFirstUnlock:
+      try add(data, identity: identity, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+    case .biometric:
+      try addBiometric(data, identity: identity)
+    case .biometricWithDeviceFallback:
+      do {
+        try addBiometric(data, identity: identity)
+      } catch {
+        // Biometric protection is unavailable on this device (no passcode /
+        // no enrolled biometry — e.g. a CI Simulator), so the add above
+        // threw. Recover by storing the item device-only so the session
+        // still persists across launches. Not a silent swallow: the
+        // fallback write *is* the handling, and if it also fails its error
+        // propagates to the caller. See `KeychainProtection` for why.
+        try add(data, identity: identity, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+      }
+    }
   }
 
   /// UTF-8 string convenience that round-trips through `set(_:forAccount:protection:)`.
@@ -151,16 +180,28 @@ public struct KeychainStore: Sendable {
     }
   }
 
-  private func applyAccessControl(
-    protection: KeychainProtection,
-    to query: inout [String: Any]
+  /// Adds an item guarded by a plain accessibility class (no access
+  /// control). The slot is assumed already cleared by `set`.
+  private func add(
+    _ data: Data,
+    identity: [String: Any],
+    accessible: CFString
   ) throws {
-    switch protection {
-    case .afterFirstUnlock:
-      query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-    case .biometric:
-      let accessControl = try BiometricAccessControl.makeAccessControl()
-      query[kSecAttrAccessControl as String] = accessControl
-    }
+    var query = identity
+    query[kSecValueData as String] = data
+    query[kSecAttrAccessible as String] = accessible
+    let status = SecItemAdd(query as CFDictionary, nil)
+    guard status == errSecSuccess else { throw KeychainError.unhandled(status) }
+  }
+
+  /// Adds an item guarded by a biometric `SecAccessControl`. Throws if the
+  /// device can't build/satisfy the control (no passcode / no enrolled
+  /// biometry) — callers that need resilience use `.biometricWithDeviceFallback`.
+  private func addBiometric(_ data: Data, identity: [String: Any]) throws {
+    var query = identity
+    query[kSecValueData as String] = data
+    query[kSecAttrAccessControl as String] = try BiometricAccessControl.makeAccessControl()
+    let status = SecItemAdd(query as CFDictionary, nil)
+    guard status == errSecSuccess else { throw KeychainError.unhandled(status) }
   }
 }

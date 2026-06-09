@@ -1,6 +1,6 @@
 import Foundation
 
-/// The 19-state order lifecycle. Mirrors the `order_status` enum in
+/// The 20-state order lifecycle. Mirrors the `order_status` enum in
 /// `packages/db/src/schema/enums.ts` — adding a state requires a
 /// coordinated server + iOS release. Server is authoritative on every
 /// transition; iOS only receives them via order detail re-fetches or
@@ -16,8 +16,12 @@ import Foundation
 /// - **Pickup-only leaf**: `readyForPickup` (not used in delivery-only
 ///   consumer scope; present for enum completeness so the API does not
 ///   need a separate type for pickup-capable surfaces).
-/// - **Terminal failures** (6 states): `paymentFailed`, `rejected`,
-///   `canceled`, `idScanFailed`, `returnedToStore`, `disputed`.
+/// - **Terminal failures** (7 states): `paymentFailed`, `rejected`,
+///   `dispatchFailed`, `canceled`, `idScanFailed`, `returnedToStore`,
+///   `disputed`. `dispatchFailed` is reached from `awaitingDriver` when
+///   no driver can be assigned within the dispatch budget — it is a
+///   terminal state the order cannot leave (mirrors the XState machine's
+///   `dispatch_failed` final state).
 public enum OrderStatus: String, Hashable, Sendable, CaseIterable, Codable {
   case placed
   case paymentFailed = "payment_failed"
@@ -26,6 +30,7 @@ public enum OrderStatus: String, Hashable, Sendable, CaseIterable, Codable {
   case prepping
   case readyForPickup = "ready_for_pickup"
   case awaitingDriver = "awaiting_driver"
+  case dispatchFailed = "dispatch_failed"
   case driverAssigned = "driver_assigned"
   case enRoutePickup = "en_route_pickup"
   case pickedUp = "picked_up"
@@ -68,19 +73,21 @@ public enum OrderStatus: String, Hashable, Sendable, CaseIterable, Codable {
     case .idScanFailed: return 103
     case .returnedToStore: return 104
     case .disputed: return 105
+    case .dispatchFailed: return 106
     }
   }
 
   /// True for states the order cannot transition out of. `delivered`
   /// is the only successful terminal; the rest are failure terminals
-  /// — `paymentFailed`, `rejected`, `canceled`, `idScanFailed`,
-  /// `returnedToStore`, `disputed`. Tracking-screen polling stops
-  /// once `isTerminal` is true.
+  /// — `paymentFailed`, `rejected`, `dispatchFailed`, `canceled`,
+  /// `idScanFailed`, `returnedToStore`, `disputed`. Tracking-screen
+  /// polling stops once `isTerminal` is true.
   public var isTerminal: Bool {
     switch self {
     case .delivered,
          .paymentFailed,
          .rejected,
+         .dispatchFailed,
          .canceled,
          .idScanFailed,
          .returnedToStore,
@@ -115,6 +122,7 @@ public enum OrderStatus: String, Hashable, Sendable, CaseIterable, Codable {
     case .prepping: return "Preparing"
     case .readyForPickup: return "Ready for pickup"
     case .awaitingDriver: return "Awaiting driver"
+    case .dispatchFailed: return "No driver available"
     case .driverAssigned: return "Driver assigned"
     case .enRoutePickup: return "Driver heading to store"
     case .pickedUp: return "Picked up"

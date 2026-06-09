@@ -1,4 +1,5 @@
 import Foundation
+import os
 import ComposableArchitecture
 import DankDashNetwork
 import DankDashStorage
@@ -165,8 +166,13 @@ struct AppEnvironment {
 /// is the same one the APIClient injects on the next authenticated call.
 /// Refresh-token reads incur a biometric challenge per spec §5.1 — that
 /// only happens on the 401-refresh-retry path, never on the happy path.
+/// The refresh token is written with `.biometricWithDeviceFallback`, the
+/// same mode `TokenStore.live` uses, so a passcode-less device still keeps
+/// the user signed in across launches instead of dropping the session.
 private actor LiveAuthInterceptor: AuthInterceptor {
   private let keychain: KeychainStore
+  /// Logs only error *types* on persist failure — never token bytes.
+  private let log = Logger(subsystem: "Res.DankDash", category: "AuthInterceptor")
 
   init(keychain: KeychainStore) {
     self.keychain = keychain
@@ -184,16 +190,24 @@ private actor LiveAuthInterceptor: AuthInterceptor {
   }
 
   func persist(tokens: TokenPairDTO) async {
-    try? keychain.setString(
-      tokens.accessToken,
-      forAccount: TokenStore.AccountKey.access,
-      protection: .afterFirstUnlock
-    )
-    try? keychain.setString(
-      tokens.refreshToken,
-      forAccount: TokenStore.AccountKey.refresh,
-      protection: .biometric
-    )
+    do {
+      try keychain.setString(
+        tokens.accessToken,
+        forAccount: TokenStore.AccountKey.access,
+        protection: .afterFirstUnlock
+      )
+    } catch {
+      log.error("Failed to persist access token: \(String(describing: error), privacy: .public)")
+    }
+    do {
+      try keychain.setString(
+        tokens.refreshToken,
+        forAccount: TokenStore.AccountKey.refresh,
+        protection: .biometricWithDeviceFallback
+      )
+    } catch {
+      log.error("Failed to persist refresh token: \(String(describing: error), privacy: .public)")
+    }
   }
 
   func clearTokens() async {
