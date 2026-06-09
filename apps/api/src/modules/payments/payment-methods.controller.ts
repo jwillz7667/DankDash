@@ -32,6 +32,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -39,9 +40,13 @@ import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
-import { LinkAeropayRequestDto } from './dto/index.js';
+import { LinkAeropayRequestDto, SetDefaultPaymentMethodRequestDto } from './dto/index.js';
 import { PaymentMethodsService } from './payment-methods.service.js';
-import type { LinkAeropayResponse, ListPaymentMethodsResponse } from './dto/index.js';
+import type {
+  LinkAeropayResponse,
+  ListPaymentMethodsResponse,
+  PaymentMethodEnvelopeResponse,
+} from './dto/index.js';
 import type { AuthenticatedUser } from '../auth/guards/auth-types.js';
 
 @Controller('payment-methods')
@@ -64,6 +69,19 @@ export class PaymentMethodsController {
     @Body() body: LinkAeropayRequestDto,
   ): Promise<LinkAeropayResponse> {
     return this.service.linkAeropay(user.userId, body.returnUrl);
+  }
+
+  @Patch(':id')
+  @RateLimit({ name: 'payment-methods-set-default', tracker: 'user', limit: 30, windowMs: 60_000 })
+  setDefault(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    // Body is validated for shape (`isDefault: true`) by the Zod DTO; the only
+    // mutation this route exposes is default promotion, so the id + principal
+    // are all the service needs.
+    @Body() _body: SetDefaultPaymentMethodRequestDto,
+  ): Promise<PaymentMethodEnvelopeResponse> {
+    return this.service.setDefault(user.userId, id);
   }
 
   @Delete(':id')
