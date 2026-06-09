@@ -126,6 +126,13 @@ export class DriverShiftService {
 
       const shift = await scoped.shifts.start(ctx.driverId, body.startingLocation, now);
       await scoped.drivers.setStatus(ctx.driverId, 'online');
+      // Seed the driver's live position from the shift's starting location.
+      // Dispatch eligibility (findDispatchCandidatesNearDispensary) requires
+      // current_location IS NOT NULL; without this an online driver who has
+      // not yet pushed a telemetry ping is invisible to the dispatcher and
+      // every nearby order fast-fails to dispatch_failed. Same tx as the
+      // status flip so "online" and "locatable" commit atomically.
+      await scoped.drivers.updateLocation(ctx.driverId, body.startingLocation, now);
       return projectDriverShift(shift);
     });
   }
