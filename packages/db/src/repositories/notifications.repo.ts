@@ -1,11 +1,13 @@
 import { RepositoryError } from '@dankdash/types';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import {
+  notificationPreferences,
   notifications,
   pushTokens,
   type NewNotification,
   type NewPushToken,
   type Notification,
+  type NotificationPreference,
   type PushToken,
 } from '../schema/notifications.js';
 import { BaseRepository, newId } from './base.js';
@@ -120,5 +122,63 @@ export class PushTokensRepository extends BaseRepository {
       .where(and(eq(pushTokens.apnsToken, apnsToken), eq(pushTokens.isActive, true)))
       .returning({ id: pushTokens.id });
     return rows.length;
+  }
+}
+
+/**
+ * One row per user. `findByUserId` returns `null` when the user has never
+ * touched their preferences — callers treat that as "all defaults" rather
+ * than synthesizing a row, so the dispatcher's deliver-everything fallback
+ * and the read API's effective-defaults projection stay the single owners
+ * of that policy.
+ */
+export class NotificationPreferencesRepository extends BaseRepository {
+  async findByUserId(userId: string): Promise<NotificationPreference | null> {
+    const [row] = await this.db
+      .select()
+      .from(notificationPreferences)
+      .where(eq(notificationPreferences.userId, userId))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Insert-or-patch the user's single preferences row. Only the fields
+   * present in `patch` are written; omitted fields fall to their column
+   * default on insert and are left untouched on update — so a PATCH that
+   * flips one toggle never silently resets the others. `updated_at` is
+   * always bumped so the conflict path is never an empty SET.
+   */
+  async upsert(input: {
+    readonly userId: string;
+    readonly orderUpdatesEnabled?: boolean;
+    readonly promotionsEnabled?: boolean;
+    readonly pushEnabled?: boolean;
+    readonly smsEnabled?: boolean;
+    readonly emailEnabled?: boolean;
+  }): Promise<NotificationPreference> {
+    const patch = {
+      ...(input.orderUpdatesEnabled !== undefined
+        ? { orderUpdatesEnabled: input.orderUpdatesEnabled }
+        : {}),
+      ...(input.promotionsEnabled !== undefined
+        ? { promotionsEnabled: input.promotionsEnabled }
+        : {}),
+      ...(input.pushEnabled !== undefined ? { pushEnabled: input.pushEnabled } : {}),
+      ...(input.smsEnabled !== undefined ? { smsEnabled: input.smsEnabled } : {}),
+      ...(input.emailEnabled !== undefined ? { emailEnabled: input.emailEnabled } : {}),
+    };
+    const [row] = await this.db
+      .insert(notificationPreferences)
+      .values({ id: newId(), userId: input.userId, ...patch })
+      .onConflictDoUpdate({
+        target: notificationPreferences.userId,
+        set: { ...patch, updatedAt: new Date() },
+      })
+      .returning();
+    if (row === undefined) {
+      throw new RepositoryError('notification_preferences upsert returned no row');
+    }
+    return row;
   }
 }

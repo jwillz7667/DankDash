@@ -57,7 +57,44 @@ export const pushTokens = pgTable(
   ],
 );
 
+/**
+ * Per-user notification delivery preferences — exactly one row per user
+ * (enforced by the unique on `user_id`). The model is two-axis:
+ *
+ *   • category axis — `order_updates_enabled`, `promotions_enabled`. These
+ *     are the only user-suppressible categories. Transactional/operational
+ *     notifications (payment, refund, auth, driver dispatch, vendor ops)
+ *     are never gated by this table; see `SUPPRESSIBLE_CATEGORIES` in
+ *     @dankdash/notifications.
+ *   • channel axis — `push_enabled`, `sms_enabled`, `email_enabled`. The
+ *     `in_app` channel is intentionally absent: it is the in-app inbox
+ *     record and is always written, so it has no toggle.
+ *
+ * A delivery is suppressed only when its category is suppressible AND the
+ * user has turned off either that category or that channel. Absence of a
+ * row means "all defaults" (everything on) — the dispatcher treats a
+ * missing row as deliver-everything so users who never opened settings are
+ * unaffected. Every column defaults to `true` for the same reason: a fresh
+ * insert that only flips one toggle leaves the rest opted-in.
+ */
+export const notificationPreferences = pgTable('notification_preferences', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  orderUpdatesEnabled: boolean('order_updates_enabled').notNull().default(true),
+  promotionsEnabled: boolean('promotions_enabled').notNull().default(true),
+  pushEnabled: boolean('push_enabled').notNull().default(true),
+  smsEnabled: boolean('sms_enabled').notNull().default(true),
+  emailEnabled: boolean('email_enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 export type Notification = typeof notifications.$inferSelect;
 export type NewNotification = typeof notifications.$inferInsert;
 export type PushToken = typeof pushTokens.$inferSelect;
 export type NewPushToken = typeof pushTokens.$inferInsert;
+export type NotificationPreference = typeof notificationPreferences.$inferSelect;
+export type NewNotificationPreference = typeof notificationPreferences.$inferInsert;
