@@ -252,7 +252,8 @@ validated end-to-end smoke test against production.
       for Vendor Agreement, Driver Agreement.
 - [ ] **DNS** — `dankdash.com`, `www.dankdash.com`,
       `app.dankdash.com`, `api.dankdash.com`,
-      `checkout.dankdash.com`, `portal.dankdash.com`,
+      `checkout.dankdash.com`, `dankdash.business`
+      (vendor portal, registered via Vercel),
       `status.dankdash.com` all point at the right
       origins; TLS certs auto-issued and renewing.
 

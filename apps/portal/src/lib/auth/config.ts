@@ -19,8 +19,14 @@
  *
  * - **Token refresh** happens inside the `jwt` callback whenever the
  *   incoming token's `accessTokenExpiresAt` is within the refresh
- *   window. A failed refresh sets `token.error = 'RefreshAccessTokenError'`
- *   so the consumer can sign the user out on the next render.
+ *   window. Concurrent callers (parallel SSR fetches on one page render)
+ *   share a single in-flight refresh — the API rotates refresh tokens and
+ *   treats reuse of a consumed token as theft, revoking the whole family.
+ *   A refresh the API *rejects* (4xx) sets
+ *   `token.error = 'RefreshAccessTokenError'`, which middleware turns
+ *   into a forced re-login; once set, no further refresh is attempted for
+ *   that session. A *transient* failure (network, 5xx, 429) leaves the
+ *   token untouched so a later request can retry.
  *
  * - **Portal role gate.** A user logging in with a `customer` or
  *   `driver` role is rejected here (not just in middleware) — the
@@ -238,21 +244,36 @@ export function buildAuthConfig(options: BuildAuthConfigOptions): NextAuthConfig
           return token;
         }
 
+        if (token.error === 'RefreshAccessTokenError') {
+          // The API already rejected this session's refresh token.
+          // Re-attempting on every request hammers /v1/auth/refresh
+          // (and trips its rate limit) for a session that can only end
+          // in re-login — middleware sees the error and clobbers the
+          // cookie on the next page navigation.
+          return token;
+        }
+
         if (!isAccessTokenExpiringSoon(token.accessTokenExpiresAt)) {
           return token;
         }
 
-        const refreshed = await refreshAccessToken(token.refreshToken, apiBaseUrl, fetchImpl);
-        if (refreshed === null) {
+        const result = await refreshAccessTokenOnce(token.refreshToken, apiBaseUrl, fetchImpl);
+        if (result.status === 'refreshed') {
+          token.accessToken = result.tokens.accessToken;
+          token.refreshToken = result.tokens.refreshToken;
+          token.accessTokenExpiresAt = result.tokens.accessTokenExpiresAt;
+          token.refreshTokenExpiresAt = result.tokens.refreshTokenExpiresAt;
+          delete token.error;
+          return token;
+        }
+        if (result.status === 'rejected') {
           token.error = 'RefreshAccessTokenError';
           return token;
         }
-
-        token.accessToken = refreshed.accessToken;
-        token.refreshToken = refreshed.refreshToken;
-        token.accessTokenExpiresAt = refreshed.accessTokenExpiresAt;
-        token.refreshTokenExpiresAt = refreshed.refreshTokenExpiresAt;
-        delete token.error;
+        // Transient failure (network blip, API 5xx, refresh rate limit):
+        // keep the session intact and let a later request retry. Forcing
+        // a re-login over a blip would be worse than one render with an
+        // expired access token.
         return token;
       },
       session({ session, token }) {
@@ -329,6 +350,42 @@ interface RefreshedTokens {
   readonly refreshTokenExpiresAt: string;
 }
 
+type RefreshOutcome =
+  | { readonly status: 'refreshed'; readonly tokens: RefreshedTokens }
+  /** The API rejected the token (4xx) — it is dead; never retry it. */
+  | { readonly status: 'rejected' }
+  /** Network / 5xx / 429 — the token may still be good; retry later. */
+  | { readonly status: 'transient' };
+
+/**
+ * In-flight refresh de-duplication, keyed by refresh-token value.
+ *
+ * The API rotates refresh tokens and treats a second use of an
+ * already-consumed token as theft — it revokes the whole token family.
+ * One page render fans out into parallel SSR fetches that each run the
+ * jwt callback, so without de-dupe two concurrent requests race the
+ * same refresh token: the first rotation wins, the second trips reuse
+ * detection and bricks the session. Sharing the promise means every
+ * concurrent caller gets the same rotated pair from a single POST.
+ * Module scope is per server instance — exactly the blast radius of
+ * the race (cross-instance races are already serialized by the cookie).
+ */
+const inFlightRefreshes = new Map<string, Promise<RefreshOutcome>>();
+
+function refreshAccessTokenOnce(
+  refreshToken: string,
+  apiBaseUrl: string,
+  fetchImpl?: typeof fetch,
+): Promise<RefreshOutcome> {
+  const existing = inFlightRefreshes.get(refreshToken);
+  if (existing !== undefined) return existing;
+  const pending = refreshAccessToken(refreshToken, apiBaseUrl, fetchImpl).finally(() => {
+    inFlightRefreshes.delete(refreshToken);
+  });
+  inFlightRefreshes.set(refreshToken, pending);
+  return pending;
+}
+
 /**
  * Pick the active dispensary context for a freshly signed-in user.
  *
@@ -366,7 +423,7 @@ async function refreshAccessToken(
   refreshToken: string,
   apiBaseUrl: string,
   fetchImpl?: typeof fetch,
-): Promise<RefreshedTokens | null> {
+): Promise<RefreshOutcome> {
   const client = new ApiClient({
     baseUrl: apiBaseUrl,
     refreshToken,
@@ -375,13 +432,21 @@ async function refreshAccessToken(
   try {
     const { tokens } = await client.refresh(refreshToken);
     return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      status: 'refreshed',
+      tokens: {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      },
     };
-  } catch {
-    return null;
+  } catch (err) {
+    // 429 is the refresh endpoint's own rate limit — the token may be
+    // perfectly valid, so it must not be treated as a rejection.
+    if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) {
+      return { status: 'rejected' };
+    }
+    return { status: 'transient' };
   }
 }
 
