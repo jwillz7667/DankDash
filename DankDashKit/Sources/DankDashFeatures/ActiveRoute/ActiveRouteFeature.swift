@@ -120,20 +120,21 @@ public struct ActiveRouteFeature: Sendable {
       phase == .enRouteToDropoff && !arriveInFlight && route != nil
     }
 
-    /// Stops for an external Apple Maps hand-off, in travel order. While
-    /// heading to pickup the driver wants the full trip (store → home);
-    /// once en route to the customer only the remaining drop matters.
-    /// `nil` once the scan gate is reached (no more navigation) or before
-    /// the route loads — the screen hides the "Open in Maps" button then.
+    /// The single next stop for an external Apple Maps hand-off — the
+    /// dispensary through the pickup journey, the customer once en route
+    /// to the drop. Always one stop: `MKMapItem.openMaps` treats the FIRST
+    /// of two items as the route's origin rather than the user's location,
+    /// so handing over [store, home] mid-pickup would navigate store → home
+    /// from the wrong starting point. `nil` once the scan gate is reached
+    /// (no more navigation) or before the route loads — the screen hides
+    /// the "Open in Maps" button then.
     public var mapDestinations: [MapDestination]? {
       guard let route else { return nil }
-      let pickup = MapDestination(coordinate: route.dispensary.location, name: route.dispensary.name)
-      let dropoff = MapDestination(coordinate: route.dropoff.location, name: route.dropoff.line1)
       switch phase {
       case .enRouteToPickup, .awaitingHandoff, .readyToDepart:
-        return [pickup, dropoff]
+        return [MapDestination(coordinate: route.dispensary.location, name: route.dispensary.name)]
       case .enRouteToDropoff:
-        return [dropoff]
+        return [MapDestination(coordinate: route.dropoff.location, name: route.dropoff.line1)]
       case .awaitingIdScan, .completed:
         return nil
       }
@@ -169,7 +170,8 @@ public struct ActiveRouteFeature: Sendable {
     case backTapped
     case errorBannerDismissed
     case retryTapped
-    /// Hand the current leg(s) off to Apple Maps for turn-by-turn.
+    /// Hand the next stop off to Apple Maps for turn-by-turn (directions
+    /// start from the device's current location).
     case openInMapsTapped
 
     case delegate(Delegate)

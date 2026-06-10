@@ -1172,7 +1172,10 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
   // MARK: - Map destinations
 
-  func test_mapDestinations_pickupJourney_isStoreThenHome() {
+  /// One stop only: with two `MKMapItem`s Apple Maps treats the first as
+  /// the route ORIGIN, so a [store, home] hand-off mid-pickup would route
+  /// store → home instead of driver → store.
+  func test_mapDestinations_pickupJourney_isStoreOnly() {
     for phase in [ActiveRouteFeature.LocalPhase.enRouteToPickup, .awaitingHandoff, .readyToDepart] {
       let state = ActiveRouteFeature.State(
         orderId: Self.orderId,
@@ -1181,11 +1184,8 @@ final class ActiveRouteFeatureTests: XCTestCase {
       )
       XCTAssertEqual(
         state.mapDestinations,
-        [
-          MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis"),
-          MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St"),
-        ],
-        "phase \(phase) should hand off store → home"
+        [MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis")],
+        "phase \(phase) should hand off the store as the single next stop"
       )
     }
   }
@@ -1220,7 +1220,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
   // MARK: - Open in Maps
 
-  func test_openInMapsTapped_pickupJourney_handsOffStoreThenHome() async {
+  func test_openInMapsTapped_pickupJourney_handsOffStoreOnly() async {
     let orderId = Self.orderId
     let opened = LockIsolated<[[MapDestination]]>([])
 
@@ -1240,17 +1240,13 @@ final class ActiveRouteFeatureTests: XCTestCase {
         openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
       )
     }
-    store.exhaustivity = .off
 
     await store.send(.openInMapsTapped)
     await store.finish()
 
     XCTAssertEqual(
       opened.value,
-      [[
-        MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis"),
-        MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St"),
-      ]]
+      [[MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis")]]
     )
   }
 
@@ -1274,7 +1270,6 @@ final class ActiveRouteFeatureTests: XCTestCase {
         openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
       )
     }
-    store.exhaustivity = .off
 
     await store.send(.openInMapsTapped)
     await store.finish()
