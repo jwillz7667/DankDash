@@ -548,6 +548,38 @@ export class DispatchOffersRepository extends BaseRepository {
   }
 
   /**
+   * Flip a driver's `accepted` offer back out of `accepted` when they
+   * cancel the delivery before pickup (DRIVER_CANCELED). The dispatch
+   * orchestrator treats any `accepted` history row as "attempt done,
+   * never re-offer" — leaving the row in place would strand the order
+   * in `awaiting_driver` forever. The DB enum has no 'canceled' value,
+   * so we reuse 'declined': it carries the same re-offer semantics
+   * (this driver is excluded from the retry round) and the
+   * `decline_reason` distinguishes a post-accept bail from a plain
+   * decline for ops. Conditional on `status = 'accepted'` so a racing
+   * second cancel is a no-op (returns null).
+   */
+  async releaseAcceptedForOrder(
+    orderId: string,
+    driverId: string,
+    now: Date,
+    reason: string,
+  ): Promise<DispatchOffer | null> {
+    const [row] = await this.db
+      .update(dispatchOffers)
+      .set({ status: 'declined', respondedAt: now, declineReason: reason })
+      .where(
+        and(
+          eq(dispatchOffers.orderId, orderId),
+          eq(dispatchOffers.driverId, driverId),
+          eq(dispatchOffers.status, 'accepted'),
+        ),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  /**
    * Bulk-expire offers whose `expires_at` has passed without a response. Run
    * by a scheduled job — returns the count of expired offers for telemetry.
    */
