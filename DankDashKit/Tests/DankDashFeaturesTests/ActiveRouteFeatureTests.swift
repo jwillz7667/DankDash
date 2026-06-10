@@ -655,6 +655,79 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertNil(store.state.errorBanner)
   }
 
+  /// A preview calc that resolves AFTER the phase hopped past pickup
+  /// (depart raced the directions service) must not resurrect the stale
+  /// store → home line.
+  func test_deliveryLegCalculated_lateSuccessPastPickup_isIgnored() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
+        phase: .enRouteToDropoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.deliveryLegCalculated(.success(Self.fixedDirections())))
+
+    XCTAssertNil(store.state.deliveryLegDirections)
+  }
+
+  /// A multi-hop server catch-up that skips the dropoff leg entirely
+  /// (straight to the scan gate) still clears the store → home preview —
+  /// the clear keys off "at or past dropoff", not an exact phase match.
+  func test_serverStatusObserved_jumpPastDropoff_clearsDeliveryLegPreview() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+        deliveryLegDirections: Self.fixedDirections(),
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.serverStatusObserved(.arrivedAtDropoff)) {
+      $0.phase = .awaitingIdScan
+      $0.deliveryLegDirections = nil
+    }
+  }
+
+  /// A refetch that lands past pickup (e.g. arrive-conflict recovery)
+  /// discards any stale preview instead of recomputing one.
+  func test_routeFetched_pastPickup_clearsStaleDeliveryLegPreview() async {
+    let orderId = Self.orderId
+    let route = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        deliveryLegDirections: Self.fixedDirections(),
+        phase: .enRouteToPickup,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.routeFetched(.success(route))) {
+      $0.route = route
+      $0.phase = .enRouteToDropoff
+      $0.deliveryLegDirections = nil
+    }
+  }
+
   // MARK: - Depart
 
   /// Start Trip at `picked_up` → POST `depart` → `en_route_dropoff`, and
@@ -1172,7 +1245,10 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
   // MARK: - Map destinations
 
-  func test_mapDestinations_pickupJourney_isStoreThenHome() {
+  /// One stop only: with two `MKMapItem`s Apple Maps treats the first as
+  /// the route ORIGIN, so a [store, home] hand-off mid-pickup would route
+  /// store → home instead of driver → store.
+  func test_mapDestinations_pickupJourney_isStoreOnly() {
     for phase in [ActiveRouteFeature.LocalPhase.enRouteToPickup, .awaitingHandoff, .readyToDepart] {
       let state = ActiveRouteFeature.State(
         orderId: Self.orderId,
@@ -1181,11 +1257,8 @@ final class ActiveRouteFeatureTests: XCTestCase {
       )
       XCTAssertEqual(
         state.mapDestinations,
-        [
-          MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis"),
-          MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St"),
-        ],
-        "phase \(phase) should hand off store → home"
+        [MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis")],
+        "phase \(phase) should hand off the store as the single next stop"
       )
     }
   }
@@ -1220,7 +1293,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
 
   // MARK: - Open in Maps
 
-  func test_openInMapsTapped_pickupJourney_handsOffStoreThenHome() async {
+  func test_openInMapsTapped_pickupJourney_handsOffStoreOnly() async {
     let orderId = Self.orderId
     let opened = LockIsolated<[[MapDestination]]>([])
 
@@ -1240,17 +1313,13 @@ final class ActiveRouteFeatureTests: XCTestCase {
         openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
       )
     }
-    store.exhaustivity = .off
 
     await store.send(.openInMapsTapped)
     await store.finish()
 
     XCTAssertEqual(
       opened.value,
-      [[
-        MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis"),
-        MapDestination(coordinate: Self.dropoffLocation, name: "555 Main St"),
-      ]]
+      [[MapDestination(coordinate: Self.dispensaryLocation, name: "Northern Lights Cannabis")]]
     )
   }
 
@@ -1274,7 +1343,6 @@ final class ActiveRouteFeatureTests: XCTestCase {
         openInMaps: { destinations in opened.withValue { $0.append(destinations) } }
       )
     }
-    store.exhaustivity = .off
 
     await store.send(.openInMapsTapped)
     await store.finish()

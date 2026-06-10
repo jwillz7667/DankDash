@@ -120,20 +120,21 @@ public struct ActiveRouteFeature: Sendable {
       phase == .enRouteToDropoff && !arriveInFlight && route != nil
     }
 
-    /// Stops for an external Apple Maps hand-off, in travel order. While
-    /// heading to pickup the driver wants the full trip (store → home);
-    /// once en route to the customer only the remaining drop matters.
-    /// `nil` once the scan gate is reached (no more navigation) or before
-    /// the route loads — the screen hides the "Open in Maps" button then.
+    /// The single next stop for an external Apple Maps hand-off — the
+    /// dispensary through the pickup journey, the customer once en route
+    /// to the drop. Always one stop: `MKMapItem.openMaps` treats the FIRST
+    /// of two items as the route's origin rather than the user's location,
+    /// so handing over [store, home] mid-pickup would navigate store → home
+    /// from the wrong starting point. `nil` once the scan gate is reached
+    /// (no more navigation) or before the route loads — the screen hides
+    /// the "Open in Maps" button then.
     public var mapDestinations: [MapDestination]? {
       guard let route else { return nil }
-      let pickup = MapDestination(coordinate: route.dispensary.location, name: route.dispensary.name)
-      let dropoff = MapDestination(coordinate: route.dropoff.location, name: route.dropoff.line1)
       switch phase {
       case .enRouteToPickup, .awaitingHandoff, .readyToDepart:
-        return [pickup, dropoff]
+        return [MapDestination(coordinate: route.dispensary.location, name: route.dispensary.name)]
       case .enRouteToDropoff:
-        return [dropoff]
+        return [MapDestination(coordinate: route.dropoff.location, name: route.dropoff.line1)]
       case .awaitingIdScan, .completed:
         return nil
       }
@@ -169,7 +170,8 @@ public struct ActiveRouteFeature: Sendable {
     case backTapped
     case errorBannerDismissed
     case retryTapped
-    /// Hand the current leg(s) off to Apple Maps for turn-by-turn.
+    /// Hand the next stop off to Apple Maps for turn-by-turn (directions
+    /// start from the device's current location).
     case openInMapsTapped
 
     case delegate(Delegate)
@@ -259,10 +261,16 @@ public struct ActiveRouteFeature: Sendable {
           effects.append(calculateDirectionsEffect(from: driverLocation, route: route, phase: phase))
         }
         // While heading to the store, pre-compute the onward store → home
-        // leg so the map can preview the whole trip. Skip once we're past
-        // pickup (the primary directions cover the drop) or already have it.
-        if Self.isPickupJourney(phase), state.deliveryLegDirections == nil {
-          effects.append(calculateDeliveryLegEffect(route: route))
+        // leg so the map can preview the whole trip. Once past pickup the
+        // primary directions cover the drop — any preview (set or still
+        // computing) is stale, e.g. after a conflict-recovery refetch.
+        if Self.isPickupJourney(phase) {
+          if state.deliveryLegDirections == nil {
+            effects.append(calculateDeliveryLegEffect(route: route))
+          }
+        } else {
+          state.deliveryLegDirections = nil
+          effects.append(.cancel(id: CancelID.calculateDeliveryLeg))
         }
         return effects.isEmpty ? .none : .merge(effects)
 
@@ -302,6 +310,10 @@ public struct ActiveRouteFeature: Sendable {
         return .none
 
       case .deliveryLegCalculated(.success(let directions)):
+        // The phase may have hopped past pickup while the calc was in
+        // flight (depart raced the directions service) — the preview is
+        // already stale then, so drop it instead of resurrecting the line.
+        guard Self.isPickupJourney(state.phase) else { return .none }
         state.deliveryLegDirections = directions
         return .none
 
@@ -354,12 +366,18 @@ public struct ActiveRouteFeature: Sendable {
           // The vendor handoff landed — stop polling for it.
           effects.append(.cancel(id: CancelID.handoffPoll))
         }
+        // At or past the dropoff leg the store → home preview is stale no
+        // matter how far the jump went (a multi-hop catch-up can skip
+        // straight to the scan gate) — clear it and kill any calc still in
+        // flight so a late result can't resurrect the line.
+        if Self.rank(mapped) >= Self.rank(.enRouteToDropoff) {
+          state.deliveryLegDirections = nil
+          effects.append(.cancel(id: CancelID.calculateDeliveryLeg))
+        }
         // Server jumped us onto the dropoff leg without a local depart
         // (e.g. depart confirmed on another device, or a lost response):
         // recalc dropoff directions from the latest fix.
         if mapped == .enRouteToDropoff {
-          // The drop is now the active leg — the preview line is redundant.
-          state.deliveryLegDirections = nil
           if let location = state.driverLocation, let route = state.route {
             state.directions = nil
             state.currentStep = nil
@@ -444,15 +462,16 @@ public struct ActiveRouteFeature: Sendable {
         state.route = updatedRoute
         state.phase = .enRouteToDropoff
         // Fresh leg → discard the (absent) prior directions and the now-
-        // redundant store → home preview, then route to the customer from
-        // the current fix.
+        // redundant store → home preview (including any calc still in
+        // flight), then route to the customer from the current fix.
         state.directions = nil
         state.deliveryLegDirections = nil
         state.currentStep = nil
+        var effects: [Effect<Action>] = [.cancel(id: CancelID.calculateDeliveryLeg)]
         if let location = state.driverLocation {
-          return calculateDirectionsEffect(from: location, route: updatedRoute, phase: .enRouteToDropoff)
+          effects.append(calculateDirectionsEffect(from: location, route: updatedRoute, phase: .enRouteToDropoff))
         }
-        return .none
+        return .merge(effects)
 
       case .departResponse(.failure(let box)):
         state.departInFlight = false

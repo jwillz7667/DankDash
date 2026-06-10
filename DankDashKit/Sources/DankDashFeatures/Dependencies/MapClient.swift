@@ -53,14 +53,17 @@ public struct MapClient: Sendable {
   /// default region rather than presenting an invalid one.
   public var boundingRegion: @Sendable (_ coordinates: [Coordinate]) -> MapRegion?
 
-  /// Opens Apple Maps with driving directions through the supplied stops
-  /// in order, starting from the user's current location. A no-op when
-  /// the list is empty. Fire-and-forget — there is no result to await.
+  /// Opens Apple Maps with driving directions to the supplied stop. Pass
+  /// exactly one destination: with a single item Apple Maps routes from
+  /// the user's current location, but with two or more `MKMapItem.openMaps`
+  /// treats the FIRST item as the route's origin — not the user — which is
+  /// never what a driver hand-off wants. A no-op when the list is empty.
+  /// Fire-and-forget — there is no result to await.
   public var openInMaps: @Sendable (_ destinations: [MapDestination]) -> Void
 
   public init(
     boundingRegion: @Sendable @escaping (_ coordinates: [Coordinate]) -> MapRegion?,
-    openInMaps: @Sendable @escaping (_ destinations: [MapDestination]) -> Void = { _ in }
+    openInMaps: @Sendable @escaping (_ destinations: [MapDestination]) -> Void
   ) {
     self.boundingRegion = boundingRegion
     self.openInMaps = openInMaps
@@ -97,10 +100,11 @@ public extension MapClient {
 }
 
 #if canImport(MapKit)
-/// Drives Apple Maps turn-by-turn for the supplied stops, in order,
-/// starting from the user's current location. Implementation-private to
-/// the live binding — mirrors the `DirectionsLive` pattern in
-/// ``DirectionsClient`` so MapKit stays contained to one binding.
+/// Drives Apple Maps turn-by-turn to the supplied stop (callers pass one
+/// destination — see ``MapClient/openInMaps`` for the multi-item origin
+/// pitfall). Implementation-private to the live binding — mirrors the
+/// `DirectionsLive` pattern in ``DirectionsClient`` so MapKit stays
+/// contained to one binding.
 private enum MapsLauncher {
   static func open(_ destinations: [MapDestination]) {
     guard !destinations.isEmpty else { return }

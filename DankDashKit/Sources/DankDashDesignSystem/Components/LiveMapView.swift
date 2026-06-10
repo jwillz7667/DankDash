@@ -3,9 +3,11 @@ import MapKit
 import CoreLocation
 import DankDashDomain
 
-/// Live-tracking map for the order-tracking screen. Renders up to
-/// three pins — dispensary, customer drop-off, driver — and a polyline
-/// between them once a driver coordinate is available.
+/// Live-tracking map shared by the consumer tracking screen and the
+/// driver active-route screen. Renders up to three pins — dispensary,
+/// customer drop-off, driver — plus up to two route lines: the solid
+/// active leg (`route`) and a dashed dispensary → drop-off preview
+/// (`deliveryLeg`) shown while the driver is still heading to pickup.
 ///
 /// MapKit-backed per ADR-0006 (`docs/adr/0006-mapkit-over-mapbox-for-consumer-tracking.md`).
 /// Uses SwiftUI's native `Map` (iOS 17 / macOS 14) with `Marker` + `MapPolyline`
@@ -76,11 +78,14 @@ public struct LiveMapView: View {
       }
       // Active leg. Prefer the road-following polyline; fall back to a
       // straight driver → customer chord when no route is supplied (the
-      // consumer tracking map before directions resolve).
+      // consumer tracking map before directions resolve). Skip the chord
+      // when a delivery-leg preview is shown — that combination means the
+      // driver is heading to the STORE, so a driver → customer line would
+      // point at the wrong stop.
       if let route, route.count >= 2 {
         MapPolyline(coordinates: route.map(\.clLocationCoordinate))
           .stroke(DankColor.primary, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-      } else if let driver {
+      } else if let driver, deliveryLeg == nil {
         MapPolyline(coordinates: [driver.clCoordinate, customer.clCoordinate])
           .stroke(DankColor.primary, lineWidth: 3)
       }

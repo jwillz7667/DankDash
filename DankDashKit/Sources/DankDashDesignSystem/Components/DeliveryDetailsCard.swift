@@ -86,6 +86,9 @@ public struct DeliveryDetailsCard: View {
 
   private var accessibilityLabel: String {
     let tip = hasTip ? "Tip \(Self.formatPrice(tipCents))" : "No tip"
+    if let itemSummary, !itemSummary.isEmpty {
+      return "Order \(orderShortCode), \(itemCountLabel): \(itemSummary). \(tip)."
+    }
     return "Order \(orderShortCode), \(itemCountLabel). \(tip)."
   }
 
