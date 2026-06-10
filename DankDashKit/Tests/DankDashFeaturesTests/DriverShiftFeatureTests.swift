@@ -559,6 +559,36 @@ final class DriverShiftFeatureTests: XCTestCase {
     await store.receive(\.delegate.openEarningsDetail)
   }
 
+  func test_returnToDeliveryTapped_withActiveOrder_emitsResumeDelegate() async {
+    let orderId = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .enRoutePickup, currentOrderId: orderId)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.returnToDeliveryTapped)
+    await store.receive(\.delegate.resumeActiveDelivery)
+  }
+
+  func test_returnToDeliveryTapped_withoutActiveOrder_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.returnToDeliveryTapped)
+  }
+
   // MARK: - Dispatch offer subscription
 
   func test_offerReceived_whileOnline_presentsOfferSheet() async {
@@ -797,7 +827,8 @@ final class DriverShiftFeatureTests: XCTestCase {
 
   nonisolated private static func passedDriver(
     currentStatus: DriverStatus = .offline,
-    lastStatusChangeAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    lastStatusChangeAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
+    currentOrderId: UUID? = nil
   ) -> Driver {
     Driver(
       id: UUID(uuidString: "00000000-0000-0000-0000-0000000000d1")!,
@@ -811,7 +842,7 @@ final class DriverShiftFeatureTests: XCTestCase {
       lastStatusChangeAt: lastStatusChangeAt,
       currentLocation: nil,
       currentLocationUpdatedAt: nil,
-      currentOrderId: nil,
+      currentOrderId: currentOrderId,
       ratingAvg: Decimal(string: "4.9"),
       ratingCount: 32,
       totalDeliveries: 64,

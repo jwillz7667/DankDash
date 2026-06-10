@@ -46,6 +46,11 @@ struct ShiftHomeView: View {
 
       VStack(spacing: 0) {
         Spacer(minLength: 0)
+        if store.driver?.currentOrderId != nil {
+          returnToDeliveryBanner
+            .padding(.horizontal, DankSpacing.md)
+            .padding(.bottom, DankSpacing.sm)
+        }
         statusBar
           .padding(.horizontal, DankSpacing.md)
           .padding(.bottom, 96)
@@ -153,6 +158,43 @@ struct ShiftHomeView: View {
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Error: \(message)")
     .accessibilityIdentifier("shift.errorBanner")
+  }
+
+  // MARK: - Return-to-delivery banner
+
+  /// Shown whenever the driver still carries an order but is looking at
+  /// the shift home (backed out of the route screen, or the screen
+  /// refreshed mid-delivery). The shift toggle is locked in this state,
+  /// so without this button there is no path back to the active route.
+  private var returnToDeliveryBanner: some View {
+    Button {
+      store.send(.returnToDeliveryTapped)
+    } label: {
+      HStack(spacing: DankSpacing.sm) {
+        Image(systemName: "shippingbox.fill")
+          .font(DankFont.bodySmall)
+          .foregroundStyle(DankColor.cream)
+          .accessibilityHidden(true)
+        Text("Delivery in progress")
+          .font(DankFont.bodySmall.weight(.semibold))
+          .foregroundStyle(DankColor.cream)
+        Spacer(minLength: 0)
+        Text("Return to delivery")
+          .font(DankFont.caption)
+          .foregroundStyle(DankColor.cream.opacity(0.85))
+        Image(systemName: "chevron.right")
+          .font(DankFont.caption)
+          .foregroundStyle(DankColor.cream.opacity(0.85))
+      }
+      .padding(.horizontal, DankSpacing.md)
+      .padding(.vertical, DankSpacing.sm)
+      .background(DankColor.primary)
+      .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
+      .shadow(color: DankColor.Text.primary.opacity(0.12), radius: 8, x: 0, y: 2)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Delivery in progress. Return to delivery.")
+    .accessibilityIdentifier("shift.returnToDelivery")
   }
 
   // MARK: - Status bar above the earnings card

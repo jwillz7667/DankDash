@@ -247,6 +247,18 @@ public struct DriverRootFeature: Sendable {
         if driver.isBackgroundCheckPassed {
           state.shift = DriverShiftFeature.State(driver: driver)
           state.screen = .shift
+          // Resume an in-flight delivery before anything else. The
+          // server keeps `current_order_id` across app relaunches, and
+          // the shift surface deliberately locks its toggle while a
+          // delivery is active — without this hop a driver who
+          // relaunches mid-delivery lands on a dead home screen with no
+          // path back to the route (and no way to cancel). A stashed
+          // offer deep link loses to the live delivery: the server
+          // never offers to a busy driver, so the link is stale.
+          if let activeOrderId = driver.currentOrderId {
+            state.pendingDeepLinkURL = nil
+            return .send(.startActiveRoute(orderId: activeOrderId))
+          }
           // Replay a deep link that arrived before bootstrap finished
           // (the URL handler stashes it on `pendingDeepLinkURL`). The
           // typical cold-launch case is APNs payload →
@@ -303,6 +315,12 @@ public struct DriverRootFeature: Sendable {
         // Driver accepted a dispatch offer — bounce into the active
         // route lifecycle by funneling through the same entry point as
         // the deep-link router.
+        return .send(.startActiveRoute(orderId: orderId))
+
+      case .shift(.delegate(.resumeActiveDelivery(let orderId))):
+        // Driver backed out of the route screen mid-delivery (or the
+        // shift surface refreshed into a driver that still carries an
+        // order) and tapped "Return to delivery" — re-mount the route.
         return .send(.startActiveRoute(orderId: orderId))
 
       case .shift:

@@ -479,6 +479,77 @@ final class DriverRootFeatureTests: XCTestCase {
     XCTAssertNil(store.state.pendingDeepLinkURL, "stashed URL consumed on replay")
   }
 
+  // MARK: - Active-delivery resume
+
+  func test_driverLoaded_withActiveOrder_resumesActiveRoute() async {
+    let orderId = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+    let driver = Self.passedDriver(currentStatus: .enRoutePickup, currentOrderId: orderId)
+    let store = TestStore(
+      initialState: DriverRootFeature.State(screen: .loadingDriver)
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.driverLoaded(.success(driver)))
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(store.state.activeRoute?.orderId, orderId)
+    XCTAssertNotNil(store.state.shift, "shift stays mounted under the route")
+  }
+
+  func test_driverLoaded_withActiveOrder_dropsStaleOfferDeepLink() async {
+    let activeOrderId = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+    let staleOfferId = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+    let url = URL(string: "dankdasher://offer/\(staleOfferId.uuidString)")!
+    let driver = Self.passedDriver(currentStatus: .enRoutePickup, currentOrderId: activeOrderId)
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .loadingDriver,
+        pendingDeepLinkURL: url
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.driverLoaded(.success(driver)))
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(
+      store.state.activeRoute?.orderId,
+      activeOrderId,
+      "live delivery wins over a stashed offer link"
+    )
+    XCTAssertNil(store.state.pendingDeepLinkURL, "stale offer link is consumed, not replayed")
+  }
+
+  func test_shiftResumeActiveDeliveryDelegate_routesToActiveRoute() async {
+    let orderId = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+    let driver = Self.passedDriver(currentStatus: .enRoutePickup, currentOrderId: orderId)
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .shift,
+        driver: driver,
+        shift: DriverShiftFeature.State(driver: driver)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.shift(.delegate(.resumeActiveDelivery(orderId: orderId))))
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.screen, .activeRoute)
+    XCTAssertEqual(store.state.activeRoute?.orderId, orderId)
+  }
+
   // MARK: - Shift offer-accepted delegate
 
   func test_shiftAcceptedOfferDelegate_routesToActiveRoute() async {
@@ -847,7 +918,8 @@ final class DriverRootFeatureTests: XCTestCase {
 
   nonisolated private static func passedDriver(
     backgroundCheckPassedAt: String? = "2024-01-15T12:00:00Z",
-    currentStatus: DriverStatus = .offline
+    currentStatus: DriverStatus = .offline,
+    currentOrderId: UUID? = nil
   ) -> Driver {
     Driver(
       id: UUID(uuidString: "00000000-0000-0000-0000-0000000000d1")!,
@@ -861,7 +933,7 @@ final class DriverRootFeatureTests: XCTestCase {
       lastStatusChangeAt: Date(timeIntervalSince1970: 1_700_000_000),
       currentLocation: nil,
       currentLocationUpdatedAt: nil,
-      currentOrderId: nil,
+      currentOrderId: currentOrderId,
       ratingAvg: Decimal(string: "4.9"),
       ratingCount: 32,
       totalDeliveries: 64,
