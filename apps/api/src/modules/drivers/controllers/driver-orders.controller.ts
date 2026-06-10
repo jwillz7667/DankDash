@@ -4,6 +4,7 @@
  *
  *   GET  /v1/driver/orders/:id                   — full handoff bundle
  *   POST /v1/driver/orders/:id/pickup-confirm    — driver_assigned → en_route_pickup
+ *   POST /v1/driver/orders/:id/cancel            — driver_assigned|en_route_pickup → awaiting_driver
  *   POST /v1/driver/orders/:id/depart            — picked_up → en_route_dropoff
  *   POST /v1/driver/orders/:id/arrive            — en_route_dropoff → arrived_at_dropoff
  *   POST /v1/driver/orders/:id/delivery-confirm  — *_dropoff → delivered (ID-scan gated)
@@ -37,9 +38,11 @@ import {
 } from '../../identity-verification/dto/index.js';
 import {
   DriverArriveRequestDto,
+  DriverCancelDeliveryRequestDto,
   DriverDeliveryConfirmRequestDto,
   DriverDepartRequestDto,
   DriverPickupConfirmRequestDto,
+  type DriverCancelDeliveryResponse,
   type DriverOrderDetailResponse,
 } from '../dto/index.js';
 import { DriverIdScanService } from '../services/driver-id-scan.service.js';
@@ -72,6 +75,22 @@ export class DriverOrdersController {
     @Body() body: DriverPickupConfirmRequestDto,
   ): Promise<DriverOrderDetailResponse> {
     return this.driverOrders.confirmPickup(user.userId, id, body);
+  }
+
+  /**
+   * Pre-custody bail-out: the driver backs out after accepting but
+   * before pickup-confirm. Returns the minimal cancel shape (not the
+   * detail bundle) because the order no longer belongs to this driver
+   * after the transition — the hydrate would 404 by construction.
+   */
+  @Post(':id/cancel')
+  @RateLimit({ name: 'driver-cancel-delivery', tracker: 'user', limit: 60, windowMs: 60_000 })
+  cancel(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: DriverCancelDeliveryRequestDto,
+  ): Promise<DriverCancelDeliveryResponse> {
+    return this.driverOrders.cancelDelivery(user.userId, id, body);
   }
 
   @Post(':id/depart')

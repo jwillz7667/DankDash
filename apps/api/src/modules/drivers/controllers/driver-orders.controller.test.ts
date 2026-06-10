@@ -14,6 +14,7 @@
  *                                    already excludes admin, but the controller pins
  *                                    the userId either way)
  *   - POST /:id/pickup-confirm    → forwards (driverUserId, id, body) and returns detail
+ *   - POST /:id/cancel            → forwards (driverUserId, id, body), returns minimal cancel shape
  *   - POST /:id/delivery-confirm  → forwards (driverUserId, id, body) and returns detail
  *   - POST /:id/id-scan-session   → forwards (driverUserId, id), returns session payload
  *   - POST /:id/id-scan-result    → forwards (driverUserId, id, body) to id-scan service
@@ -33,6 +34,8 @@ import type {
 } from '../../identity-verification/dto/index.js';
 import type {
   DriverArriveRequest,
+  DriverCancelDeliveryRequest,
+  DriverCancelDeliveryResponse,
   DriverDeliveryConfirmRequest,
   DriverDepartRequest,
   DriverOrderDetailResponse,
@@ -154,6 +157,11 @@ class FakeDriverOrdersService {
     orderId: string;
     body: DriverArriveRequest;
   }[] = [];
+  public cancelCalls: {
+    driverUserId: string;
+    orderId: string;
+    body: DriverCancelDeliveryRequest;
+  }[] = [];
 
   getForDriver = (driverUserId: string, orderId: string): Promise<DriverOrderDetailResponse> => {
     this.getCalls.push({ driverUserId, orderId });
@@ -194,6 +202,15 @@ class FakeDriverOrdersService {
   ): Promise<DriverOrderDetailResponse> => {
     this.deliveryCalls.push({ driverUserId, orderId, body });
     return Promise.resolve(DETAIL);
+  };
+
+  cancelDelivery = (
+    driverUserId: string,
+    orderId: string,
+    body: DriverCancelDeliveryRequest,
+  ): Promise<DriverCancelDeliveryResponse> => {
+    this.cancelCalls.push({ driverUserId, orderId, body });
+    return Promise.resolve({ orderId, status: 'awaiting_driver' });
   };
 }
 
@@ -282,6 +299,21 @@ describe('DriverOrdersController', () => {
     await controller.pickupConfirm(PRINCIPAL, ORDER_ID, body);
 
     expect(service.pickupCalls[0]?.body).toEqual({ location: null });
+  });
+
+  it('POST /:id/cancel forwards the principal userId, path param, and body', async () => {
+    const { controller, service } = makeController();
+    const body: DriverCancelDeliveryRequest = {
+      location: PICKUP_BODY.location,
+      reason: 'car trouble',
+    };
+
+    const result = await controller.cancel(PRINCIPAL, ORDER_ID, body);
+
+    expect(result).toEqual({ orderId: ORDER_ID, status: 'awaiting_driver' });
+    expect(service.cancelCalls).toEqual([
+      { driverUserId: DRIVER_USER_ID, orderId: ORDER_ID, body },
+    ]);
   });
 
   it('POST /:id/depart forwards the principal userId, path param, and body', async () => {

@@ -10,6 +10,7 @@
  *   - driver-orders surface (Phase 20):
  *       GET  /v1/driver/orders/:id
  *       POST /v1/driver/orders/:id/pickup-confirm
+ *       POST /v1/driver/orders/:id/cancel             (pre-pickup bail-out)
  *       POST /v1/driver/orders/:id/delivery-confirm   (ID-scan gated)
  *       POST /v1/driver/orders/:id/id-scan-session    (Veriff)
  *       POST /v1/driver/orders/:id/id-scan-result     (Veriff)
@@ -268,6 +269,8 @@ const driverOrdersServiceProvider: FactoryProvider<DriverOrdersService> = {
         orderEvents: new OrderEventsRepository(scopedDb),
         users: new UsersRepository(scopedDb),
         dispensaries: new DispensariesRepository(scopedDb),
+        drivers: new DriversRepository(scopedDb),
+        dispatchOffers: new DispatchOffersRepository(scopedDb),
       }),
       orderTransitions,
     ),
