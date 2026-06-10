@@ -261,10 +261,16 @@ public struct ActiveRouteFeature: Sendable {
           effects.append(calculateDirectionsEffect(from: driverLocation, route: route, phase: phase))
         }
         // While heading to the store, pre-compute the onward store → home
-        // leg so the map can preview the whole trip. Skip once we're past
-        // pickup (the primary directions cover the drop) or already have it.
-        if Self.isPickupJourney(phase), state.deliveryLegDirections == nil {
-          effects.append(calculateDeliveryLegEffect(route: route))
+        // leg so the map can preview the whole trip. Once past pickup the
+        // primary directions cover the drop — any preview (set or still
+        // computing) is stale, e.g. after a conflict-recovery refetch.
+        if Self.isPickupJourney(phase) {
+          if state.deliveryLegDirections == nil {
+            effects.append(calculateDeliveryLegEffect(route: route))
+          }
+        } else {
+          state.deliveryLegDirections = nil
+          effects.append(.cancel(id: CancelID.calculateDeliveryLeg))
         }
         return effects.isEmpty ? .none : .merge(effects)
 
@@ -304,6 +310,10 @@ public struct ActiveRouteFeature: Sendable {
         return .none
 
       case .deliveryLegCalculated(.success(let directions)):
+        // The phase may have hopped past pickup while the calc was in
+        // flight (depart raced the directions service) — the preview is
+        // already stale then, so drop it instead of resurrecting the line.
+        guard Self.isPickupJourney(state.phase) else { return .none }
         state.deliveryLegDirections = directions
         return .none
 
@@ -356,12 +366,18 @@ public struct ActiveRouteFeature: Sendable {
           // The vendor handoff landed — stop polling for it.
           effects.append(.cancel(id: CancelID.handoffPoll))
         }
+        // At or past the dropoff leg the store → home preview is stale no
+        // matter how far the jump went (a multi-hop catch-up can skip
+        // straight to the scan gate) — clear it and kill any calc still in
+        // flight so a late result can't resurrect the line.
+        if Self.rank(mapped) >= Self.rank(.enRouteToDropoff) {
+          state.deliveryLegDirections = nil
+          effects.append(.cancel(id: CancelID.calculateDeliveryLeg))
+        }
         // Server jumped us onto the dropoff leg without a local depart
         // (e.g. depart confirmed on another device, or a lost response):
         // recalc dropoff directions from the latest fix.
         if mapped == .enRouteToDropoff {
-          // The drop is now the active leg — the preview line is redundant.
-          state.deliveryLegDirections = nil
           if let location = state.driverLocation, let route = state.route {
             state.directions = nil
             state.currentStep = nil
@@ -446,15 +462,16 @@ public struct ActiveRouteFeature: Sendable {
         state.route = updatedRoute
         state.phase = .enRouteToDropoff
         // Fresh leg → discard the (absent) prior directions and the now-
-        // redundant store → home preview, then route to the customer from
-        // the current fix.
+        // redundant store → home preview (including any calc still in
+        // flight), then route to the customer from the current fix.
         state.directions = nil
         state.deliveryLegDirections = nil
         state.currentStep = nil
+        var effects: [Effect<Action>] = [.cancel(id: CancelID.calculateDeliveryLeg)]
         if let location = state.driverLocation {
-          return calculateDirectionsEffect(from: location, route: updatedRoute, phase: .enRouteToDropoff)
+          effects.append(calculateDirectionsEffect(from: location, route: updatedRoute, phase: .enRouteToDropoff))
         }
-        return .none
+        return .merge(effects)
 
       case .departResponse(.failure(let box)):
         state.departInFlight = false

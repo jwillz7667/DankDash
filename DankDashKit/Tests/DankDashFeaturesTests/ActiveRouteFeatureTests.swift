@@ -655,6 +655,79 @@ final class ActiveRouteFeatureTests: XCTestCase {
     XCTAssertNil(store.state.errorBanner)
   }
 
+  /// A preview calc that resolves AFTER the phase hopped past pickup
+  /// (depart raced the directions service) must not resurrect the stale
+  /// store → home line.
+  func test_deliveryLegCalculated_lateSuccessPastPickup_isIgnored() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true),
+        phase: .enRouteToDropoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.deliveryLegCalculated(.success(Self.fixedDirections())))
+
+    XCTAssertNil(store.state.deliveryLegDirections)
+  }
+
+  /// A multi-hop server catch-up that skips the dropoff leg entirely
+  /// (straight to the scan gate) still clears the store → home preview —
+  /// the clear keys off "at or past dropoff", not an exact phase match.
+  func test_serverStatusObserved_jumpPastDropoff_clearsDeliveryLegPreview() async {
+    let orderId = Self.orderId
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+        deliveryLegDirections: Self.fixedDirections(),
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.serverStatusObserved(.arrivedAtDropoff)) {
+      $0.phase = .awaitingIdScan
+      $0.deliveryLegDirections = nil
+    }
+  }
+
+  /// A refetch that lands past pickup (e.g. arrive-conflict recovery)
+  /// discards any stale preview instead of recomputing one.
+  func test_routeFetched_pastPickup_clearsStaleDeliveryLegPreview() async {
+    let orderId = Self.orderId
+    let route = Self.activeRoute(status: .enRouteDropoff, hasPickupEvent: true)
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        deliveryLegDirections: Self.fixedDirections(),
+        phase: .enRouteToPickup,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.routeFetched(.success(route))) {
+      $0.route = route
+      $0.phase = .enRouteToDropoff
+      $0.deliveryLegDirections = nil
+    }
+  }
+
   // MARK: - Depart
 
   /// Start Trip at `picked_up` → POST `depart` → `en_route_dropoff`, and
