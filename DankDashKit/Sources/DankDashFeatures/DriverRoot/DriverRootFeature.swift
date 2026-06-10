@@ -348,6 +348,15 @@ public struct DriverRootFeature: Sendable {
         state.screen = .shift
         return .none
 
+      case .activeRoute(.delegate(.canceledDelivery)):
+        // Pre-custody bail-out landed: the order is back with dispatch
+        // and the server freed this driver to `online`. Pop home and
+        // refetch the shift state so the status pill / offer stream
+        // reflect the freed driver without waiting for the next poll.
+        state.activeRoute = nil
+        state.screen = .shift
+        return .send(.shift(.onAppear))
+
       case .activeRoute:
         return .none
 

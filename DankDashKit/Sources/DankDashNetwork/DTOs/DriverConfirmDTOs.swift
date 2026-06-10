@@ -84,6 +84,58 @@ public struct DriverPickupConfirmRequestDTO: Encodable, Sendable, Equatable {
   }
 }
 
+/// Body for `POST /v1/driver/orders/:id/cancel` — the pre-custody
+/// bail-out (`driver_assigned | en_route_pickup → awaiting_driver`).
+/// `reason` is the driver's optional free-text ("car trouble"); capped
+/// at 280 chars client-side to match the backend constraint. The server
+/// schema is `.strict()` + `.nullable()` on both keys, so absent values
+/// encode an explicit `null` rather than omitting the key.
+public struct DriverCancelDeliveryRequestDTO: Encodable, Sendable, Equatable {
+  public let location: DriverLocationFixDTO?
+  public let reason: String?
+
+  public init(location: DriverLocationFixDTO?, reason: String?) {
+    self.location = location
+    let trimmed = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let trimmed, !trimmed.isEmpty {
+      self.reason = String(trimmed.prefix(280))
+    } else {
+      self.reason = nil
+    }
+  }
+
+  private enum CodingKeys: String, CodingKey { case location, reason }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    if let location {
+      try container.encode(location, forKey: .location)
+    } else {
+      try container.encodeNil(forKey: .location)
+    }
+    if let reason {
+      try container.encode(reason, forKey: .reason)
+    } else {
+      try container.encodeNil(forKey: .reason)
+    }
+  }
+}
+
+/// Response for `POST /v1/driver/orders/:id/cancel`. Intentionally
+/// minimal — after the transition the order belongs to dispatch again,
+/// so the full `DriverOrderDetailResponseDTO` hydration (which pairs
+/// orderId with the driver in the WHERE) would 404 by construction.
+/// `status` is always `awaiting_driver` on success.
+public struct DriverCancelDeliveryResponseDTO: Decodable, Sendable, Equatable {
+  public let orderId: String
+  public let status: String
+
+  public init(orderId: String, status: String) {
+    self.orderId = orderId
+    self.status = status
+  }
+}
+
 /// Body for `POST /v1/driver/orders/:id/depart` (`picked_up →
 /// en_route_dropoff`). Same shape as pickup-confirm: a nullable
 /// `location` fix stamped at the moment the driver started the trip to
