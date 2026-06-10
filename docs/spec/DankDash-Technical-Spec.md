@@ -524,13 +524,13 @@ audit_log                         -- everything sensitive
    placed ────┼─→ accepted ──→ prepping ──→ ready_for_pickup
               │      │             │              │
               │      └─→ rejected  │              ▼
-              ↓                    │       awaiting_driver
-   payment_failed                  │              │
-                                   ↓              ▼
-                              canceled       driver_assigned
-                              (by store)         │
-                                                 ▼
-                                          en_route_pickup
+              ↓                    │       awaiting_driver ◄──┐
+   payment_failed                  │              │           │ DRIVER_CANCELED
+                                   ↓              ▼           │ (pre-custody
+                              canceled       driver_assigned ─┤  bail-out;
+                              (by store)         │            │  offer released,
+                                                 ▼            │  driver freed)
+                                          en_route_pickup ────┘
                                                  │
                                                  ▼
                                           picked_up

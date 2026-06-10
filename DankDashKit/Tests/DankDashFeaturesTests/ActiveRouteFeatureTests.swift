@@ -1052,6 +1052,252 @@ final class ActiveRouteFeatureTests: XCTestCase {
     await store.receive(\.delegate.dismissed)
   }
 
+  // MARK: - Cancel delivery (pre-custody bail-out)
+
+  func test_cancelTapped_preCustody_showsConfirmDialog() async {
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: .enRouteToPickup,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.cancelTapped) {
+      $0.isConfirmingCancel = true
+    }
+    await store.send(.cancelDismissed) {
+      $0.isConfirmingCancel = false
+    }
+  }
+
+  func test_cancelTapped_postPickup_isNoOp() async {
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(status: .pickedUp, hasPickupEvent: true),
+        phase: .readyToDepart,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.cancelTapped)
+  }
+
+  func test_cancelConfirmed_happyPath_emitsCanceledDelegate() async {
+    let orderId = Self.orderId
+    let cancelCalls = Locker<[CancelCall]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true),
+        driverLocation: Self.driverStart,
+        phase: .awaitingHandoff,
+        isLoadingRoute: false,
+        isConfirmingCancel: true
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        cancelDelivery: { id, body in
+          await cancelCalls.append(
+            CancelCall(orderId: id, hasLocation: body.location != nil, reason: body.reason)
+          )
+          return id
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cancelConfirmed)
+    await store.receive(\.delegate.canceledDelivery)
+
+    XCTAssertFalse(store.state.isConfirmingCancel)
+    XCTAssertFalse(store.state.cancelInFlight)
+    XCTAssertNil(store.state.errorBanner)
+
+    let recorded = await cancelCalls.value
+    XCTAssertEqual(recorded.count, 1)
+    XCTAssertEqual(recorded.first?.orderId, orderId)
+    XCTAssertTrue(recorded.first?.hasLocation ?? false)
+    XCTAssertNil(recorded.first?.reason)
+  }
+
+  /// The vendor confirmed the handoff while the cancel dialog was up —
+  /// the server refuses with the machine 422. The reducer must refetch
+  /// and reconcile onto the post-pickup leg, not banner the raw machine
+  /// message.
+  func test_cancelConfirmed_422TransitionRejected_refetchesAndReconciles() async {
+    let orderId = Self.orderId
+    let refetched = Self.activeRoute(status: .pickedUp, hasPickupEvent: true)
+    let getOrderCalls = Locker<[UUID]>(value: [])
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true),
+        driverLocation: Self.driverStart,
+        phase: .awaitingHandoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        getOrder: { id in
+          await getOrderCalls.append(id)
+          return refetched
+        },
+        cancelDelivery: { _, _ in
+          throw APIError.server(
+            status: 422,
+            envelope: Self.envelope(code: "ORDER_INVALID_TRANSITION")
+          )
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cancelConfirmed)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertFalse(store.state.cancelInFlight)
+    XCTAssertNil(store.state.errorBanner, "422 ORDER_INVALID_TRANSITION should refetch, not banner")
+    XCTAssertEqual(store.state.route, refetched)
+    XCTAssertEqual(store.state.phase, .readyToDepart)
+    let fetchedIds = await getOrderCalls.value
+    XCTAssertEqual(fetchedIds, [orderId])
+  }
+
+  func test_cancelConfirmed_409StateConflict_refetches() async {
+    let orderId = Self.orderId
+    let refetched = Self.activeRoute(status: .pickedUp, hasPickupEvent: true)
+
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: orderId,
+        route: Self.activeRoute(status: .enRoutePickup, hasPickupEvent: true),
+        phase: .awaitingHandoff,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        getOrder: { _ in refetched },
+        cancelDelivery: { _, _ in
+          throw APIError.server(
+            status: 409,
+            envelope: Self.envelope(code: "DRIVER_ORDER_NOT_ACTIVE")
+          )
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cancelConfirmed)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertFalse(store.state.cancelInFlight)
+    XCTAssertNil(store.state.errorBanner)
+    XCTAssertEqual(store.state.phase, .readyToDepart)
+  }
+
+  func test_cancelConfirmed_500_setsErrorBannerKeepsPhase() async {
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: .enRouteToPickup,
+        isLoadingRoute: false
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverOrdersAPIClient = Self.ordersClient(
+        cancelDelivery: { _, _ in
+          throw APIError.server(
+            status: 500,
+            envelope: Self.envelope(code: "INTERNAL_ERROR", message: "boom")
+          )
+        }
+      )
+      $0.date = .constant(Self.referenceDate)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cancelConfirmed)
+    await store.skipReceivedActions()
+    await store.finish()
+
+    XCTAssertFalse(store.state.cancelInFlight)
+    XCTAssertEqual(store.state.errorBanner, "boom")
+    XCTAssertEqual(store.state.phase, .enRouteToPickup, "a failed cancel keeps the driver on the route")
+  }
+
+  func test_cancelConfirmed_whileInFlight_isNoOp() async {
+    let store = TestStore(
+      initialState: ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: .enRouteToPickup,
+        isLoadingRoute: false,
+        cancelInFlight: true
+      )
+    ) {
+      ActiveRouteFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.cancelConfirmed)
+  }
+
+  func test_canCancel_truePreCustody_falseFromPickedUpOnward() {
+    let preCustody: [ActiveRouteFeature.LocalPhase] = [.enRouteToPickup, .awaitingHandoff]
+    let postCustody: [ActiveRouteFeature.LocalPhase] = [
+      .readyToDepart, .enRouteToDropoff, .awaitingIdScan, .completed,
+    ]
+    for phase in preCustody {
+      let state = ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: phase,
+        isLoadingRoute: false
+      )
+      XCTAssertTrue(state.canCancel, "expected canCancel for \(phase)")
+    }
+    for phase in postCustody {
+      let state = ActiveRouteFeature.State(
+        orderId: Self.orderId,
+        route: Self.activeRoute(),
+        phase: phase,
+        isLoadingRoute: false
+      )
+      XCTAssertFalse(state.canCancel, "expected !canCancel for \(phase)")
+    }
+  }
+
   // MARK: - Error banner
 
   func test_errorBannerDismissed_clearsBanner() async {
@@ -1458,13 +1704,14 @@ final class ActiveRouteFeatureTests: XCTestCase {
   /// Minneapolis, downtown drop.
   nonisolated private static let dropoffLocation = Coordinate(latitude: 44.9836, longitude: -93.2667)
 
-  /// Builds a `DriverOrdersAPIClient` with all five closures defaulting to
+  /// Builds a `DriverOrdersAPIClient` with all six closures defaulting to
   /// `unimplemented`-style throws, overriding only the ones a test drives.
   /// Keeps the per-test wiring focused on the transition under test while
   /// a forgotten override still surfaces as a thrown error.
   nonisolated private static func ordersClient(
     getOrder: @Sendable @escaping (UUID) async throws -> ActiveRoute = { _ in throw DriverAPIError.unimplemented("getOrder") },
     pickupConfirm: @Sendable @escaping (UUID, DriverPickupConfirmRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
+    cancelDelivery: @Sendable @escaping (UUID, DriverCancelDeliveryRequestDTO) async throws -> UUID = { _, _ in throw DriverAPIError.unimplemented("cancelDelivery") },
     depart: @Sendable @escaping (UUID, DriverDepartRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("depart") },
     arrive: @Sendable @escaping (UUID, DriverArriveRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("arrive") },
     deliveryConfirm: @Sendable @escaping (UUID, DriverDeliveryConfirmRequestDTO) async throws -> ActiveRoute = { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }
@@ -1472,6 +1719,7 @@ final class ActiveRouteFeatureTests: XCTestCase {
     DriverOrdersAPIClient(
       getOrder: getOrder,
       pickupConfirm: pickupConfirm,
+      cancelDelivery: cancelDelivery,
       depart: depart,
       arrive: arrive,
       deliveryConfirm: deliveryConfirm
@@ -1626,6 +1874,12 @@ private struct PickupCall: Sendable, Equatable {
   let hasLocation: Bool
 }
 
+private struct CancelCall: Sendable, Equatable {
+  let orderId: UUID
+  let hasLocation: Bool
+  let reason: String?
+}
+
 private actor Locker<T: Sendable> {
   private(set) var value: T
   init(value: T) { self.value = value }
@@ -1645,4 +1899,8 @@ private extension Locker where T == [CalculateCall] {
 
 private extension Locker where T == [PickupCall] {
   func append(_ call: PickupCall) { value.append(call) }
+}
+
+private extension Locker where T == [CancelCall] {
+  func append(_ call: CancelCall) { value.append(call) }
 }

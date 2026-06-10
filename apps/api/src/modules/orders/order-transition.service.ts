@@ -119,6 +119,7 @@ const AUTH_BY_EVENT: Readonly<Record<OrderEventType, AuthFn>> = {
   DISPATCH_FAILED: allowSystemOrAdmin,
   DRIVER_ASSIGNED: allowSystemOrAdmin,
   DRIVER_EN_ROUTE_PICKUP: assignedDriver,
+  DRIVER_CANCELED: assignedDriver,
   DRIVER_PICKED_UP: assignedDriver,
   DRIVER_EN_ROUTE_DROPOFF: assignedDriver,
   DRIVER_ARRIVED: assignedDriver,

@@ -32,6 +32,7 @@ struct ActiveRouteScreen: View {
         VStack(spacing: DankSpacing.sm) {
           detailsCard
           bottomCard
+          cancelSection
         }
         .padding(.horizontal, DankSpacing.md)
         .padding(.bottom, DankSpacing.md)
@@ -298,6 +299,59 @@ struct ActiveRouteScreen: View {
     }
     .disabled(store.departInFlight)
     .accessibilityLabel("Start trip to \(route.customer.displayName)")
+  }
+
+  // MARK: - Cancel delivery
+
+  /// Pre-custody bail-out entry point. Only rendered while the bag is
+  /// still at the store (`.enRouteToPickup` / `.awaitingHandoff`) —
+  /// once picked up, the route can only end in delivery or
+  /// return-to-store, so the affordance disappears entirely rather
+  /// than rendering disabled.
+  @ViewBuilder
+  private var cancelSection: some View {
+    if store.route != nil,
+       store.phase == .enRouteToPickup || store.phase == .awaitingHandoff {
+      cancelButton
+    }
+  }
+
+  private var cancelButton: some View {
+    Button {
+      store.send(.cancelTapped)
+    } label: {
+      ZStack {
+        Text("Cancel delivery")
+          .font(DankFont.bodySmall.weight(.semibold))
+          .foregroundStyle(DankColor.Semantic.danger)
+          .opacity(store.cancelInFlight ? 0 : 1)
+        if store.cancelInFlight {
+          ProgressView()
+            .progressViewStyle(.circular)
+            .tint(DankColor.Semantic.danger)
+        }
+      }
+      .frame(maxWidth: .infinity, minHeight: 44)
+    }
+    .disabled(store.cancelInFlight)
+    .accessibilityLabel("Cancel this delivery")
+    .confirmationDialog(
+      "Cancel this delivery?",
+      isPresented: Binding(
+        get: { store.isConfirmingCancel },
+        set: { isPresented in
+          if !isPresented { store.send(.cancelDismissed) }
+        }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("Cancel delivery", role: .destructive) {
+        store.send(.cancelConfirmed)
+      }
+      Button("Keep delivering", role: .cancel) {}
+    } message: {
+      Text("The order goes back to dispatch for another driver. You can only cancel before pickup.")
+    }
   }
 
   private var etaMinutes: Int? {

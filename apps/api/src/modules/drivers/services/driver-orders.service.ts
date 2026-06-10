@@ -35,8 +35,10 @@
  */
 import {
   type Database,
+  type DispatchOffersRepository,
   type DispensariesRepository,
   type Dispensary,
+  type DriversRepository,
   type Order,
   type OrderEvent,
   type OrderEventsRepository,
@@ -46,7 +48,7 @@ import {
   type User,
   type UsersRepository,
 } from '@dankdash/db';
-import { NotFoundError } from '@dankdash/types';
+import { DriverError, NotFoundError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
 import {
   OrderResponseSchema,
@@ -57,6 +59,8 @@ import { type OrderEventResponse } from '../../orders/dto/index.js';
 import { OrderTransitionService } from '../../orders/order-transition.service.js';
 import type {
   DriverArriveRequest,
+  DriverCancelDeliveryRequest,
+  DriverCancelDeliveryResponse,
   DriverCustomerSummary,
   DriverDeliveryConfirmRequest,
   DriverDepartRequest,
@@ -73,6 +77,8 @@ export interface DriverOrdersScopedRepos {
   readonly orderEvents: OrderEventsRepository;
   readonly users: UsersRepository;
   readonly dispensaries: DispensariesRepository;
+  readonly drivers: DriversRepository;
+  readonly dispatchOffers: DispatchOffersRepository;
 }
 
 export type DriverOrdersScopedReposFactory = (db: Database) => DriverOrdersScopedRepos;
@@ -249,6 +255,94 @@ export class DriverOrdersService {
       throw new NotFoundError('Order', orderId);
     }
     return this.hydrate(scoped, refreshed);
+  }
+
+  /**
+   * POST /v1/driver/orders/:id/cancel. The driver backs out of an
+   * accepted delivery BEFORE taking custody of the product. Legal
+   * FROM-states are `driver_assigned` and `en_route_pickup` only — the
+   * machine rejects anything later (cannabis in the car can only go
+   * through delivery or return-to-store).
+   *
+   * One transaction, lock order driver → order (the same discipline the
+   * shift/status surface uses; the offer row is mutated last via an
+   * atomic conditional UPDATE, no lock needed):
+   *
+   *   1. Resolve + FOR UPDATE the driver row; require
+   *      `current_order_id = :orderId` so a stale tab cannot cancel an
+   *      order the driver no longer holds.
+   *   2. DRIVER_CANCELED through the transition chokepoint — locks the
+   *      order, re-checks the machine edge and the assigned-driver
+   *      authz, clears `orders.driver_id`, re-stamps
+   *      `awaiting_driver_at` (fresh dispatch budget), and appends the
+   *      immutable event rows with the reason + location payload.
+   *   3. Release the driver's `accepted` dispatch offer to `declined` —
+   *      without this the dispatch orchestrator sees an accepted
+   *      history row, treats the attempt as done, and the order strands
+   *      in `awaiting_driver` forever. The flip also excludes this
+   *      driver from the re-offer round.
+   *   4. Free the driver: `current_order_id = NULL`, status `online` —
+   *      back on shift and dispatchable (they can flip to unavailable
+   *      or end the shift afterwards; both are legal from `online`).
+   *
+   * The deferred OrderTransitionedEvent is emitted after commit, so the
+   * vendor portal and the customer see the order drop back to
+   * "finding a driver" through the normal realtime path.
+   */
+  async cancelDelivery(
+    driverUserId: string,
+    orderId: string,
+    body: DriverCancelDeliveryRequest,
+    now: Date = new Date(),
+  ): Promise<DriverCancelDeliveryResponse> {
+    const outcome = await this.db.transaction(async (tx) => {
+      const scoped = this.reposFor(tx);
+
+      const driver = await scoped.drivers.findByUserId(driverUserId);
+      if (driver === null) {
+        // A driver-role JWT without a drivers row should be impossible;
+        // mirror the cross-driver 404 shape rather than leak topology.
+        throw new NotFoundError('Order', orderId);
+      }
+      const locked = await scoped.drivers.findByIdForUpdate(driver.id);
+      if (locked === null) {
+        throw new NotFoundError('Order', orderId);
+      }
+      if (locked.currentOrderId !== orderId) {
+        throw new DriverError(
+          'DRIVER_ORDER_NOT_ACTIVE',
+          'order is not this driver’s active delivery',
+          { driverId: locked.id, orderId, currentOrderId: locked.currentOrderId },
+        );
+      }
+
+      const transition = await this.orderTransitions.transitionWithinTx(
+        {
+          orderId,
+          event: 'DRIVER_CANCELED',
+          actor: { userId: driverUserId, role: 'driver' },
+          patch: { driverId: null },
+          reason: 'driver canceled before pickup',
+          payload: { reason: body.reason, location: body.location, driverId: locked.id },
+        },
+        tx,
+      );
+
+      await scoped.dispatchOffers.releaseAcceptedForOrder(
+        orderId,
+        locked.id,
+        now,
+        'driver_canceled_after_accept',
+      );
+
+      await scoped.drivers.setCurrentOrder(locked.id, null);
+      await scoped.drivers.setStatus(locked.id, 'online');
+
+      return transition;
+    });
+
+    this.orderTransitions.emitDeferred(outcome.deferredEvent);
+    return { orderId, status: 'awaiting_driver' };
   }
 
   private async hydrate(

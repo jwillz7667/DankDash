@@ -7,6 +7,7 @@ import Foundation
 ///
 ///   GET  /v1/driver/orders/:id            — denormalized route view
 ///   POST /v1/driver/orders/:id/pickup-confirm
+///   POST /v1/driver/orders/:id/cancel     — pre-custody bail-out
 ///   POST /v1/driver/orders/:id/depart
 ///   POST /v1/driver/orders/:id/arrive
 ///   POST /v1/driver/orders/:id/delivery-confirm
@@ -39,6 +40,25 @@ public enum DriverOrdersEndpoints {
     Endpoint(
       method: .POST,
       path: "v1/driver/orders/\(id.uuidString.lowercased())/pickup-confirm",
+      body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
+
+  /// Pre-custody bail-out: `driver_assigned | en_route_pickup →
+  /// awaiting_driver`. Only valid before pickup-confirm hands the bag
+  /// over — the machine 422s from `picked_up` onward (cannabis in the
+  /// car can only end in delivery or return-to-store). The response is
+  /// the minimal cancel shape, NOT the detail bundle: after the
+  /// transition the order belongs to dispatch again and the detail GET
+  /// would 404 for this driver by construction.
+  public static func cancel(
+    id: UUID,
+    body: DriverCancelDeliveryRequestDTO
+  ) -> Endpoint<DriverCancelDeliveryResponseDTO> {
+    Endpoint(
+      method: .POST,
+      path: "v1/driver/orders/\(id.uuidString.lowercased())/cancel",
       body: AnyEncodableBody(body),
       requiresAuth: true
     )

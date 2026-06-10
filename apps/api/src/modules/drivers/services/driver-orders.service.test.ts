@@ -27,22 +27,41 @@
  *     from the repo's ID-scan gate (the gate itself is exercised by
  *     the repo-level tests; the service must NOT swallow it).
  *
+ *   - cancel happy path: locks the driver row, fires DRIVER_CANCELED
+ *     through `transitionWithinTx` with `patch: { driverId: null }`,
+ *     releases the accepted dispatch offer, frees the driver back to
+ *     `online`, and emits the deferred event only after the tx body
+ *     resolves.
+ *   - cancel 404 when the JWT user has no drivers row.
+ *   - cancel 409 DRIVER_ORDER_NOT_ACTIVE when the order is not the
+ *     driver's `current_order_id` (stale tab) — nothing mutated.
+ *   - cancel propagates the 422 machine rejection after pickup and
+ *     skips every post-transition mutation (rollback semantics).
+ *
  * The OrderTransitionService dependency is a fake that records every
  * transition request — so the test pins the exact event, actor, and
  * payload the service threads through.
  */
-import { ConflictError, NotFoundError } from '@dankdash/types';
+import { OrderError } from '@dankdash/orders';
+import { ConflictError, DriverError, NotFoundError } from '@dankdash/types';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { OrderTransitionedEvent } from '../../orders/order-transition.events.js';
 import { DriverOrdersService, type DriverOrdersScopedRepos } from './driver-orders.service.js';
 import type {
+  DeferredTransitionResult,
   OrderTransitionService,
   TransitionRequest,
   TransitionResult,
 } from '../../orders/order-transition.service.js';
 import type {
   Database,
+  DispatchOffer,
+  DispatchOffersRepository,
   DispensariesRepository,
   Dispensary,
+  Driver,
+  DriverStatus,
+  DriversRepository,
   Order,
   OrderEvent,
   OrderEventsRepository,
@@ -58,8 +77,14 @@ const ORDER_ID = '01935f3d-0000-7000-8000-000000000110';
 const DISPENSARY_ID = '01935f3d-0000-7000-8000-000000000120';
 const ADDRESS_ID = '01935f3d-0000-7000-8000-000000000130';
 const CUSTOMER_ID = '01935f3d-0000-7000-8000-000000000140';
+const DRIVER_ID = '01935f3d-0000-7000-8000-000000000150';
 
-const FAKE_DB = {} as Database;
+// transaction() is a passthrough so cancelDelivery's tx body runs against
+// the same fakes; rollback semantics are asserted by checking that
+// nothing after a thrown step recorded a call.
+const FAKE_DB = {
+  transaction: <T>(fn: (tx: Database) => Promise<T>): Promise<T> => fn(FAKE_DB),
+} as unknown as Database;
 
 const PIN_NOW = new Date('2026-05-15T20:30:00.000Z');
 
@@ -203,6 +228,39 @@ function makeDispensary(overrides: Partial<Dispensary> = {}): Dispensary {
   };
 }
 
+/**
+ * Driver row in the post-accept state: status already flipped to
+ * `en_route_pickup` and `current_order_id` stamped (the offer-accept
+ * flow does both immediately, before pickup-confirm).
+ */
+function makeDriver(overrides: Partial<Driver> = {}): Driver {
+  return {
+    id: DRIVER_ID,
+    userId: DRIVER_USER_ID,
+    licenseNumberHash: new Uint8Array(32),
+    vehicleMake: null,
+    vehicleModel: null,
+    vehicleYear: null,
+    vehiclePlate: null,
+    vehicleColor: null,
+    insuranceDocKey: null,
+    insuranceExpiresAt: '2026-12-31',
+    backgroundCheckPassedAt: '2026-01-01',
+    backgroundCheckProviderRef: null,
+    currentStatus: 'en_route_pickup',
+    lastStatusChangeAt: PIN_NOW,
+    currentLocation: null,
+    currentLocationUpdatedAt: null,
+    currentOrderId: ORDER_ID,
+    ratingAvg: null,
+    ratingCount: 0,
+    totalDeliveries: 0,
+    createdAt: PIN_NOW,
+    updatedAt: PIN_NOW,
+    ...overrides,
+  };
+}
+
 class FakeOrdersRepo implements Pick<OrdersRepository, 'findByIdForDriver'> {
   public rows = new Map<string, Order>();
   public callsByDriverId: { orderId: string; driverUserId: string }[] = [];
@@ -251,6 +309,58 @@ class FakeDispensariesRepo implements Pick<DispensariesRepository, 'findById'> {
   }
 }
 
+class FakeDriversRepo implements Pick<
+  DriversRepository,
+  'findByUserId' | 'findByIdForUpdate' | 'setStatus' | 'setCurrentOrder'
+> {
+  public row: Driver | null = null;
+  public lockedIds: string[] = [];
+  public setStatusCalls: { id: string; status: DriverStatus }[] = [];
+  public setCurrentOrderCalls: { id: string; orderId: string | null }[] = [];
+
+  findByUserId(userId: string): Promise<Driver | null> {
+    return Promise.resolve(this.row !== null && this.row.userId === userId ? this.row : null);
+  }
+
+  findByIdForUpdate(id: string): Promise<Driver | null> {
+    this.lockedIds.push(id);
+    return Promise.resolve(this.row !== null && this.row.id === id ? this.row : null);
+  }
+
+  setStatus(id: string, status: DriverStatus): Promise<void> {
+    this.setStatusCalls.push({ id, status });
+    if (this.row !== null && this.row.id === id) {
+      this.row = { ...this.row, currentStatus: status };
+    }
+    return Promise.resolve();
+  }
+
+  setCurrentOrder(id: string, orderId: string | null): Promise<void> {
+    this.setCurrentOrderCalls.push({ id, orderId });
+    if (this.row !== null && this.row.id === id) {
+      this.row = { ...this.row, currentOrderId: orderId };
+    }
+    return Promise.resolve();
+  }
+}
+
+class FakeDispatchOffersRepo implements Pick<DispatchOffersRepository, 'releaseAcceptedForOrder'> {
+  public releaseCalls: { orderId: string; driverId: string; now: Date; reason: string }[] = [];
+
+  // The service treats the flip as fire-and-forget inside the tx and
+  // never reads the returned row; null mirrors the no-accepted-row
+  // no-op (racing second cancel).
+  releaseAcceptedForOrder(
+    orderId: string,
+    driverId: string,
+    now: Date,
+    reason: string,
+  ): Promise<DispatchOffer | null> {
+    this.releaseCalls.push({ orderId, driverId, now, reason });
+    return Promise.resolve(null);
+  }
+}
+
 /**
  * Maps the driver-facing transition events to the order status the
  * real OrderTransitionService would arrive at after the XState
@@ -275,6 +385,9 @@ function nextStatusForEvent(event: TransitionRequest['event']): Order['status'] 
 class FakeOrderTransitionService {
   public calls: TransitionRequest[] = [];
   public throwError: Error | null = null;
+  public withinTxCalls: TransitionRequest[] = [];
+  public throwOnWithinTx: Error | null = null;
+  public emitDeferredCalls: OrderTransitionedEvent[] = [];
 
   constructor(private readonly orders: FakeOrdersRepo) {}
 
@@ -298,6 +411,33 @@ class FakeOrderTransitionService {
       toStatus,
     });
   };
+
+  // cancelDelivery is the only caller — the fake hardcodes the
+  // DRIVER_CANCELED edge (driver_assigned → awaiting_driver) instead
+  // of consulting the machine; the real edge is pinned by the
+  // @dankdash/orders machine tests.
+  transitionWithinTx = (
+    req: TransitionRequest,
+    _tx: Database,
+  ): Promise<DeferredTransitionResult> => {
+    this.withinTxCalls.push(req);
+    if (this.throwOnWithinTx !== null) return Promise.reject(this.throwOnWithinTx);
+    return Promise.resolve({
+      result: { orderId: req.orderId, fromStatus: 'driver_assigned', toStatus: 'awaiting_driver' },
+      deferredEvent: new OrderTransitionedEvent({
+        orderId: req.orderId,
+        fromStatus: 'driver_assigned',
+        toStatus: 'awaiting_driver',
+        event: req.event,
+        actor: req.actor,
+        occurredAt: PIN_NOW,
+      }),
+    });
+  };
+
+  emitDeferred = (event: OrderTransitionedEvent): void => {
+    this.emitDeferredCalls.push(event);
+  };
 }
 
 interface Rig {
@@ -307,6 +447,8 @@ interface Rig {
   readonly orderEvents: FakeOrderEventsRepo;
   readonly users: FakeUsersRepo;
   readonly dispensaries: FakeDispensariesRepo;
+  readonly drivers: FakeDriversRepo;
+  readonly dispatchOffers: FakeDispatchOffersRepo;
   readonly transitions: FakeOrderTransitionService;
 }
 
@@ -316,6 +458,8 @@ function makeRig(): Rig {
   const orderEvents = new FakeOrderEventsRepo();
   const users = new FakeUsersRepo();
   const dispensaries = new FakeDispensariesRepo();
+  const drivers = new FakeDriversRepo();
+  const dispatchOffers = new FakeDispatchOffersRepo();
   const transitions = new FakeOrderTransitionService(orders);
   const scoped: DriverOrdersScopedRepos = {
     orders: orders as unknown as OrdersRepository,
@@ -323,13 +467,25 @@ function makeRig(): Rig {
     orderEvents: orderEvents as unknown as OrderEventsRepository,
     users: users as unknown as UsersRepository,
     dispensaries: dispensaries as unknown as DispensariesRepository,
+    drivers: drivers as unknown as DriversRepository,
+    dispatchOffers: dispatchOffers as unknown as DispatchOffersRepository,
   };
   const service = new DriverOrdersService(
     FAKE_DB,
     () => scoped,
     transitions as unknown as OrderTransitionService,
   );
-  return { service, orders, orderItems, orderEvents, users, dispensaries, transitions };
+  return {
+    service,
+    orders,
+    orderItems,
+    orderEvents,
+    users,
+    dispensaries,
+    drivers,
+    dispatchOffers,
+    transitions,
+  };
 }
 
 function seedHappyPath(rig: Rig, orderOverrides: Partial<Order> = {}): void {
@@ -630,5 +786,120 @@ describe('DriverOrdersService.confirmDelivery', () => {
       code: 'COMPLIANCE_ID_SCAN_REQUIRED',
       statusCode: 409,
     });
+  });
+});
+
+describe('DriverOrdersService.cancelDelivery', () => {
+  const LOCATION = {
+    latitude: 44.978,
+    longitude: -93.265,
+    accuracyMeters: 8.0,
+    capturedAt: '2026-05-15T20:35:00.000Z',
+  };
+
+  let rig: Rig;
+  beforeEach(() => {
+    rig = makeRig();
+  });
+
+  it('locks the driver, fires DRIVER_CANCELED, releases the offer, frees the driver, emits after the tx', async () => {
+    rig.drivers.row = makeDriver();
+
+    const result = await rig.service.cancelDelivery(
+      DRIVER_USER_ID,
+      ORDER_ID,
+      { location: LOCATION, reason: 'car trouble' },
+      PIN_NOW,
+    );
+
+    expect(result).toEqual({ orderId: ORDER_ID, status: 'awaiting_driver' });
+
+    expect(rig.drivers.lockedIds).toEqual([DRIVER_ID]);
+
+    expect(rig.transitions.withinTxCalls).toHaveLength(1);
+    expect(rig.transitions.withinTxCalls[0]).toEqual({
+      orderId: ORDER_ID,
+      event: 'DRIVER_CANCELED',
+      actor: { userId: DRIVER_USER_ID, role: 'driver' },
+      patch: { driverId: null },
+      reason: 'driver canceled before pickup',
+      payload: { reason: 'car trouble', location: LOCATION, driverId: DRIVER_ID },
+    });
+
+    // Without this flip the dispatch orchestrator sees an accepted
+    // history row and strands the order in awaiting_driver forever.
+    expect(rig.dispatchOffers.releaseCalls).toEqual([
+      {
+        orderId: ORDER_ID,
+        driverId: DRIVER_ID,
+        now: PIN_NOW,
+        reason: 'driver_canceled_after_accept',
+      },
+    ]);
+
+    expect(rig.drivers.setCurrentOrderCalls).toEqual([{ id: DRIVER_ID, orderId: null }]);
+    expect(rig.drivers.setStatusCalls).toEqual([{ id: DRIVER_ID, status: 'online' }]);
+
+    expect(rig.transitions.emitDeferredCalls).toHaveLength(1);
+    expect(rig.transitions.emitDeferredCalls[0]?.toStatus).toBe('awaiting_driver');
+    expect(rig.transitions.emitDeferredCalls[0]?.event).toBe('DRIVER_CANCELED');
+  });
+
+  it('throws NotFoundError when the JWT user has no drivers row — nothing fired', async () => {
+    rig.drivers.row = null;
+
+    await expect(
+      rig.service.cancelDelivery(DRIVER_USER_ID, ORDER_ID, { location: null, reason: null }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+
+    expect(rig.transitions.withinTxCalls).toHaveLength(0);
+    expect(rig.dispatchOffers.releaseCalls).toHaveLength(0);
+    expect(rig.transitions.emitDeferredCalls).toHaveLength(0);
+  });
+
+  it('throws 409 DRIVER_ORDER_NOT_ACTIVE when the order is not the driver’s active delivery', async () => {
+    // Stale tab: the driver already canceled (or the order was
+    // reassigned) and current_order_id points elsewhere.
+    rig.drivers.row = makeDriver({ currentOrderId: '01935f3d-0000-7000-8000-0000000000ff' });
+
+    const promise = rig.service.cancelDelivery(DRIVER_USER_ID, ORDER_ID, {
+      location: null,
+      reason: null,
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(DriverError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'DRIVER_ORDER_NOT_ACTIVE',
+      statusCode: 409,
+    });
+
+    expect(rig.transitions.withinTxCalls).toHaveLength(0);
+    expect(rig.dispatchOffers.releaseCalls).toHaveLength(0);
+    expect(rig.drivers.setStatusCalls).toHaveLength(0);
+    expect(rig.drivers.setCurrentOrderCalls).toHaveLength(0);
+  });
+
+  it('propagates the 422 machine rejection after pickup and mutates nothing downstream', async () => {
+    // Cannabis already in the car — the machine has no DRIVER_CANCELED
+    // edge from picked_up. The transition throw aborts the tx body
+    // before the offer release / driver free steps run.
+    rig.drivers.row = makeDriver({ currentStatus: 'en_route_dropoff' });
+    rig.transitions.throwOnWithinTx = OrderError.invalidTransition('picked_up', 'DRIVER_CANCELED');
+
+    const promise = rig.service.cancelDelivery(DRIVER_USER_ID, ORDER_ID, {
+      location: null,
+      reason: 'changed my mind',
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(OrderError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'ORDER_INVALID_TRANSITION',
+      statusCode: 422,
+    });
+
+    expect(rig.dispatchOffers.releaseCalls).toHaveLength(0);
+    expect(rig.drivers.setCurrentOrderCalls).toHaveLength(0);
+    expect(rig.drivers.setStatusCalls).toHaveLength(0);
+    expect(rig.transitions.emitDeferredCalls).toHaveLength(0);
   });
 });

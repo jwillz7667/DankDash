@@ -95,6 +95,44 @@ export type DriverArriveRequest = z.infer<typeof DriverArriveRequestSchema>;
 
 export class DriverArriveRequestDto extends createZodDto(DriverArriveRequestSchema) {}
 
+/**
+ * POST /v1/driver/orders/:id/cancel — `driver_assigned` | `en_route_pickup`
+ * → `awaiting_driver`. The driver backs out AFTER accepting the offer but
+ * BEFORE taking custody of the product. The order goes back to dispatch
+ * with a fresh attempt budget; the canceling driver's accepted offer is
+ * released so the orchestrator re-offers to someone else, and the driver
+ * returns to `online`. After `picked_up` this endpoint is illegal (422
+ * from the state machine) — cannabis in the car can only complete the
+ * delivery or go through the return-to-store flow.
+ *
+ * `reason` is the driver's free-text justification ("car trouble",
+ * "store line too long"); preserved on the append-only `order_events`
+ * payload for ops review — chronic cancelers are a coaching signal.
+ */
+export const DriverCancelDeliveryRequestSchema = z
+  .object({
+    location: DriverLocationFixSchema.nullable(),
+    reason: z.string().max(280).nullable(),
+  })
+  .strict();
+
+export type DriverCancelDeliveryRequest = z.infer<typeof DriverCancelDeliveryRequestSchema>;
+
+export class DriverCancelDeliveryRequestDto extends createZodDto(
+  DriverCancelDeliveryRequestSchema,
+) {}
+
+/**
+ * Cancel response is intentionally minimal: after the transition the
+ * order no longer belongs to this driver, so the full
+ * DriverOrderDetailResponse hydration (which pairs orderId with the
+ * driver in the WHERE) would 404 by construction.
+ */
+export interface DriverCancelDeliveryResponse {
+  readonly orderId: string;
+  readonly status: 'awaiting_driver';
+}
+
 export const DriverDeliveryConfirmRequestSchema = z
   .object({
     location: DriverLocationFixSchema.nullable(),

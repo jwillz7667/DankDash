@@ -19,6 +19,11 @@ import DankDashNetwork
 public struct DriverOrdersAPIClient: Sendable {
   public var getOrder: @Sendable (UUID) async throws -> ActiveRoute
   public var pickupConfirm: @Sendable (UUID, DriverPickupConfirmRequestDTO) async throws -> ActiveRoute
+  /// Pre-custody bail-out. Returns the canceled order's id (echoed by
+  /// the server) rather than an ``ActiveRoute`` — after the transition
+  /// the order belongs to dispatch again and the detail hydration would
+  /// 404 for this driver by construction.
+  public var cancelDelivery: @Sendable (UUID, DriverCancelDeliveryRequestDTO) async throws -> UUID
   public var depart: @Sendable (UUID, DriverDepartRequestDTO) async throws -> ActiveRoute
   public var arrive: @Sendable (UUID, DriverArriveRequestDTO) async throws -> ActiveRoute
   public var deliveryConfirm: @Sendable (UUID, DriverDeliveryConfirmRequestDTO) async throws -> ActiveRoute
@@ -26,12 +31,14 @@ public struct DriverOrdersAPIClient: Sendable {
   public init(
     getOrder: @Sendable @escaping (UUID) async throws -> ActiveRoute,
     pickupConfirm: @Sendable @escaping (UUID, DriverPickupConfirmRequestDTO) async throws -> ActiveRoute,
+    cancelDelivery: @Sendable @escaping (UUID, DriverCancelDeliveryRequestDTO) async throws -> UUID,
     depart: @Sendable @escaping (UUID, DriverDepartRequestDTO) async throws -> ActiveRoute,
     arrive: @Sendable @escaping (UUID, DriverArriveRequestDTO) async throws -> ActiveRoute,
     deliveryConfirm: @Sendable @escaping (UUID, DriverDeliveryConfirmRequestDTO) async throws -> ActiveRoute
   ) {
     self.getOrder = getOrder
     self.pickupConfirm = pickupConfirm
+    self.cancelDelivery = cancelDelivery
     self.depart = depart
     self.arrive = arrive
     self.deliveryConfirm = deliveryConfirm
@@ -56,6 +63,15 @@ public extension DriverOrdersAPIClient {
           throw DriverAPIError.malformedPayload("DriverOrderDetail")
         }
         return route
+      },
+      cancelDelivery: { orderId, body in
+        let dto = try await apiClient.send(
+          DriverOrdersEndpoints.cancel(id: orderId, body: body)
+        )
+        guard let canceledId = UUID(uuidString: dto.orderId) else {
+          throw DriverAPIError.malformedPayload("DriverCancelDelivery")
+        }
+        return canceledId
       },
       depart: { orderId, body in
         let dto = try await apiClient.send(
@@ -90,6 +106,7 @@ public extension DriverOrdersAPIClient {
   static let unimplemented = DriverOrdersAPIClient(
     getOrder: { _ in throw DriverAPIError.unimplemented("getOrder") },
     pickupConfirm: { _, _ in throw DriverAPIError.unimplemented("pickupConfirm") },
+    cancelDelivery: { _, _ in throw DriverAPIError.unimplemented("cancelDelivery") },
     depart: { _, _ in throw DriverAPIError.unimplemented("depart") },
     arrive: { _, _ in throw DriverAPIError.unimplemented("arrive") },
     deliveryConfirm: { _, _ in throw DriverAPIError.unimplemented("deliveryConfirm") }

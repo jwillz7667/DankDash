@@ -568,6 +568,31 @@ final class DriverRootFeatureTests: XCTestCase {
     XCTAssertNil(store.state.activeRoute)
   }
 
+  func test_activeRouteCanceledDelivery_popsToShiftAndRefreshes() async {
+    let orderId = UUID()
+    let driver = Self.passedDriver()
+    let store = TestStore(
+      initialState: DriverRootFeature.State(
+        screen: .activeRoute,
+        driver: driver,
+        shift: DriverShiftFeature.State(driver: driver),
+        activeRoute: ActiveRouteFeature.State(orderId: orderId)
+      )
+    ) {
+      DriverRootFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.activeRoute(.delegate(.canceledDelivery(orderId: orderId))))
+    XCTAssertEqual(store.state.screen, .shift)
+    XCTAssertNil(store.state.activeRoute)
+    // The chained `.shift(.onAppear)` refresh runs against the stubbed
+    // dependencies; its internals are covered by DriverShiftFeatureTests.
+    await store.finish()
+  }
+
   func test_idScanConfirmed_routesToDeliveryComplete() async {
     let orderId = UUID()
     let route = Self.activeRoute(orderId: orderId)

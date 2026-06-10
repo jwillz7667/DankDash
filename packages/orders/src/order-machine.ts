@@ -62,14 +62,23 @@ export const orderMachine = setup({
       },
     },
     dispatch_failed: { type: 'final' },
+    // DRIVER_CANCELED is the driver backing out AFTER accepting the offer
+    // but BEFORE taking custody of the product (pre-`picked_up` only — once
+    // cannabis is in the car the only exits are the delivery flow or the
+    // return-to-store flow). The order re-enters `awaiting_driver` so the
+    // dispatch worker re-runs the attempt with a fresh budget; the service
+    // layer releases the driver's accepted offer so the orchestrator can
+    // re-offer to someone else.
     driver_assigned: {
       on: {
         DRIVER_EN_ROUTE_PICKUP: 'en_route_pickup',
+        DRIVER_CANCELED: 'awaiting_driver',
       },
     },
     en_route_pickup: {
       on: {
         DRIVER_PICKED_UP: 'picked_up',
+        DRIVER_CANCELED: 'awaiting_driver',
       },
     },
     picked_up: {
@@ -203,6 +212,7 @@ const ALL_EVENT_TYPES: readonly OrderEventType[] = [
   'DISPATCH_FAILED',
   'DRIVER_ASSIGNED',
   'DRIVER_EN_ROUTE_PICKUP',
+  'DRIVER_CANCELED',
   'DRIVER_PICKED_UP',
   'DRIVER_EN_ROUTE_DROPOFF',
   'DRIVER_ARRIVED',

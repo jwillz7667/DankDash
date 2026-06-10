@@ -29,6 +29,8 @@ export {
 export {
   DriverArriveRequestDto,
   DriverArriveRequestSchema,
+  DriverCancelDeliveryRequestDto,
+  DriverCancelDeliveryRequestSchema,
   DriverDepartRequestDto,
   DriverDepartRequestSchema,
   DriverDeliveryConfirmRequestDto,
@@ -37,6 +39,8 @@ export {
   DriverPickupConfirmRequestDto,
   DriverPickupConfirmRequestSchema,
   type DriverArriveRequest,
+  type DriverCancelDeliveryRequest,
+  type DriverCancelDeliveryResponse,
   type DriverDepartRequest,
   type DriverDeliveryConfirmRequest,
   type DriverLocationFix,

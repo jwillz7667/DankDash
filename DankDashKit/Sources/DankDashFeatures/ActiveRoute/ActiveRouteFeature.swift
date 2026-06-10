@@ -61,6 +61,11 @@ public struct ActiveRouteFeature: Sendable {
     public var confirmPickupInFlight: Bool
     public var departInFlight: Bool
     public var arriveInFlight: Bool
+    /// The destructive-confirm dialog for the pre-custody bail-out is
+    /// showing. Reducer-owned so the dialog survives view re-renders
+    /// and tests can drive it without a view host.
+    public var isConfirmingCancel: Bool
+    public var cancelInFlight: Bool
     public var errorBanner: String?
 
     public var id: UUID { orderId }
@@ -78,6 +83,8 @@ public struct ActiveRouteFeature: Sendable {
       confirmPickupInFlight: Bool = false,
       departInFlight: Bool = false,
       arriveInFlight: Bool = false,
+      isConfirmingCancel: Bool = false,
+      cancelInFlight: Bool = false,
       errorBanner: String? = nil
     ) {
       self.orderId = orderId
@@ -92,6 +99,8 @@ public struct ActiveRouteFeature: Sendable {
       self.confirmPickupInFlight = confirmPickupInFlight
       self.departInFlight = departInFlight
       self.arriveInFlight = arriveInFlight
+      self.isConfirmingCancel = isConfirmingCancel
+      self.cancelInFlight = cancelInFlight
       self.errorBanner = errorBanner
     }
 
@@ -118,6 +127,16 @@ public struct ActiveRouteFeature: Sendable {
 
     public var canMarkArrived: Bool {
       phase == .enRouteToDropoff && !arriveInFlight && route != nil
+    }
+
+    /// The pre-custody bail-out is only offered before the bag is in
+    /// the car — `driver_assigned` / `en_route_pickup` server-side.
+    /// From `picked_up` onward the cannabis is in transit and the route
+    /// can only end in delivery or return-to-store; the server enforces
+    /// the same window (422 from later states).
+    public var canCancel: Bool {
+      (phase == .enRouteToPickup || phase == .awaitingHandoff)
+        && !cancelInFlight && route != nil
     }
 
     /// The single next stop for an external Apple Maps hand-off — the
@@ -167,6 +186,14 @@ public struct ActiveRouteFeature: Sendable {
     case arrivedTapped
     case arriveResponse(Result<ActiveRoute, RouteErrorBox>)
 
+    /// Driver asked to bail out pre-custody — show the destructive
+    /// confirm dialog. `cancelConfirmed` fires the POST; `cancelDismissed`
+    /// closes the dialog without side effects.
+    case cancelTapped
+    case cancelConfirmed
+    case cancelDismissed
+    case cancelResponse(Result<UUID, RouteErrorBox>)
+
     case backTapped
     case errorBannerDismissed
     case retryTapped
@@ -186,6 +213,11 @@ public struct ActiveRouteFeature: Sendable {
       /// whether to confirm-dialog or pop straight back to the shift
       /// home.
       case dismissed(orderId: UUID)
+      /// Pre-custody bail-out landed server-side: the order went back
+      /// to dispatch (`awaiting_driver`) and this driver is freed back
+      /// to `online`. The parent pops to the shift home and refreshes
+      /// it so the card reflects the freed status immediately.
+      case canceledDelivery(orderId: UUID)
     }
   }
 
@@ -195,6 +227,7 @@ public struct ActiveRouteFeature: Sendable {
     case calculateDirections
     case calculateDeliveryLeg
     case confirmPickup
+    case cancelDelivery
     case depart
     case arrive
     case driverEvents
@@ -238,6 +271,7 @@ public struct ActiveRouteFeature: Sendable {
           .cancel(id: CancelID.calculateDeliveryLeg),
           .cancel(id: CancelID.fetchRoute),
           .cancel(id: CancelID.confirmPickup),
+          .cancel(id: CancelID.cancelDelivery),
           .cancel(id: CancelID.depart),
           .cancel(id: CancelID.arrive),
           .cancel(id: CancelID.driverEvents),
@@ -523,6 +557,57 @@ public struct ActiveRouteFeature: Sendable {
         state.errorBanner = box.userFacingMessage()
         return .none
 
+      case .cancelTapped:
+        guard state.canCancel else { return .none }
+        state.isConfirmingCancel = true
+        return .none
+
+      case .cancelDismissed:
+        state.isConfirmingCancel = false
+        return .none
+
+      case .cancelConfirmed:
+        state.isConfirmingCancel = false
+        guard state.canCancel else { return .none }
+        state.cancelInFlight = true
+        state.errorBanner = nil
+        let orderId = state.orderId
+        let location = state.driverLocation
+        let capturedAt = now
+        return .run { [ordersAPI] send in
+          let fix = location.map {
+            DriverLocationFixDTO(coordinate: $0, accuracyMeters: nil, capturedAt: capturedAt)
+          }
+          let body = DriverCancelDeliveryRequestDTO(location: fix, reason: nil)
+          do {
+            let canceledId = try await ordersAPI.cancelDelivery(orderId, body)
+            await send(.cancelResponse(.success(canceledId)))
+          } catch {
+            await send(.cancelResponse(.failure(RouteErrorBox(error))))
+          }
+        }
+        .cancellable(id: CancelID.cancelDelivery, cancelInFlight: true)
+
+      case .cancelResponse(.success):
+        // The order is back with dispatch and this driver is freed —
+        // hand control to the parent, which pops to the shift home.
+        // Effect teardown rides the view's .onDisappear, same as the
+        // back-button dismissal path.
+        state.cancelInFlight = false
+        return .send(.delegate(.canceledDelivery(orderId: state.orderId)))
+
+      case .cancelResponse(.failure(let box)):
+        state.cancelInFlight = false
+        if box.isStateConflict || box.isTransitionRejection {
+          // The order moved past the cancelable window while the dialog
+          // was up (vendor confirmed the handoff, or another device
+          // acted) — reconcile to where the server actually is instead
+          // of surfacing a machine error.
+          return fetchRouteEffect(orderId: state.orderId)
+        }
+        state.errorBanner = box.userFacingMessage()
+        return .none
+
       case .backTapped:
         return .send(.delegate(.dismissed(orderId: state.orderId)))
 
@@ -766,6 +851,15 @@ public struct RouteErrorBox: Error, Equatable, Sendable {
 
   public var isStateConflict: Bool {
     if case .stateConflict = kind { return true }
+    return false
+  }
+
+  /// 422 `ORDER_INVALID_TRANSITION` — the state machine refused the
+  /// event because the order has already moved on. Recoverable the same
+  /// way as a 409: refetch and reconcile rather than banner the raw
+  /// machine message.
+  public var isTransitionRejection: Bool {
+    if case .server(_, let code) = kind { return code == "ORDER_INVALID_TRANSITION" }
     return false
   }
 

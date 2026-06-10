@@ -333,6 +333,21 @@ describe('OrderTransitionService.transition', () => {
       expect(r2.toStatus).toBe('en_route_dropoff');
     });
 
+    it('assigned driver bails out pre-custody (en_route_pickup → awaiting_driver via DRIVER_CANCELED)', async () => {
+      const { service } = makeService([
+        makeOrder({ status: 'en_route_pickup', driverId: DRIVER_ID }),
+      ]);
+
+      const r = await service.transition({
+        orderId: ORDER_ID,
+        event: 'DRIVER_CANCELED',
+        actor: { userId: DRIVER_ID, role: 'driver' },
+        patch: { driverId: null },
+      });
+
+      expect(r.toStatus).toBe('awaiting_driver');
+    });
+
     it('system fires PAYMENT_FAILED — allowed for `system` role', async () => {
       const { service } = makeService([makeOrder({ status: 'placed' })]);
 
