@@ -119,6 +119,7 @@ public struct DriverShiftFeature: Sendable {
     // Misc UI
     case errorBannerDismissed
     case earningsCardTapped
+    case returnToDeliveryTapped
 
     // Dispatch offer subscription
     case offerReceived(DispatchOffer)
@@ -135,6 +136,11 @@ public struct DriverShiftFeature: Sendable {
       /// (``DriverRootFeature``) routes to ``ActiveRouteFeature`` for
       /// this order id.
       case acceptedOffer(orderId: UUID)
+      /// Driver is mid-delivery (server still carries
+      /// `current_order_id`) but is looking at the shift home — e.g.
+      /// they backed out of the route screen. The parent re-mounts
+      /// ``ActiveRouteFeature`` for the order in flight.
+      case resumeActiveDelivery(orderId: UUID)
     }
   }
 
@@ -497,6 +503,13 @@ public struct DriverShiftFeature: Sendable {
 
       case .earningsCardTapped:
         return .send(.delegate(.openEarningsDetail))
+
+      case .returnToDeliveryTapped:
+        // Only meaningful while the driver actually carries an order —
+        // the button is hidden otherwise, but a stale tap racing a
+        // refresh must not mount a route screen with no order behind it.
+        guard let orderId = state.driver?.currentOrderId else { return .none }
+        return .send(.delegate(.resumeActiveDelivery(orderId: orderId)))
 
       case .offerReceived(let offer):
         // Ignore an offer landing for a different driver (shouldn't
