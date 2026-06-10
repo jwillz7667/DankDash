@@ -118,6 +118,48 @@ function membershipsResponse(
   return { memberships };
 }
 
+/**
+ * Minimal JWT-callback token fixture. `accessTokenExpiresAt` defaults to
+ * the past so the refresh path triggers; tests that exercise the
+ * still-fresh path override it.
+ */
+function buildJwtToken(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    userId: 'u-1',
+    email: 'avery@dankdash.com',
+    name: 'Avery Stone',
+    role: 'manager',
+    mfaEnabled: true,
+    kycVerified: true,
+    accessToken: 'access-stale',
+    refreshToken: 'refresh-1',
+    accessTokenExpiresAt: '2020-01-01T00:00:00Z',
+    refreshTokenExpiresAt: '2099-01-15T00:00:00Z',
+    mfaRequired: false,
+    dispensaryId: null,
+    dispensaryName: null,
+    staffRole: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Invokes the config's `jwt` callback the way Auth.js does on a regular
+ * authenticated request (no sign-in trigger, no user). The callback's
+ * parameter type is wider than what tests need, so the call site casts.
+ */
+async function callJwt(
+  config: ReturnType<typeof buildAuthConfig>,
+  token: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const jwt = config.callbacks?.jwt;
+  if (jwt === undefined) throw new Error('jwt callback not configured');
+  const result = await (
+    jwt as unknown as (args: { token: Record<string, unknown> }) => Promise<unknown>
+  )({ token });
+  return result as Record<string, unknown>;
+}
+
 describe('buildAuthConfig', () => {
   it('authorize() returns the portal-shaped user on a successful sign-in', async () => {
     const captured: CapturedFetchCall[] = [];
@@ -445,6 +487,169 @@ describe('buildAuthConfig', () => {
     expect(result.mfaRequired).toBe(true);
     expect(result.dispensaryId).toBeNull();
     expect(captured.map((c) => c.url)).toEqual(['https://api.test/v1/auth/login']);
+  });
+
+  it('jwt callback refreshes an expiring access token and rotates the pair', async () => {
+    const captured: CapturedFetchCall[] = [];
+    const fetchImpl = mockFetchByPath(
+      {
+        '/v1/auth/refresh': () =>
+          new Response(
+            JSON.stringify({
+              tokens: {
+                accessToken: 'access-2',
+                refreshToken: 'refresh-2',
+                accessTokenExpiresAt: '2099-01-01T00:15:00Z',
+                refreshTokenExpiresAt: '2099-01-15T00:00:00Z',
+                tokenType: 'Bearer',
+              },
+            }),
+            { status: 200 },
+          ),
+      },
+      captured,
+    );
+    const config = buildAuthConfig({
+      apiBaseUrl: 'https://api.test',
+      authSecret: 'a'.repeat(32),
+      fetchImpl,
+    });
+
+    const token = buildJwtToken({ refreshToken: 'refresh-rotate' });
+    const result = await callJwt(config, token);
+
+    expect(result.accessToken).toBe('access-2');
+    expect(result.refreshToken).toBe('refresh-2');
+    expect(result.error).toBeUndefined();
+    expect(captured.map((c) => c.url)).toEqual(['https://api.test/v1/auth/refresh']);
+  });
+
+  it('jwt callback marks the session dead on a 401 rejection and never retries it', async () => {
+    const captured: CapturedFetchCall[] = [];
+    const fetchImpl = mockFetchByPath(
+      {
+        '/v1/auth/refresh': () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'TOKEN_REVOKED',
+                message: 'refresh token has been revoked',
+                details: {},
+              },
+            }),
+            { status: 401 },
+          ),
+      },
+      captured,
+    );
+    const config = buildAuthConfig({
+      apiBaseUrl: 'https://api.test',
+      authSecret: 'a'.repeat(32),
+      fetchImpl,
+    });
+
+    const token = buildJwtToken({ refreshToken: 'refresh-revoked' });
+    const afterFirst = await callJwt(config, token);
+    expect(afterFirst.error).toBe('RefreshAccessTokenError');
+    expect(captured).toHaveLength(1);
+
+    // Every later request with the errored session must short-circuit —
+    // this is the bug that hammered /v1/auth/refresh into its rate limit.
+    const afterSecond = await callJwt(config, afterFirst);
+    expect(afterSecond.error).toBe('RefreshAccessTokenError');
+    expect(captured).toHaveLength(1);
+  });
+
+  it('jwt callback treats network failures and 5xx/429 as transient (no forced logout, retried later)', async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError('fetch failed');
+      if (calls === 2)
+        return new Response(
+          JSON.stringify({
+            error: { code: 'RATE_LIMIT_EXCEEDED', message: 'slow down', details: {} },
+          }),
+          { status: 429 },
+        );
+      return new Response(
+        JSON.stringify({ error: { code: 'INTERNAL', message: 'oops', details: {} } }),
+        { status: 503 },
+      );
+    }) as unknown as typeof fetch;
+    const config = buildAuthConfig({
+      apiBaseUrl: 'https://api.test',
+      authSecret: 'a'.repeat(32),
+      fetchImpl,
+    });
+
+    const token = buildJwtToken({ refreshToken: 'refresh-transient' });
+    for (const expectedCalls of [1, 2, 3]) {
+      const result = await callJwt(config, token);
+      expect(result.error).toBeUndefined();
+      expect(result.accessToken).toBe('access-stale');
+      expect(calls).toBe(expectedCalls);
+    }
+  });
+
+  it('jwt callback de-dupes concurrent refreshes into a single rotation', async () => {
+    let releaseRefresh: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    const fetchImpl = vi.fn(async () => {
+      refreshCalls += 1;
+      await gate;
+      return new Response(
+        JSON.stringify({
+          tokens: {
+            accessToken: 'access-2',
+            refreshToken: 'refresh-2',
+            accessTokenExpiresAt: '2099-01-01T00:15:00Z',
+            refreshTokenExpiresAt: '2099-01-15T00:00:00Z',
+            tokenType: 'Bearer',
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const config = buildAuthConfig({
+      apiBaseUrl: 'https://api.test',
+      authSecret: 'a'.repeat(32),
+      fetchImpl,
+    });
+
+    // Two parallel SSR requests decode the same cookie into two distinct
+    // token objects carrying the same refresh token — the revocation race.
+    const first = callJwt(config, buildJwtToken({ refreshToken: 'refresh-race' }));
+    const second = callJwt(config, buildJwtToken({ refreshToken: 'refresh-race' }));
+    releaseRefresh?.();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(refreshCalls).toBe(1);
+    expect(a.accessToken).toBe('access-2');
+    expect(b.accessToken).toBe('access-2');
+    expect(a.refreshToken).toBe('refresh-2');
+    expect(b.refreshToken).toBe('refresh-2');
+  });
+
+  it('jwt callback leaves a token alone while the access token is still fresh', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const config = buildAuthConfig({
+      apiBaseUrl: 'https://api.test',
+      authSecret: 'a'.repeat(32),
+      fetchImpl,
+    });
+
+    const token = buildJwtToken({
+      refreshToken: 'refresh-fresh',
+      accessTokenExpiresAt: '2099-01-01T00:00:00Z',
+    });
+    const result = await callJwt(config, token);
+
+    expect(result.accessToken).toBe('access-stale');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('exposes JWT session strategy with the project-mandated TTL', () => {
