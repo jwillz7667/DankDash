@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VendorQueueOrderSummary } from '../api/vendor-orders.js';
+import { VENDOR_QUEUE_DEFAULT_STATUSES } from '../api/vendor-orders.js';
 import { QUEUE_COLUMNS, bucketByColumn, columnKeyForStatus } from './queue-columns.js';
 
 function makeOrder(
@@ -32,22 +33,13 @@ describe('QUEUE_COLUMNS', () => {
     ]);
   });
 
-  it('lists the six default vendor statuses across all columns with no overlap', () => {
-    // The set of statuses across all columns must equal the API's
+  it('lists every default vendor status across all columns with no overlap', () => {
+    // The set of statuses across all columns must equal the portal's
     // VENDOR_QUEUE_DEFAULT_STATUSES exactly — drift between the API
     // default filter and the column mapping silently loses orders.
     const allStatuses = QUEUE_COLUMNS.flatMap((c) => c.statuses);
     expect(allStatuses).toHaveLength(new Set(allStatuses).size);
-    expect(new Set(allStatuses)).toEqual(
-      new Set([
-        'placed',
-        'accepted',
-        'prepping',
-        'ready_for_pickup',
-        'awaiting_driver',
-        'driver_assigned',
-      ]),
-    );
+    expect(new Set(allStatuses)).toEqual(new Set(VENDOR_QUEUE_DEFAULT_STATUSES));
   });
 });
 
@@ -65,15 +57,16 @@ describe('columnKeyForStatus', () => {
     expect(columnKeyForStatus('ready_for_pickup')).toBe('ready');
   });
 
-  it('maps awaiting_driver and driver_assigned to out_for_delivery', () => {
+  it('maps awaiting_driver, driver_assigned, and en_route_pickup to out_for_delivery', () => {
     expect(columnKeyForStatus('awaiting_driver')).toBe('out_for_delivery');
     expect(columnKeyForStatus('driver_assigned')).toBe('out_for_delivery');
+    expect(columnKeyForStatus('en_route_pickup')).toBe('out_for_delivery');
   });
 
   it('returns undefined for statuses outside the queue surface', () => {
     expect(columnKeyForStatus('delivered')).toBeUndefined();
     expect(columnKeyForStatus('canceled')).toBeUndefined();
-    expect(columnKeyForStatus('en_route_pickup')).toBeUndefined();
+    expect(columnKeyForStatus('picked_up')).toBeUndefined();
   });
 });
 

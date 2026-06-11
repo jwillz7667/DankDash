@@ -455,6 +455,36 @@ describe('OrderTransitionService.transition', () => {
       expect(r.toStatus).toBe('en_route_pickup');
     });
 
+    it('the owning vendor can fire DRIVER_PICKED_UP (portal handoff confirm)', async () => {
+      const { service } = makeService([
+        makeOrder({ status: 'en_route_pickup', driverId: DRIVER_ID }),
+      ]);
+
+      const r = await service.transition({
+        orderId: ORDER_ID,
+        event: 'DRIVER_PICKED_UP',
+        actor: { userId: USER_ID, role: 'vendor', dispensaryId: DISPENSARY_ID },
+      });
+
+      expect(r.toStatus).toBe('picked_up');
+    });
+
+    it('a vendor from a different dispensary cannot fire DRIVER_PICKED_UP', async () => {
+      const { service, repo, emitted } = makeService([
+        makeOrder({ status: 'en_route_pickup', driverId: DRIVER_ID }),
+      ]);
+
+      await expect(
+        service.transition({
+          orderId: ORDER_ID,
+          event: 'DRIVER_PICKED_UP',
+          actor: { userId: USER_ID, role: 'vendor', dispensaryId: OTHER_DISPENSARY_ID },
+        }),
+      ).rejects.toMatchObject({ code: 'ORDER_ACTOR_FORBIDDEN', statusCode: 403 });
+      expect(repo.decisions).toHaveLength(0);
+      expect(emitted).toHaveLength(0);
+    });
+
     it('a vendor cannot fire PAYMENT_FAILED (system-only)', async () => {
       const { service } = makeService([makeOrder({ status: 'placed' })]);
 

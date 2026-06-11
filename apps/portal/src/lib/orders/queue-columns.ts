@@ -66,7 +66,7 @@ export const QUEUE_COLUMNS: readonly QueueColumnConfig[] = [
     label: 'Out for Delivery',
     helper: 'Driver inbound',
     tone: 'success',
-    statuses: ['awaiting_driver', 'driver_assigned'],
+    statuses: ['awaiting_driver', 'driver_assigned', 'en_route_pickup'],
   },
 ] as const;
 

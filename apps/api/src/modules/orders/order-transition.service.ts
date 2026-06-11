@@ -102,6 +102,11 @@ const assignedDriver: AuthFn = (a, o) =>
 const customerOrAdmin: AuthFn = (a, o) =>
   (a.role === 'customer' && a.userId === o.userId) || a.role === 'admin';
 
+// Handoff is the one transition both sides of the counter can attest to:
+// the assigned driver from the app, or the dispensary staff from the
+// portal's "Confirm handoff" — whichever lands first wins the row lock.
+const assignedDriverOrVendor: AuthFn = (a, o) => assignedDriver(a, o) || vendorOwnsOrder(a, o);
+
 /**
  * Authorization matrix — exhaustive by `OrderEventType`. The exhaustiveness
  * is verified at compile time: adding an event in the orders package
@@ -120,7 +125,7 @@ const AUTH_BY_EVENT: Readonly<Record<OrderEventType, AuthFn>> = {
   DRIVER_ASSIGNED: allowSystemOrAdmin,
   DRIVER_EN_ROUTE_PICKUP: assignedDriver,
   DRIVER_CANCELED: assignedDriver,
-  DRIVER_PICKED_UP: assignedDriver,
+  DRIVER_PICKED_UP: assignedDriverOrVendor,
   DRIVER_EN_ROUTE_DROPOFF: assignedDriver,
   DRIVER_ARRIVED: assignedDriver,
   DRIVER_ID_SCAN_STARTED: assignedDriver,
