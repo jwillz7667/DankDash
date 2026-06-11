@@ -55,10 +55,33 @@ public extension TokenStore {
   /// §5.1, falling back to device-only where the hardware can't honor
   /// biometry (`.biometricWithDeviceFallback`) so the session always
   /// survives a relaunch instead of silently evaporating.
-  static func live(keychain: KeychainStore) -> TokenStore {
+  ///
+  /// `cache` is the process-lifetime home of the decrypted refresh
+  /// token. `persist` primes it (a fresh login/registration *is* an
+  /// unlocked session) and `loadRefresh` consults it first so no code
+  /// path on this surface ever triggers an implicit Face ID challenge —
+  /// the interactive decrypt belongs exclusively to
+  /// ``SessionUnlockClient``.
+  ///
+  /// `enrollment`: a fresh login re-baselines the biometric enrollment
+  /// snapshot (the new session is trusted under *today's* biometric set,
+  /// even if it changed while signed out); sign-out drops the baseline so
+  /// nothing stale carries into the next account.
+  static func live(
+    keychain: KeychainStore,
+    cache: SessionTokenCache,
+    enrollment: BiometryEnrollmentMonitor
+  ) -> TokenStore {
     TokenStore(
       loadAccess: { try? keychain.optionalString(forAccount: AccountKey.access) },
-      loadRefresh: { try? keychain.optionalString(forAccount: AccountKey.refresh) },
+      loadRefresh: {
+        if let cached = await cache.currentRefreshToken() { return cached }
+        guard case .value(let token) = try? keychain.nonInteractiveString(forAccount: AccountKey.refresh) else {
+          return nil
+        }
+        await cache.setRefreshToken(token)
+        return token
+      },
       persist: { tokens in
         do {
           try keychain.setString(
@@ -78,10 +101,14 @@ public extension TokenStore {
         } catch {
           tokenStoreLog.error("Failed to persist refresh token: \(String(describing: error), privacy: .public)")
         }
+        await cache.setRefreshToken(tokens.refreshToken)
+        enrollment.recordBaseline()
       },
       clear: {
         try? keychain.remove(account: AccountKey.access)
         try? keychain.remove(account: AccountKey.refresh)
+        await cache.clear()
+        enrollment.clearBaseline()
       },
       hasSession: {
         // Presence-only — never decrypts the biometric refresh token,

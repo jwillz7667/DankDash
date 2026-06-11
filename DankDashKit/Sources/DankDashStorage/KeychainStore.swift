@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Errors surfaced by the Keychain wrapper. Each case carries the
@@ -129,6 +130,76 @@ public struct KeychainStore: Sendable {
     } catch let error as KeychainError where error.isItemNotFound {
       return nil
     }
+  }
+
+  /// Outcome of a read that refuses to present authentication UI. Lets a
+  /// caller distinguish "the bytes are free" from "the bytes exist but the
+  /// access control demands user authentication" without ever raising the
+  /// Face ID sheet.
+  public enum NonInteractiveRead: Equatable, Sendable {
+    case value(String)
+    /// The item exists but its `SecAccessControl` requires the user to
+    /// authenticate before the OS will release the bytes.
+    case requiresUserAuthentication
+    case missing
+  }
+
+  /// Reads `account` while forbidding any authentication UI
+  /// (`kSecUseAuthenticationUISkip`). Items stored with a plain
+  /// accessibility class decrypt silently; biometric-protected items
+  /// report `.requiresUserAuthentication` instead of prompting. This is
+  /// the only read the token-refresh path is allowed to use — the
+  /// interactive decrypt belongs to the explicit session-unlock gate.
+  public func nonInteractiveString(forAccount account: String) throws -> NonInteractiveRead {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecReturnData as String: true,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
+    ]
+
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    switch status {
+    case errSecSuccess:
+      guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+        throw KeychainError.decodingFailed
+      }
+      return .value(value)
+    case errSecInteractionNotAllowed:
+      return .requiresUserAuthentication
+    case errSecItemNotFound:
+      return .missing
+    default:
+      throw KeychainError.unhandled(status)
+    }
+  }
+
+  /// Reads a (possibly biometric-protected) item using an `LAContext` the
+  /// caller has already evaluated. Because the context carries a fresh
+  /// authorization, the OS satisfies the item's access control without
+  /// presenting a second prompt. `errSecItemNotFound` here can also mean
+  /// the item was permanently invalidated by a biometry re-enrollment
+  /// (`.biometryCurrentSet`) — callers must treat it as "session gone".
+  public func string(forAccount account: String, authenticating context: LAContext) throws -> String {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecReturnData as String: true,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecUseAuthenticationContext as String: context,
+    ]
+
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    guard status == errSecSuccess else { throw KeychainError.unhandled(status) }
+    guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+      throw KeychainError.decodingFailed
+    }
+    return value
   }
 
   /// Reports whether an item exists for `account` **without decrypting it**.
