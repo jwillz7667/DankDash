@@ -14,7 +14,7 @@ public actor APIClient {
   private let interceptor: AuthInterceptor
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
-  private var isRefreshing: Bool = false
+  private var refreshTask: Task<Void, Error>?
 
   public init(
     baseURL: URL,
@@ -54,6 +54,42 @@ public actor APIClient {
   /// server replies with any 2xx.
   public func sendIgnoringResponse(_ endpoint: Endpoint<Void>) async throws {
     _ = try await sendForData(endpoint, allowRetry: true)
+  }
+
+  /// Access token guaranteed fresh enough to hand to a non-HTTP
+  /// transport. HTTP callers self-heal on 401 (`sendForData` refreshes
+  /// and retries), but a Socket.io handshake has no such retry layer —
+  /// the library replays whatever token it connected with. Callers that
+  /// embed the token in a handshake use this instead of a raw store
+  /// read: when the stored JWT is expired or within a 60s skew window,
+  /// it refreshes up-front through the same single-flight path the 401
+  /// dance uses, then returns the rotated token.
+  public func validAccessToken() async throws -> String {
+    let token = try await interceptor.accessToken()
+    guard let expiresAt = Self.unverifiedExpiry(ofJWT: token),
+          expiresAt.timeIntervalSinceNow < 60 else {
+      return token
+    }
+    try await performRefresh()
+    return try await interceptor.accessToken()
+  }
+
+  /// Reads the `exp` claim without verifying the signature — validation
+  /// is the server's job; this only decides whether a refresh round-trip
+  /// is worth doing before a handshake. Returns nil for opaque or
+  /// malformed tokens, which callers treat as "assume still valid" and
+  /// let the server arbitrate.
+  static func unverifiedExpiry(ofJWT token: String) -> Date? {
+    let segments = token.split(separator: ".")
+    guard segments.count == 3 else { return nil }
+    var base64 = segments[1]
+      .replacingOccurrences(of: "-", with: "+")
+      .replacingOccurrences(of: "_", with: "/")
+    while base64.count % 4 != 0 { base64.append("=") }
+    guard let payload = Data(base64Encoded: base64) else { return nil }
+    struct Claims: Decodable { let exp: Double }
+    guard let claims = try? JSONDecoder().decode(Claims.self, from: payload) else { return nil }
+    return Date(timeIntervalSince1970: claims.exp)
   }
 
   // MARK: - Core send pipeline
@@ -106,16 +142,22 @@ public actor APIClient {
   // MARK: - Refresh dance
 
   /// One refresh in flight at a time per actor instance. Concurrent
-  /// callers piggy-back on the same refresh by reading the post-refresh
-  /// access token from the interceptor.
+  /// callers await the same task and so learn the leader's real
+  /// outcome — the previous flag-and-poll version let followers return
+  /// on a *failed* refresh, retry with the stale token, and force a
+  /// logout through the second-401 path.
   private func performRefresh() async throws {
-    if isRefreshing {
-      while isRefreshing { try await Task.sleep(nanoseconds: 10_000_000) }
+    if let inFlight = refreshTask {
+      try await inFlight.value
       return
     }
-    isRefreshing = true
-    defer { isRefreshing = false }
+    let task = Task { try await refreshTokenPair() }
+    refreshTask = task
+    defer { refreshTask = nil }
+    try await task.value
+  }
 
+  private func refreshTokenPair() async throws {
     guard let refreshToken = await interceptor.refreshToken() else {
       throw APIError.noRefreshToken
     }

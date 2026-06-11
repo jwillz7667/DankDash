@@ -237,7 +237,167 @@ final class APIClientTests: XCTestCase {
     XCTAssertEqual(result, EmptyResponse())
   }
 
+  // MARK: - validAccessToken (socket-handshake path)
+
+  func test_validAccessToken_freshJWT_returnsWithoutRefreshing() async throws {
+    let access = Self.jwt(expiringIn: 3600)
+    interceptor = InMemoryAuthInterceptor(access: access, refresh: "initial.refresh")
+    client = APIClient(
+      baseURL: baseURL,
+      session: session as URLSessionProtocol,
+      interceptor: interceptor
+    )
+    URLProtocolMock.handler = { request in
+      XCTFail("fresh token must not trigger a refresh, hit \(request.url?.path ?? "?")")
+      let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+      return (response, nil)
+    }
+
+    let token = try await client.validAccessToken()
+
+    XCTAssertEqual(token, access)
+  }
+
+  func test_validAccessToken_expiredJWT_refreshesAndReturnsRotatedToken() async throws {
+    let access = Self.jwt(expiringIn: -10)
+    interceptor = InMemoryAuthInterceptor(access: access, refresh: "initial.refresh")
+    client = APIClient(
+      baseURL: baseURL,
+      session: session as URLSessionProtocol,
+      interceptor: interceptor
+    )
+    URLProtocolMock.handler = { request in
+      XCTAssertEqual(request.url?.path, "/v1/auth/refresh")
+      let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+      let body = """
+      { "tokens": {
+        "accessToken": "refreshed.access",
+        "refreshToken": "refreshed.refresh",
+        "accessTokenExpiresAt": "2026-01-15T10:15:00.000Z",
+        "refreshTokenExpiresAt": "2026-02-14T10:00:00.000Z",
+        "tokenType": "Bearer"
+      }}
+      """.data(using: .utf8)!
+      return (response, body)
+    }
+
+    let token = try await client.validAccessToken()
+
+    XCTAssertEqual(token, "refreshed.access")
+    let storedRefresh = await interceptor.refreshToken()
+    XCTAssertEqual(storedRefresh, "refreshed.refresh")
+  }
+
+  func test_validAccessToken_jwtInsideSkewWindow_refreshes() async throws {
+    // 30s of remaining life is inside the 60s skew window — the server's
+    // clockTolerance could already consider it dead, so refresh up front.
+    let access = Self.jwt(expiringIn: 30)
+    interceptor = InMemoryAuthInterceptor(access: access, refresh: "initial.refresh")
+    client = APIClient(
+      baseURL: baseURL,
+      session: session as URLSessionProtocol,
+      interceptor: interceptor
+    )
+    let refreshCount = LockedInt(0)
+    URLProtocolMock.handler = { request in
+      XCTAssertEqual(request.url?.path, "/v1/auth/refresh")
+      _ = refreshCount.increment()
+      let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+      let body = """
+      { "tokens": {
+        "accessToken": "refreshed.access",
+        "refreshToken": "refreshed.refresh",
+        "accessTokenExpiresAt": "2026-01-15T10:15:00.000Z",
+        "refreshTokenExpiresAt": "2026-02-14T10:00:00.000Z",
+        "tokenType": "Bearer"
+      }}
+      """.data(using: .utf8)!
+      return (response, body)
+    }
+
+    let token = try await client.validAccessToken()
+
+    XCTAssertEqual(token, "refreshed.access")
+    XCTAssertEqual(refreshCount.value, 1)
+  }
+
+  func test_validAccessToken_opaqueToken_passesThrough() async throws {
+    // Not a JWT — expiry is undecidable client-side, so hand it over and
+    // let the server arbitrate (the socket error handler covers rejects).
+    URLProtocolMock.handler = { request in
+      XCTFail("opaque token must not trigger a refresh, hit \(request.url?.path ?? "?")")
+      let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+      return (response, nil)
+    }
+
+    let token = try await client.validAccessToken()
+
+    XCTAssertEqual(token, "initial.access")
+  }
+
+  func test_validAccessToken_refreshRejection_clearsTokensAndThrows() async throws {
+    let access = Self.jwt(expiringIn: -10)
+    interceptor = InMemoryAuthInterceptor(access: access, refresh: "initial.refresh")
+    client = APIClient(
+      baseURL: baseURL,
+      session: session as URLSessionProtocol,
+      interceptor: interceptor
+    )
+    URLProtocolMock.handler = { request in
+      XCTAssertEqual(request.url?.path, "/v1/auth/refresh")
+      let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+      let envelope = """
+      { "error": { "code": "AUTH_REFRESH_REVOKED", "message": "revoked", "details": {} } }
+      """.data(using: .utf8)!
+      return (response, envelope)
+    }
+
+    do {
+      _ = try await client.validAccessToken()
+      XCTFail("expected throw")
+    } catch let error as APIError {
+      guard case .unauthorized = error else {
+        return XCTFail("expected .unauthorized, got \(error)")
+      }
+    }
+    let cleared = await interceptor.refreshToken()
+    XCTAssertNil(cleared)
+  }
+
+  func test_unverifiedExpiry_decodesBase64urlPayload() {
+    let exp = Date(timeIntervalSince1970: 1_750_000_000)
+    let decoded = APIClient.unverifiedExpiry(ofJWT: Self.jwt(expiringAt: exp))
+    XCTAssertNotNil(decoded)
+    XCTAssertEqual(decoded!.timeIntervalSince1970, exp.timeIntervalSince1970, accuracy: 1)
+  }
+
+  func test_unverifiedExpiry_nonJWT_returnsNil() {
+    XCTAssertNil(APIClient.unverifiedExpiry(ofJWT: "opaque-token"))
+    XCTAssertNil(APIClient.unverifiedExpiry(ofJWT: "two.segments"))
+    XCTAssertNil(APIClient.unverifiedExpiry(ofJWT: "bad.!!!not-base64!!!.sig"))
+  }
+
   // MARK: - Fixtures
+
+  /// Unsigned JWT-shaped token whose payload carries only `exp`.
+  /// `unverifiedExpiry` never checks the signature, so a fake third
+  /// segment is enough to exercise the real base64url decode path.
+  private static func jwt(expiringIn seconds: TimeInterval) -> String {
+    jwt(expiringAt: Date(timeIntervalSinceNow: seconds))
+  }
+
+  private static func jwt(expiringAt exp: Date) -> String {
+    let header = base64url(#"{"alg":"ES256","typ":"JWT"}"#)
+    let payload = base64url("{\"exp\":\(exp.timeIntervalSince1970)}")
+    return "\(header).\(payload).fakesig"
+  }
+
+  private static func base64url(_ json: String) -> String {
+    Data(json.utf8).base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-")
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+  }
 
   private static let userJSON = """
   {
