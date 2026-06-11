@@ -67,6 +67,9 @@ struct AppEnvironment {
     dependencies.driverOnboardingAPIClient = .live(apiClient: apiClient)
     dependencies.dispatchOfferAPIClient = .live(apiClient: apiClient)
     dependencies.offerSubscriptionClient = .live(apiClient: apiClient)
+    dependencies.driverOrdersAPIClient = .live(apiClient: apiClient)
+    dependencies.driverIDScanAPIClient = .live(apiClient: apiClient)
+    dependencies.driverCashoutAPIClient = .live(apiClient: apiClient)
     dependencies.hapticsClient = .live
 
     // Local persistence — driver session lives in a per-target
