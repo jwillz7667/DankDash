@@ -8,22 +8,38 @@
  * unfiltered path entirely after the seed and assert only on the geo
  * path, which by design bypasses the cache.
  *
- * Seed fixtures pin three dispensaries with non-overlapping polygons:
- *
- *   MPLS  ≈ [-93.33..-93.18, 44.88..45.06]
- *   STP   ≈ [-93.18..-93.02, 44.88..45.03]
- *   MG    ≈ [-93.52..-93.38, 45.02..45.15]
+ * Seed fixtures give all three dispensaries the shared Twin Cities metro
+ * delivery polygon (`TWIN_CITIES_METRO_DELIVERY_POLYGON` in
+ * `packages/db/src/seed.ts`) — Minneapolis, St. Paul, and the surrounding
+ * suburbs, clipped to stay inside Minnesota because the geofence doubles
+ * as the interstate guard.
  *
  * Test points:
- *   Downtown Minneapolis     (lat=44.987, lng=-93.273) → MPLS only.
- *   Downtown Saint Paul      (lat=44.954, lng=-93.090) → STP only.
- *   Maple Grove              (lat=45.073, lng=-93.456) → MG only.
- *   Downtown Los Angeles     (lat=34.052, lng=-118.244) → empty (outside MN).
+ *   Downtown Minneapolis     (lat=44.987, lng=-93.273) → all three.
+ *   Bloomington (suburb)     (lat=44.840, lng=-93.300) → all three.
+ *   Woodbury (east suburb)   (lat=44.920, lng=-92.920) → all three.
+ *   Rochester MN (out-state) (lat=44.020, lng=-92.480) → empty (in MN, off-metro).
+ *   Hudson WI (interstate)   (lat=44.970, lng=-92.750) → empty (the polygon
+ *                            is the only WI/IA/SD/ND guard — this must hold).
+ *   Downtown Los Angeles     (lat=34.052, lng=-118.244) → empty.
  */
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildTestApp } from '../helpers/build-app.js';
 import { SEED_IDS, seedFixtures } from './setup.js';
+
+const ALL_DISPENSARY_IDS = [
+  SEED_IDS.dispensary.mpls,
+  SEED_IDS.dispensary.stp,
+  SEED_IDS.dispensary.mg,
+].sort();
+
+async function deliverableIds(app: NestFastifyApplication, lat: number, lng: number) {
+  const res = await app.inject({ method: 'GET', url: `/v1/dispensaries?lat=${lat}&lng=${lng}` });
+  expect(res.statusCode).toBe(200);
+  const body = res.json<{ dispensaries: ReadonlyArray<{ id: string }> }>();
+  return body.dispensaries.map((d) => d.id).sort();
+}
 
 describe('GET /v1/dispensaries — geo filter', () => {
   let app: NestFastifyApplication;
@@ -37,45 +53,28 @@ describe('GET /v1/dispensaries — geo filter', () => {
     await app.close();
   });
 
-  it('returns only MPLS for a point inside the MPLS delivery polygon', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/v1/dispensaries?lat=44.987&lng=-93.273',
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json<{ dispensaries: ReadonlyArray<{ id: string; legalName: string }> }>();
-    const ids = body.dispensaries.map((d) => d.id);
-    expect(ids).toEqual([SEED_IDS.dispensary.mpls]);
+  it('returns all three dispensaries for downtown Minneapolis', async () => {
+    expect(await deliverableIds(app, 44.987, -93.273)).toEqual(ALL_DISPENSARY_IDS);
   });
 
-  it('returns only STP for a point inside the STP delivery polygon', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/v1/dispensaries?lat=44.954&lng=-93.090',
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json<{ dispensaries: ReadonlyArray<{ id: string }> }>();
-    expect(body.dispensaries.map((d) => d.id)).toEqual([SEED_IDS.dispensary.stp]);
+  it('returns all three dispensaries for a south-metro suburb (Bloomington)', async () => {
+    expect(await deliverableIds(app, 44.84, -93.3)).toEqual(ALL_DISPENSARY_IDS);
   });
 
-  it('returns only MG for a point inside the Maple Grove polygon', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/v1/dispensaries?lat=45.073&lng=-93.456',
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json<{ dispensaries: ReadonlyArray<{ id: string }> }>();
-    expect(body.dispensaries.map((d) => d.id)).toEqual([SEED_IDS.dispensary.mg]);
+  it('returns all three dispensaries for an east-metro suburb (Woodbury)', async () => {
+    expect(await deliverableIds(app, 44.92, -92.92)).toEqual(ALL_DISPENSARY_IDS);
+  });
+
+  it('returns empty for a Minnesota point outside the metro (Rochester)', async () => {
+    expect(await deliverableIds(app, 44.02, -92.48)).toEqual([]);
+  });
+
+  it('returns empty across the Wisconsin line (Hudson) — interstate guard', async () => {
+    expect(await deliverableIds(app, 44.97, -92.75)).toEqual([]);
   });
 
   it('returns empty for a point outside every MN polygon (LA)', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/v1/dispensaries?lat=34.052&lng=-118.244',
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json<{ dispensaries: ReadonlyArray<unknown> }>();
-    expect(body.dispensaries).toEqual([]);
+    expect(await deliverableIds(app, 34.052, -118.244)).toEqual([]);
   });
 
   it('rejects a half-specified geo query (lat without lng) with 422', async () => {
