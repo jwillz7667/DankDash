@@ -155,6 +155,7 @@ public struct DriverRootFeature: Sendable {
 
   @Dependency(\.tokenStore) var tokens
   @Dependency(\.driverAppAPIClient) var driverAppAPI
+  @Dependency(\.driverRealtimeClient) var driverRealtime
 
   public init() {}
 
@@ -453,7 +454,13 @@ public struct DriverRootFeature: Sendable {
         state.screen = .auth
         return .merge(
           .cancel(id: CancelID.loadDriver),
-          .run { _ in await tokens.clear() }
+          .run { _ in
+            // Tear the socket down with the tokens — a connection
+            // authenticated as the previous driver must not survive into
+            // the next sign-in (its auto-reconnect replays the old JWT).
+            await driverRealtime.disconnect()
+            await tokens.clear()
+          }
         )
 
       case .deepLinkReceived(let url):
