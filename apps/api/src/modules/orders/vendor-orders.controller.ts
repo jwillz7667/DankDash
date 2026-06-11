@@ -138,10 +138,11 @@ export class VendorOrdersController {
 
   /**
    * Vendor confirms the driver took possession of the order. Mapped onto
-   * DRIVER_PICKED_UP — the driver's own /v1/driver/orders/:id/picked-up
-   * endpoint (Phase 8) also fires the same event from the driver side;
-   * either path works because the row lock + state machine guarantee
-   * exactly one wins.
+   * DRIVER_PICKED_UP, valid only from `en_route_pickup` (the driver has
+   * confirmed they are at the store). This is the production path to
+   * `picked_up` — the driver app deliberately has no picked-up endpoint;
+   * it sits in "awaiting handoff" until this transition lands and reaches
+   * it via realtime or its 15s poll.
    */
   @Post(':id/handoff')
   @HttpCode(HttpStatus.OK)
