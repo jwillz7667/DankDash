@@ -55,11 +55,13 @@ export function asOrderStatus(value: string): OrderStatus | null {
 }
 
 /**
- * The six statuses the vendor queue surfaces by default — the API's
- * own `VENDOR_QUEUE_DEFAULT_STATUSES` constant. Anything outside this
- * list is either pre-payment (placed → payment_failed), post-handoff
- * (en_route_pickup onward), or a terminal cancel/dispute — none of
- * which the dispensary acts on from the kanban.
+ * The statuses the vendor queue surfaces by default — the API's own
+ * `VENDOR_QUEUE_DEFAULT_STATUSES` constant. Anything outside this list
+ * is either pre-payment (placed → payment_failed), post-handoff
+ * (picked_up onward), or a terminal cancel/dispute — none of which the
+ * dispensary acts on from the kanban. `en_route_pickup` is in the set
+ * because that's when the driver is at the counter and the vendor's
+ * "Confirm handoff" is the required next action.
  */
 export const VENDOR_QUEUE_DEFAULT_STATUSES: readonly OrderStatus[] = [
   'placed',
@@ -68,6 +70,7 @@ export const VENDOR_QUEUE_DEFAULT_STATUSES: readonly OrderStatus[] = [
   'ready_for_pickup',
   'awaiting_driver',
   'driver_assigned',
+  'en_route_pickup',
 ] as const;
 
 export interface VendorQueueOrderSummary {

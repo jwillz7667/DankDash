@@ -306,8 +306,13 @@ describe('OrderDetailDrawer', () => {
       expect(screen.queryByTestId('order-detail-action-reject')).toBeNull();
     });
 
-    it('driver_assigned → Confirm Handoff', async () => {
+    it('driver_assigned → no actions (handoff waits for the driver to arrive)', async () => {
       await renderForStatus('driver_assigned');
+      expect(screen.queryByTestId('order-detail-action-handoff')).toBeNull();
+    });
+
+    it('en_route_pickup → Confirm Handoff', async () => {
+      await renderForStatus('en_route_pickup');
       expect(screen.getByTestId('order-detail-action-handoff')).toBeInTheDocument();
     });
 
@@ -376,7 +381,7 @@ describe('OrderDetailDrawer', () => {
 
     it('calls actions.markHandoff on Confirm Handoff click', async () => {
       const actions = buildActions({
-        fetch: vi.fn(async () => detail({ status: 'driver_assigned' })),
+        fetch: vi.fn(async () => detail({ status: 'en_route_pickup' })),
       });
       render(
         <OrderDetailDrawer

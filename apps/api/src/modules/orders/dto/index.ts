@@ -103,7 +103,10 @@ const OrderStatusSchema = z.enum([
  * default. `ready_for_pickup`, `awaiting_driver`, `driver_assigned`
  * collapse into the "ready" column visually but stay separate in the
  * data so the portal can badge dispatch-state without a second
- * roundtrip.
+ * roundtrip. `en_route_pickup` stays in the set because that is the
+ * status where the driver is at the counter and the vendor confirms
+ * handoff — dropping it would hide the order at the exact moment the
+ * dispensary has to act.
  */
 export const VENDOR_QUEUE_DEFAULT_STATUSES = [
   'placed',
@@ -112,6 +115,7 @@ export const VENDOR_QUEUE_DEFAULT_STATUSES = [
   'ready_for_pickup',
   'awaiting_driver',
   'driver_assigned',
+  'en_route_pickup',
 ] as const satisfies readonly z.infer<typeof OrderStatusSchema>[];
 
 /**

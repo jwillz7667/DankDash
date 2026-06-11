@@ -637,8 +637,11 @@ const AVAILABLE_ACTIONS: Readonly<Record<OrderStatus, readonly ActionKey[]>> = {
   ready_for_pickup: [],
   awaiting_driver: [],
   dispatch_failed: [],
-  driver_assigned: ['markHandoff'],
-  en_route_pickup: [],
+  // Handoff is only legal once the driver has confirmed they're headed
+  // in (en_route_pickup) — the state machine has no driver_assigned →
+  // picked_up edge, so offering the button earlier just produces a 422.
+  driver_assigned: [],
+  en_route_pickup: ['markHandoff'],
   picked_up: [],
   en_route_dropoff: [],
   arrived_at_dropoff: [],

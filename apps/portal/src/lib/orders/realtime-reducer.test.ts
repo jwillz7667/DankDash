@@ -118,10 +118,24 @@ describe('applyOrderStatusChanged', () => {
   });
 
   it('removes the order when the new status falls outside the queue surface', () => {
-    const a = order({ id: 'o-1', status: 'driver_assigned' });
+    const a = order({ id: 'o-1', status: 'en_route_pickup' });
     const b = order({ id: 'o-2', status: 'prepping' });
     const next = applyOrderStatusChanged(
       [a, b],
+      statusChangePayload({
+        orderId: 'o-1',
+        fromStatus: 'en_route_pickup',
+        toStatus: 'picked_up',
+      }),
+    );
+
+    expect(next).toEqual([b]);
+  });
+
+  it('keeps the order on driver_assigned → en_route_pickup (handoff pending)', () => {
+    const a = order({ id: 'o-1', status: 'driver_assigned' });
+    const next = applyOrderStatusChanged(
+      [a],
       statusChangePayload({
         orderId: 'o-1',
         fromStatus: 'driver_assigned',
@@ -129,7 +143,8 @@ describe('applyOrderStatusChanged', () => {
       }),
     );
 
-    expect(next).toEqual([b]);
+    expect(next).toHaveLength(1);
+    expect(next[0]?.status).toBe('en_route_pickup');
   });
 
   it('removes the order when the new status is unrecognized', () => {
