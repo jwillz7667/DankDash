@@ -134,6 +134,11 @@ actor DriverRealtimeConnection {
   private let monotonicClock = ContinuousClock()
   private var lastPublishAt: ContinuousClock.Instant?
 
+  /// One token-refresh reconnect per connect cycle (reset on a
+  /// successful handshake) — same guard as ``RealtimeSocketConnection``
+  /// so an expired *refresh* token can't loop the handshake forever.
+  private var hasRetriedAuthThisCycle = false
+
   init(
     baseURL: URL,
     accessTokenProvider: @Sendable @escaping () async throws -> String
@@ -206,13 +211,14 @@ actor DriverRealtimeConnection {
   }
 
   private func bootstrap() {
+    // No `.connectParams` token — the server reads only
+    // `handshake.auth.token`, which `connect(withPayload:)` supplies.
     let config: SocketIOClientConfiguration = [
       .compress,
       .reconnects(true),
       .reconnectWait(1),
       .reconnectWaitMax(30),
-      .forceWebsockets(true),
-      .connectParams(["token": ""])
+      .forceWebsockets(true)
     ]
     let manager = SocketManager(socketURL: baseURL, config: config)
     let socket = manager.socket(forNamespace: "/driver")
@@ -238,6 +244,59 @@ actor DriverRealtimeConnection {
     socket?.connect(withPayload: ["token": token])
   }
 
+  private func handleConnected() {
+    hasRetriedAuthThisCycle = false
+    // The driver room is auto-joined server-side from the JWT `sub`, so
+    // unlike the customer socket there is nothing to resubscribe here.
+  }
+
+  /// `clientEvent: .error` carries everything from handshake rejections
+  /// to library-internal emit complaints. Auth rejections get one
+  /// fresh-token reconnect; anything else is left to the manager's
+  /// built-in reconnect, with the reducer's poll fallback covering the
+  /// gap (driver event streams are non-throwing, so there is no error
+  /// to surface — only "finish so polling owns reconciliation").
+  private func handleSocketError(_ detail: String) {
+    // Emit-while-disconnected noise from a location publish racing a
+    // reconnect — the reconnect machinery is already on it.
+    if detail.contains("Tried emitting when not connected") { return }
+
+    guard Self.isAuthRejection(detail) else { return }
+
+    guard !hasRetriedAuthThisCycle else {
+      // The retried handshake bounced too — the refresh path itself is
+      // broken (expired refresh token). Finish the streams so the
+      // reducer's poll fallback takes over instead of waiting on a
+      // socket that can never authenticate.
+      finishAllEvents()
+      return
+    }
+
+    // Stale JWT (15-min TTL outlived by a long shift). Mint a fresh one
+    // and reconnect — `connect(withPayload:)` replaces the library's
+    // stored connectPayload, so its own auto-reconnects carry the new
+    // token from here on.
+    hasRetriedAuthThisCycle = true
+    let provider = accessTokenProvider
+    Task { [weak self] in
+      do {
+        let token = try await provider()
+        await self?.connect(with: token)
+      } catch {
+        await self?.finishAllEvents()
+      }
+    }
+  }
+
+  /// The `/driver` middleware rejects with exactly these codes
+  /// (`apps/realtime/src/io/auth-middleware.ts`); all three are curable
+  /// by handing the handshake a freshly-refreshed token.
+  private static func isAuthRejection(_ detail: String) -> Bool {
+    detail.contains("TOKEN_EXPIRED")
+      || detail.contains("TOKEN_INVALID")
+      || detail.contains("UNAUTHENTICATED")
+  }
+
   private func finishAllEvents() {
     for (_, continuation) in eventContinuations {
       continuation.finish()
@@ -254,9 +313,18 @@ actor DriverRealtimeConnection {
   // MARK: - SocketIO handlers
 
   private func installHandlers(on socket: SocketIOClient) {
-    // The driver room is auto-joined server-side on handshake, so there
-    // is nothing to re-emit on `.connect`. Status fan-out flows straight
-    // to this handler for any of the driver's orders.
+    socket.on(clientEvent: .connect) { [weak self] _, _ in
+      guard let self else { return }
+      Task { await self.handleConnected() }
+    }
+    socket.on(clientEvent: .error) { [weak self] data, _ in
+      guard let self else { return }
+      let detail = data.first.map { "\($0)" } ?? "unknown"
+      Task { await self.handleSocketError(detail) }
+    }
+    // The driver room is auto-joined server-side on handshake; status
+    // fan-out flows straight to this handler for any of the driver's
+    // orders, no per-order subscribe to replay.
     socket.on("order:status_changed") { [weak self] data, _ in
       self?.handleStatusChanged(data: data)
     }

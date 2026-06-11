@@ -339,6 +339,7 @@ final class DriverRootFeatureTests: XCTestCase {
   func test_signOutTapped_clearsStateAndTokens() async {
     let driver = Self.passedDriver()
     let storage = TokenStorage()
+    let disconnected = DisconnectRecorder()
     let store = TestStore(
       initialState: DriverRootFeature.State(
         screen: .shift,
@@ -360,6 +361,7 @@ final class DriverRootFeatureTests: XCTestCase {
         persist: { _ in },
         clear: { await storage.clear() }
       )
+      $0.driverRealtimeClient.disconnect = { await disconnected.record() }
     }
     store.exhaustivity = .off
 
@@ -378,6 +380,11 @@ final class DriverRootFeatureTests: XCTestCase {
     XCTAssertNil(store.state.onboarding.driver)
     let cleared = await storage.clearedCount
     XCTAssertEqual(cleared, 1)
+    let socketTeardowns = await disconnected.count
+    XCTAssertEqual(
+      socketTeardowns, 1,
+      "Driver realtime socket must be torn down on sign-out — its reconnect replays the old JWT."
+    )
   }
 
   // MARK: - Deep link
@@ -979,5 +986,13 @@ private actor TokenStorage {
     access = nil
     refresh = nil
     clearedCount += 1
+  }
+}
+
+private actor DisconnectRecorder {
+  var count = 0
+
+  func record() {
+    count += 1
   }
 }

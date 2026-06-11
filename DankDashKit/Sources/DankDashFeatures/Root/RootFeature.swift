@@ -107,6 +107,7 @@ public struct RootFeature: Sendable {
   }
 
   @Dependency(\.tokenStore) var tokens
+  @Dependency(\.realtimeClient) var realtimeClient
 
   public init() {}
 
@@ -210,6 +211,10 @@ public struct RootFeature: Sendable {
       case .browse(.delegate(.signOutRequested)):
         Self.resetToSignedOut(&state)
         return .run { _ in
+          // Tear the socket down with the tokens — a connection
+          // authenticated as the previous user must not survive into the
+          // next sign-in (its auto-reconnect would replay the old JWT).
+          await realtimeClient.disconnect()
           await tokens.clear()
         }
 
@@ -219,6 +224,7 @@ public struct RootFeature: Sendable {
       case .browse(.delegate(.accountDeletionCompleted)):
         Self.resetToSignedOut(&state)
         return .run { _ in
+          await realtimeClient.disconnect()
           await tokens.clear()
         }
 
@@ -228,6 +234,7 @@ public struct RootFeature: Sendable {
       case .signOutTapped:
         Self.resetToSignedOut(&state)
         return .run { _ in
+          await realtimeClient.disconnect()
           await tokens.clear()
         }
 

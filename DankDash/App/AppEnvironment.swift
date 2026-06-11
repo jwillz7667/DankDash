@@ -26,11 +26,6 @@ struct AppEnvironment {
   /// path use the same instance — same baseURL, same auth interceptor,
   /// same in-flight refresh-token coordination.
   let apiClient: APIClient
-  /// Auth interceptor backing ``apiClient`` and the realtime client's
-  /// access-token getter. Exposed so the realtime client can pick up the
-  /// post-refresh token via a closure without instantiating a second
-  /// interceptor.
-  fileprivate let interceptor: LiveAuthInterceptor
 
   static let live: AppEnvironment = {
     let base = Self.resolvedAPIBaseURL()
@@ -50,8 +45,7 @@ struct AppEnvironment {
       checkoutBaseURL: checkout,
       cdnBaseURL: cdn,
       keychain: keychain,
-      apiClient: apiClient,
-      interceptor: interceptor
+      apiClient: apiClient
     )
   }()
 
@@ -79,9 +73,14 @@ struct AppEnvironment {
     )
     dependencies.notificationPreferencesAPIClient = .live(apiClient: apiClient)
     dependencies.handoffAPIClient = .live(apiClient: apiClient)
+    // `validAccessToken()` (not a raw Keychain read): the Socket.io
+    // handshake replays whatever token it was handed, with no 401-retry
+    // layer, so a JWT past its 15-min TTL must be refreshed *before*
+    // the handshake — otherwise the `/customer` middleware rejects with
+    // TOKEN_EXPIRED every time a tracking screen opens late.
     dependencies.realtimeClient = .live(
       baseURL: realtimeBaseURL,
-      accessToken: { [interceptor] in try await interceptor.accessToken() }
+      accessToken: { [apiClient] in try await apiClient.validAccessToken() }
     )
     dependencies.orderCacheClient = .live()
     dependencies.cartIdStoreClient = .live()

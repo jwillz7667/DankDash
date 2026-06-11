@@ -26,11 +26,6 @@ struct AppEnvironment {
   /// APNs-registration path share the same instance — same baseURL,
   /// same auth interceptor, same in-flight refresh-token coordination.
   let apiClient: APIClient
-  /// Auth interceptor backing ``apiClient`` and the realtime client's
-  /// access-token getter. Exposed so any code path that needs a
-  /// freshly-refreshed token (e.g. realtime reconnect) can pull from
-  /// the same coordinator without instantiating a second interceptor.
-  fileprivate let interceptor: LiveAuthInterceptor
 
   static let live: AppEnvironment = {
     let base = Self.resolvedAPIBaseURL()
@@ -48,8 +43,7 @@ struct AppEnvironment {
       realtimeBaseURL: realtime,
       cdnBaseURL: cdn,
       keychain: keychain,
-      apiClient: apiClient,
-      interceptor: interceptor
+      apiClient: apiClient
     )
   }()
 
@@ -91,12 +85,15 @@ struct AppEnvironment {
     // Delivery-scoped realtime: publishes the driver's live location to
     // the `/driver` Socket.io namespace (the consumer's tracking map
     // consumes it) and observes `order:status_changed` so the vendor
-    // handoff reconciles the active-route UI without polling. Shares the
-    // same auth coordinator as `apiClient`, so a reconnect pulls a
-    // freshly-refreshed token.
+    // handoff reconciles the active-route UI without polling.
+    // `validAccessToken()` (not a raw Keychain read): the Socket.io
+    // handshake replays whatever token it was handed, with no 401-retry
+    // layer, so a JWT past its 15-min TTL must be refreshed *before*
+    // the handshake — a mid-shift route open would otherwise bounce off
+    // the `/driver` middleware with TOKEN_EXPIRED.
     dependencies.driverRealtimeClient = .live(
       baseURL: realtimeBaseURL,
-      accessToken: { [interceptor] in try await interceptor.accessToken() }
+      accessToken: { [apiClient] in try await apiClient.validAccessToken() }
     )
 
     // I/O surfaces — file picker for onboarding documents,

@@ -148,8 +148,9 @@ final class RootFeatureTests: XCTestCase {
     }
   }
 
-  func test_signOut_clearsKeychain_resetsToAuth() async {
+  func test_signOut_clearsKeychain_disconnectsRealtime_resetsToAuth() async {
     let cleared = ClearedRecorder()
+    let disconnected = ClearedRecorder()
     let store = TestStore(initialState: RootFeature.State(
       screen: .signedIn,
       login: LoginFeature.State(email: "user@example.com", password: "secret"),
@@ -163,6 +164,7 @@ final class RootFeatureTests: XCTestCase {
         persist: { _ in },
         clear: { await cleared.markCleared() }
       )
+      $0.realtimeClient.disconnect = { await disconnected.markCleared() }
     }
 
     await store.send(.signOutTapped) {
@@ -178,6 +180,11 @@ final class RootFeatureTests: XCTestCase {
 
     let wasCleared = await cleared.value
     XCTAssertTrue(wasCleared, "TokenStore.clear must run on sign-out so future launches re-auth.")
+    let wasDisconnected = await disconnected.value
+    XCTAssertTrue(
+      wasDisconnected,
+      "Realtime socket must be torn down on sign-out — its reconnect replays the old user's JWT."
+    )
   }
 
   func test_deepLinkReceived_orderComplete_stashesPendingRoute() async {
@@ -298,6 +305,7 @@ final class RootFeatureTests: XCTestCase {
 
   func test_browseDelegateSignOutRequested_clearsKeychain_resetsToAuth() async {
     let cleared = ClearedRecorder()
+    let disconnected = ClearedRecorder()
     let store = TestStore(initialState: RootFeature.State(
       screen: .signedIn,
       signedInUser: LoginFeatureTests.sampleUser,
@@ -311,6 +319,7 @@ final class RootFeatureTests: XCTestCase {
         persist: { _ in },
         clear: { await cleared.markCleared() }
       )
+      $0.realtimeClient.disconnect = { await disconnected.markCleared() }
     }
     store.exhaustivity = .off
 
@@ -322,10 +331,13 @@ final class RootFeatureTests: XCTestCase {
     XCTAssertEqual(store.state.authScreen, .login)
     let wasCleared = await cleared.value
     XCTAssertTrue(wasCleared, "Account-tab sign-out must clear tokens just like the explicit CTA.")
+    let wasDisconnected = await disconnected.value
+    XCTAssertTrue(wasDisconnected, "Account-tab sign-out must tear the realtime socket down too.")
   }
 
   func test_browseDelegateAccountDeletionCompleted_clearsKeychain_resetsToAuth() async {
     let cleared = ClearedRecorder()
+    let disconnected = ClearedRecorder()
     let store = TestStore(initialState: RootFeature.State(
       screen: .signedIn,
       signedInUser: LoginFeatureTests.sampleUser,
@@ -339,6 +351,7 @@ final class RootFeatureTests: XCTestCase {
         persist: { _ in },
         clear: { await cleared.markCleared() }
       )
+      $0.realtimeClient.disconnect = { await disconnected.markCleared() }
     }
     store.exhaustivity = .off
 
@@ -353,6 +366,8 @@ final class RootFeatureTests: XCTestCase {
       wasCleared,
       "Account deletion must clear tokens and reset to auth — the session is dead."
     )
+    let wasDisconnected = await disconnected.value
+    XCTAssertTrue(wasDisconnected, "Account deletion must tear the realtime socket down too.")
   }
 }
 

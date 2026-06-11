@@ -31,7 +31,9 @@ public struct RealtimeClient: Sendable {
   public var unsubscribe: @Sendable (UUID) async -> Void
 
   /// Closes the underlying connection and finishes every active stream.
-  /// Used on logout and on the OrdersTab teardown.
+  /// Wired into the root sign-out / account-deletion paths so a socket
+  /// authenticated as the previous user never survives an account
+  /// switch.
   public var disconnect: @Sendable () async -> Void
 
   public init(
@@ -86,6 +88,23 @@ public enum RealtimeClientError: Error, Sendable, Equatable {
   case decodingFailed(String)
 }
 
+extension RealtimeClientError: LocalizedError {
+  /// `EquatableError` prefers `errorDescription`, and the order-tracking
+  /// banner renders it verbatim — without this conformance the banner
+  /// leaked the raw server payload ("{code = TOKEN_EXPIRED; …}") at the
+  /// user. Every realtime failure degrades to the 15s polling fallback,
+  /// so the human-facing message says that; the associated detail stays
+  /// available for logs.
+  public var errorDescription: String? {
+    switch self {
+    case .unimplemented(let surface):
+      return "Realtime dependency not wired: \(surface)"
+    case .connectionFailed, .decodingFailed:
+      return "Live updates paused — updating every few seconds instead."
+    }
+  }
+}
+
 private enum RealtimeClientKey: DependencyKey {
   static let liveValue: RealtimeClient = .unimplemented
   static let testValue: RealtimeClient = .unimplemented
@@ -118,6 +137,11 @@ actor RealtimeSocketConnection {
   /// subscription.
   private var continuations: [UUID: AsyncThrowingStream<RealtimeOrderEvent, Error>.Continuation] = [:]
 
+  /// One token-refresh reconnect per connect cycle (reset on a
+  /// successful handshake). Without the guard, an expired *refresh*
+  /// token would loop handshake-reject → refresh → reject forever.
+  private var hasRetriedAuthThisCycle = false
+
   init(
     baseURL: URL,
     accessTokenProvider: @Sendable @escaping () async throws -> String
@@ -144,7 +168,7 @@ actor RealtimeSocketConnection {
     if let existing = continuations.removeValue(forKey: orderId) {
       existing.finish()
     }
-    socket?.emit("unsubscribe:order", orderId.uuidString.lowercased())
+    emitUnsubscribe(orderId)
   }
 
   func shutdown() {
@@ -172,6 +196,17 @@ actor RealtimeSocketConnection {
 
   private func removeContinuation(orderId: UUID) {
     continuations.removeValue(forKey: orderId)
+    emitUnsubscribe(orderId)
+  }
+
+  /// Emitting while disconnected makes socket.io-client-swift raise a
+  /// clientEvent `.error` ("Tried emitting when not connected") that the
+  /// error handler used to turn into a failAll — closing one order's
+  /// screen during a reconnect killed every other order's stream. A
+  /// disconnected socket holds no server-side rooms anyway, so the emit
+  /// is pointless; drop it.
+  private func emitUnsubscribe(_ orderId: UUID) {
+    guard socket?.status == .connected else { return }
     socket?.emit("unsubscribe:order", orderId.uuidString.lowercased())
   }
 
@@ -187,13 +222,14 @@ actor RealtimeSocketConnection {
   }
 
   private func bootstrap() {
+    // No `.connectParams` token — the server reads only
+    // `handshake.auth.token`, which `connect(withPayload:)` supplies.
     let config: SocketIOClientConfiguration = [
       .compress,
       .reconnects(true),
       .reconnectWait(1),
       .reconnectWaitMax(30),
-      .forceWebsockets(true),
-      .connectParams(["token": ""])
+      .forceWebsockets(true)
     ]
     let manager = SocketManager(socketURL: baseURL, config: config)
     let socket = manager.socket(forNamespace: "/customer")
@@ -214,6 +250,50 @@ actor RealtimeSocketConnection {
 
   private func connect(with token: String) {
     socket?.connect(withPayload: ["token": token])
+  }
+
+  private func handleConnected() {
+    hasRetriedAuthThisCycle = false
+    resubscribeAll()
+  }
+
+  /// `clientEvent: .error` carries everything from handshake rejections
+  /// to library-internal emit complaints, so triage before failing
+  /// subscriber streams.
+  private func handleSocketError(_ detail: String) {
+    // Emit-while-disconnected noise: the reconnect machinery is already
+    // on it, and the other orders' streams must survive.
+    if detail.contains("Tried emitting when not connected") { return }
+
+    guard Self.isAuthRejection(detail), !hasRetriedAuthThisCycle else {
+      failAll(with: .connectionFailed(detail))
+      return
+    }
+
+    // The handshake bounced on a stale JWT (the access token outlives
+    // its 15-min TTL whenever a tracking screen opens later). Mint a
+    // fresh one and reconnect — `connect(withPayload:)` replaces the
+    // library's stored connectPayload, so its own auto-reconnects carry
+    // the new token from here on.
+    hasRetriedAuthThisCycle = true
+    let provider = accessTokenProvider
+    Task { [weak self] in
+      do {
+        let token = try await provider()
+        await self?.connect(with: token)
+      } catch {
+        await self?.failAll(with: .connectionFailed("token refresh failed: \(error)"))
+      }
+    }
+  }
+
+  /// The `/customer` middleware rejects with exactly these codes
+  /// (`apps/realtime/src/io/auth-middleware.ts`); all three are curable
+  /// by handing the handshake a freshly-refreshed token.
+  private static func isAuthRejection(_ detail: String) -> Bool {
+    detail.contains("TOKEN_EXPIRED")
+      || detail.contains("TOKEN_INVALID")
+      || detail.contains("UNAUTHENTICATED")
   }
 
   private func failAll(with error: RealtimeClientError) {
@@ -239,12 +319,12 @@ actor RealtimeSocketConnection {
   private func installHandlers(on socket: SocketIOClient) {
     socket.on(clientEvent: .connect) { [weak self] _, _ in
       guard let self else { return }
-      Task { await self.resubscribeAll() }
+      Task { await self.handleConnected() }
     }
     socket.on(clientEvent: .error) { [weak self] data, _ in
       guard let self else { return }
       let detail = data.first.map { "\($0)" } ?? "unknown"
-      Task { await self.failAll(with: .connectionFailed(detail)) }
+      Task { await self.handleSocketError(detail) }
     }
     socket.on("order:status_changed") { [weak self] data, _ in
       self?.handle(eventName: "order:status_changed", data: data)
