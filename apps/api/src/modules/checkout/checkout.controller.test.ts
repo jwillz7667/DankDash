@@ -125,7 +125,7 @@ describe('CheckoutController.create', () => {
     const { controller, svc } = makeController();
     const body: CheckoutRequest = {
       deliveryAddressId: ADDRESS_ID,
-      driverTipCents: 0,
+      driverTipCents: 200,
       deliveryInstructions: 'Leave at door',
     };
 
@@ -140,7 +140,7 @@ describe('CheckoutController.create', () => {
 
     await controller.create(PRINCIPAL, CART_ID, {
       deliveryAddressId: ADDRESS_ID,
-      driverTipCents: 0,
+      driverTipCents: 200,
       paymentMethodId,
     });
 

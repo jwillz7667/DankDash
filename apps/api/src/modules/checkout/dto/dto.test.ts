@@ -3,9 +3,8 @@
  *
  * The request schema is the boundary between user input and the service:
  * it must reject any extra key (probe vector), reject malformed UUIDs,
- * clamp the driver tip to the $500 cap, trim and clamp delivery
- * instructions, default `driverTipCents` to 0, and accept the minimal
- * happy-path body.
+ * enforce the mandatory driver tip ($2 floor, $500 cap), trim and clamp
+ * delivery instructions, and accept the minimal happy-path body.
  *
  * The response schema (server → client contract) is checked positively
  * with a representative successful payload so a future schema-tightening
@@ -17,6 +16,7 @@ import {
   CheckoutResponseSchema,
   MAX_DELIVERY_INSTRUCTIONS_LENGTH,
   MAX_DRIVER_TIP_CENTS,
+  MIN_DRIVER_TIP_CENTS,
   OrderStatusSchema,
   PaymentIntentResponseSchema,
 } from './index.js';
@@ -31,13 +31,29 @@ const USER_ID = '01935f3d-0000-7000-8000-000000000001';
 const DISPENSARY_ID = '01935f3d-0000-7000-8000-000000000010';
 
 describe('CheckoutRequestSchema', () => {
-  it('accepts the minimal valid body and defaults driverTipCents to 0', () => {
-    const parsed = CheckoutRequestSchema.parse({ deliveryAddressId: ADDRESS_ID });
+  it('accepts the minimal valid body (address + tip at the floor)', () => {
+    const parsed = CheckoutRequestSchema.parse({
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: MIN_DRIVER_TIP_CENTS,
+    });
 
     expect(parsed.deliveryAddressId).toBe(ADDRESS_ID);
-    expect(parsed.driverTipCents).toBe(0);
+    expect(parsed.driverTipCents).toBe(MIN_DRIVER_TIP_CENTS);
     expect(parsed.paymentMethodId).toBeUndefined();
     expect(parsed.deliveryInstructions).toBeUndefined();
+  });
+
+  it('rejects a body without driverTipCents (the tip is mandatory, no default)', () => {
+    expect(() => CheckoutRequestSchema.parse({ deliveryAddressId: ADDRESS_ID })).toThrow();
+  });
+
+  it('rejects driverTipCents below the $2 floor', () => {
+    expect(() =>
+      CheckoutRequestSchema.parse({
+        deliveryAddressId: ADDRESS_ID,
+        driverTipCents: MIN_DRIVER_TIP_CENTS - 1,
+      }),
+    ).toThrow();
   });
 
   it('accepts a full body with paymentMethodId, tip, and instructions', () => {

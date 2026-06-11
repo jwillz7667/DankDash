@@ -7,6 +7,7 @@ export {
   CheckoutRequestSchema,
   MAX_DELIVERY_INSTRUCTIONS_LENGTH,
   MAX_DRIVER_TIP_CENTS,
+  MIN_DRIVER_TIP_CENTS,
   type CheckoutRequest,
 } from './checkout-request.dto.js';
 export {

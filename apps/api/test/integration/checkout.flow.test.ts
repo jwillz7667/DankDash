@@ -19,6 +19,7 @@
  *   - Expired cart: cart.expires_at < now → 410
  *   - Cross-user: different principal probing a cart → 404 (no leak)
  *   - Empty cart: 422 with a clear code
+ *   - Tip floor: driverTipCents below the $2 minimum → 422 + no DB writes
  *
  * Pattern: `seedFixtures()` reseeds in `beforeEach`. Tests that need a
  * mutated row (constrained inventory, expired cart) issue raw SQL via
@@ -303,7 +304,7 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
       method: 'POST',
       url: `/v1/carts/${cart.id}/checkout`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
     });
     expect(resp.statusCode).toBe(422);
     const body = resp.json<ErrorBody>();
@@ -328,7 +329,7 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
       method: 'POST',
       url: `/v1/carts/${cart.id}/checkout`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
     });
     expect(resp.statusCode).toBe(409);
     const body = resp.json<ErrorBody>();
@@ -362,7 +363,7 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
       method: 'POST',
       url: `/v1/carts/${cart.id}/checkout`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
     });
     expect(resp.statusCode).toBe(410);
     expect(resp.json<ErrorBody>().error.code).toBe('CART_EXPIRED');
@@ -389,7 +390,7 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
       method: 'POST',
       url: `/v1/carts/${cart.id}/checkout`,
       headers: { ...bearer(otherToken), 'content-type': 'application/json' },
-      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
     });
     expect(resp.statusCode).toBe(404);
     expect(resp.json<ErrorBody>().error.code).toBe('NOT_FOUND');
@@ -409,10 +410,30 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
       method: 'POST',
       url: `/v1/carts/${cart.id}/checkout`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
     });
     expect(resp.statusCode).toBe(422);
     expect(resp.json<ErrorBody>().error.code).toBe('VALIDATION_FAILED');
+  });
+
+  it('tip floor — driverTipCents below the $2 minimum rejects with 422 and writes no order rows', async () => {
+    const token = signTokenFor(app, { userId: SEED_IDS.user.customer1, role: 'customer' });
+    const cart = await buildCart(app, token, [
+      { listingId: MPLS_NORTHERN_LIGHTS_LISTING_ID, quantity: 1 },
+    ]);
+
+    const resp = await app.inject({
+      method: 'POST',
+      url: `/v1/carts/${cart.id}/checkout`,
+      headers: { ...bearer(token), 'content-type': 'application/json' },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 199 },
+    });
+    expect(resp.statusCode).toBe(422);
+    expect(resp.json<ErrorBody>().error.code).toBe('VALIDATION_FAILED');
+
+    // Rejected at the DTO boundary — nothing reached the transaction.
+    expect(await countRows('orders', `user_id = $1`, [SEED_IDS.user.customer1])).toBe(0);
+    expect(await countRows('carts', `id = $1`, [cart.id])).toBe(1);
   });
 
   it('concurrency — two parallel checkouts of the same constrained listing: exactly one succeeds, one gets 409', async () => {
@@ -467,13 +488,13 @@ describe('/v1/carts/:id/checkout — atomic transaction', () => {
         method: 'POST',
         url: `/v1/carts/${aliceCart.id}/checkout`,
         headers: { ...bearer(aliceToken), 'content-type': 'application/json' },
-        payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+        payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
       }),
       app.inject({
         method: 'POST',
         url: `/v1/carts/${derekCart.id}/checkout`,
         headers: { ...bearer(derekToken), 'content-type': 'application/json' },
-        payload: { deliveryAddressId: derekAddressId, driverTipCents: 0 },
+        payload: { deliveryAddressId: derekAddressId, driverTipCents: 200 },
       }),
     ]);
 
@@ -609,7 +630,7 @@ describe('/v1/carts/:id/checkout — PAYMENTS_BYPASS_ENABLED test mode', () => {
       method: 'POST',
       url: `/v1/carts/${cart.id}/checkout`,
       headers: { ...bearer(token), 'content-type': 'application/json' },
-      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 0 },
+      payload: { deliveryAddressId: ALICE_ADDRESS_ID, driverTipCents: 200 },
     });
     expect(resp.statusCode).toBe(422);
     expect(resp.json<ErrorBody>().error.code).toBe('COMPLIANCE_EVALUATION_FAILED');
