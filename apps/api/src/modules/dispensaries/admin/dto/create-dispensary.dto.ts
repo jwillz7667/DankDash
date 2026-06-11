@@ -89,6 +89,14 @@ export class CreateDispensaryRequestDto extends createZodDto(CreateDispensaryReq
  *                      writes an audit row; silent renames are unsafe.
  *   - region         — moving a dispensary to a different state crosses
  *                      compliance jurisdictions; not a casual patch.
+ *   - location       — the store point moves only with a verified street
+ *                      address correction; patching it alone would desync
+ *                      the geocode from the printed address.
+ *
+ * `deliveryPolygon` IS patchable: delivery zones legitimately grow and
+ * shrink over a store's life. The polygon doubles as the interstate guard
+ * (`check-geofence.ts` has no separate state-boundary rule), which is why
+ * the field is admin-only and absent from the vendor settings PATCH.
  *
  * Empty objects are rejected by the service (not the schema) so the error
  * message can be specific and the schema can stay declarative.
@@ -106,6 +114,7 @@ export const PatchDispensaryRequestSchema = z
     addressLine2: z.string().min(1).max(200).nullable().optional(),
     city: z.string().min(1).max(100).optional(),
     postalCode: z.string().min(5).max(10).optional(),
+    deliveryPolygon: GeoPolygonSchema.optional(),
     hours: DispensaryHoursSchema.optional(),
     phone: Phone.nullable().optional(),
     email: Email.nullable().optional(),
