@@ -267,14 +267,20 @@ interface SeedDispensary {
 // Keys must be the 3-letter lowercase weekday codes the @dankdash/dispensaries
 // `DispensaryHours` type defines. Anything else round-trips through `isOpenAt`
 // as `undefined` and explodes when the service projects `isOpenNow`.
+// Full statutory window (Minn. Stat. § 342.27 subd. (d): 8:00 AM–2:00 AM).
+// A close earlier than the open is the cross-midnight encoding the
+// @dankdash/dispensaries hours engine documents (08:00–02:00 ≡ 08:00–26:00).
+// Declared hours this wide let dev/demo test orders run at any hour the
+// state allows; the compliance engine still clamps to the statutory cap,
+// so the 2 AM–8 AM dead zone remains closed.
 const HOURS_JSON = {
-  mon: { open: '09:00', close: '21:00' },
-  tue: { open: '09:00', close: '21:00' },
-  wed: { open: '09:00', close: '21:00' },
-  thu: { open: '09:00', close: '21:00' },
-  fri: { open: '09:00', close: '22:00' },
-  sat: { open: '10:00', close: '22:00' },
-  sun: { open: '10:00', close: '20:00' },
+  mon: { open: '08:00', close: '02:00' },
+  tue: { open: '08:00', close: '02:00' },
+  wed: { open: '08:00', close: '02:00' },
+  thu: { open: '08:00', close: '02:00' },
+  fri: { open: '08:00', close: '02:00' },
+  sat: { open: '08:00', close: '02:00' },
+  sun: { open: '08:00', close: '02:00' },
 } as const;
 
 const DISPENSARIES: readonly SeedDispensary[] = [
