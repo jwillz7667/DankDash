@@ -74,6 +74,12 @@ public struct CartFeature: Sendable {
     /// dismissed when the picker emits its delegate.
     public var addressPicker: AddressPickerFeature.State?
 
+    /// Driver tip for this order, in cents. Defaults to the $2 floor and
+    /// is kept inside ``TipPolicy``'s range by the reducer, so the value
+    /// sent to checkout is always one the server accepts. The server
+    /// re-validates — this is UX state, not the enforcement point.
+    public var selectedTipCents: Int
+
     /// Whether the server is running the test-only payment bypass. Loaded
     /// on ``onAppear`` from `GET /v1/checkout/capabilities`. Defaults to
     /// `false` so the in-app "place test order" affordance stays hidden in
@@ -99,6 +105,7 @@ public struct CartFeature: Sendable {
       expirySecondsRemaining: Int? = nil,
       productInfo: [UUID: ListingProductInfo] = [:],
       addressPicker: AddressPickerFeature.State? = nil,
+      selectedTipCents: Int = TipPolicy.minimumCents,
       paymentBypassEnabled: Bool = false,
       isPlacingTestOrder: Bool = false
     ) {
@@ -115,6 +122,7 @@ public struct CartFeature: Sendable {
       self.expirySecondsRemaining = expirySecondsRemaining
       self.productInfo = productInfo
       self.addressPicker = addressPicker
+      self.selectedTipCents = TipPolicy.clamp(selectedTipCents)
       self.paymentBypassEnabled = paymentBypassEnabled
       self.isPlacingTestOrder = isPlacingTestOrder
     }
@@ -173,6 +181,10 @@ public struct CartFeature: Sendable {
     case cartExpired
 
     case checkoutTapped
+
+    /// User picked a tip — either a suggested chip or a committed custom
+    /// amount. The reducer clamps to ``TipPolicy``'s range.
+    case tipSelected(Int)
 
     case placeTestOrderTapped
     case testOrderResponse(Result<UUID, EquatableError>)
@@ -440,6 +452,10 @@ public struct CartFeature: Sendable {
               let addressId = state.selectedAddressId else { return .none }
         return .send(.delegate(.checkoutRequested(cartId: cart.id, deliveryAddressId: addressId)))
 
+      case .tipSelected(let cents):
+        state.selectedTipCents = TipPolicy.clamp(cents)
+        return .none
+
       case .placeTestOrderTapped:
         // Test-mode only. `canPlaceTestOrder` folds in the bypass flag,
         // the compliance gates (the server re-runs the full evaluation
@@ -450,9 +466,10 @@ public struct CartFeature: Sendable {
               let addressId = state.selectedAddressId else { return .none }
         state.isPlacingTestOrder = true
         state.error = nil
+        let tipCents = state.selectedTipCents
         return .run { [checkoutAPIClient] send in
           do {
-            let orderId = try await checkoutAPIClient.checkout(cart.id, addressId, 0)
+            let orderId = try await checkoutAPIClient.checkout(cart.id, addressId, tipCents)
             await send(.testOrderResponse(.success(orderId)))
           } catch {
             await send(.testOrderResponse(.failure(EquatableError(error))))

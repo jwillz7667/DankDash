@@ -19,6 +19,12 @@ struct CartView: View {
   @Bindable var store: StoreOf<CartFeature>
   let cdnBaseURL: URL?
 
+  /// Local UI state for the custom-tip alert. The committed amount lives
+  /// in the reducer (`selectedTipCents`); this is just the text field
+  /// buffer while the alert is up.
+  @State private var isCustomTipAlertPresented = false
+  @State private var customTipText = ""
+
   var body: some View {
     Group {
       if isEmpty {
@@ -251,6 +257,7 @@ struct CartView: View {
 
   private var checkoutBar: some View {
     VStack(spacing: DankSpacing.sm) {
+      tipSection
       HStack {
         Text("Subtotal")
           .font(DankFont.body)
@@ -291,6 +298,68 @@ struct CartView: View {
         .fill(DankColor.primary.opacity(0.08))
         .frame(height: 1)
     }
+  }
+
+  // MARK: - Driver tip
+
+  /// Suggested-tip chips plus a custom-amount pill. The selected amount
+  /// is reducer state (clamped to ``TipPolicy``'s range there); the
+  /// server re-validates at checkout, so this is preview UX only.
+  private var tipSection: some View {
+    VStack(alignment: .leading, spacing: DankSpacing.xs) {
+      Text("Driver tip")
+        .font(DankFont.caption)
+        .tracking(0.8)
+        .foregroundStyle(DankColor.Text.secondary)
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: DankSpacing.xs) {
+          ForEach(TipPolicy.suggestedCents, id: \.self) { cents in
+            FacetPill(
+              title: wholeDollarLabel(cents),
+              isSelected: store.selectedTipCents == cents,
+              action: { store.send(.tipSelected(cents)) }
+            )
+          }
+          FacetPill(
+            title: isCustomTipSelected ? formatPrice(store.selectedTipCents) : "Custom",
+            isSelected: isCustomTipSelected,
+            action: {
+              customTipText = ""
+              isCustomTipAlertPresented = true
+            }
+          )
+        }
+      }
+
+      Text("$2 minimum. 100% of the tip goes to your driver.")
+        .font(DankFont.caption)
+        .foregroundStyle(DankColor.Text.muted)
+    }
+    .alert("Custom tip", isPresented: $isCustomTipAlertPresented) {
+      TextField("Amount in dollars", text: $customTipText)
+        .keyboardType(.numberPad)
+      Button("Set tip") {
+        if let dollars = Int(customTipText.trimmingCharacters(in: .whitespaces)) {
+          store.send(.tipSelected(dollars * 100))
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Whole dollars, $2 minimum.")
+    }
+  }
+
+  /// True when the committed tip isn't one of the suggested chips, so
+  /// the Custom pill shows the amount and reads as selected.
+  private var isCustomTipSelected: Bool {
+    !TipPolicy.suggestedCents.contains(store.selectedTipCents)
+  }
+
+  /// Chip label for the suggested amounts — all whole dollars, so "$5"
+  /// reads better than "$5.00".
+  private func wholeDollarLabel(_ cents: Int) -> String {
+    "$\(cents / 100)"
   }
 
   /// Server cart is authoritative once it lands; before then the draft

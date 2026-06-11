@@ -429,7 +429,81 @@ final class CartFeatureTests: XCTestCase {
     XCTAssertEqual(recorded.count, 1)
     XCTAssertEqual(recorded.first?.cartId, cart.id)
     XCTAssertEqual(recorded.first?.addressId, address.id)
-    XCTAssertEqual(recorded.first?.tip, 0)
+    XCTAssertEqual(recorded.first?.tip, TipPolicy.minimumCents)
+  }
+
+  // MARK: - Driver tip
+
+  func test_tipSelected_setsAmount() async {
+    let store = TestStore(initialState: CartFeature.State()) {
+      CartFeature()
+    }
+
+    XCTAssertEqual(store.state.selectedTipCents, TipPolicy.minimumCents)
+    await store.send(.tipSelected(500)) {
+      $0.selectedTipCents = 500
+    }
+  }
+
+  func test_tipSelected_clampsBelowFloorAndAboveCap() async {
+    // Start off the floor so the below-floor clamp is an observable change.
+    let store = TestStore(initialState: CartFeature.State(selectedTipCents: 500)) {
+      CartFeature()
+    }
+
+    await store.send(.tipSelected(50)) {
+      $0.selectedTipCents = TipPolicy.minimumCents
+    }
+    await store.send(.tipSelected(60_000)) {
+      $0.selectedTipCents = TipPolicy.maximumCents
+    }
+  }
+
+  func test_initState_clampsTipBelowFloor() {
+    let state = CartFeature.State(selectedTipCents: 0)
+
+    XCTAssertEqual(state.selectedTipCents, TipPolicy.minimumCents)
+  }
+
+  func test_placeTestOrderTapped_sendsSelectedTip() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(items: [makeCartItem()], expiresAt: referenceDate.addingTimeInterval(1_800))
+    let address = makeAddress()
+    let passing = makeEvaluation(passed: true)
+    let orderId = UUID()
+    let checkoutRecorder = CheckoutArgsRecorder()
+
+    let store = TestStore(
+      initialState: CartFeature.State(
+        serverCart: cart,
+        availableAddresses: [address],
+        selectedAddressId: address.id,
+        evaluation: passing,
+        paymentBypassEnabled: true
+      )
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+      $0.checkoutAPIClient.checkout = { cartId, addressId, tip in
+        await checkoutRecorder.record(cartId: cartId, addressId: addressId, tip: tip)
+        return orderId
+      }
+    }
+
+    await store.send(.tipSelected(500)) {
+      $0.selectedTipCents = 500
+    }
+    await store.send(.placeTestOrderTapped) {
+      $0.isPlacingTestOrder = true
+    }
+    await store.receive(\.testOrderResponse.success) {
+      $0.isPlacingTestOrder = false
+    }
+    await store.receive(\.delegate.testOrderPlaced)
+
+    let recorded = await checkoutRecorder.calls
+    XCTAssertEqual(recorded.first?.tip, 500)
   }
 
   func test_placeTestOrderTapped_bypassDisabled_doesNothing() async {

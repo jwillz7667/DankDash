@@ -22,9 +22,11 @@
  *   - `driverTipCents`       — pre-delivery tip in integer cents. Lands
  *                              on `orders.driver_tip_cents` and on a
  *                              dedicated ledger entry to the driver
- *                              account at delivery time. Capped here at
- *                              $500 (50_000 cents) — a higher tip is
- *                              almost certainly a UI bug.
+ *                              account at delivery time. Required, with
+ *                              a $2 floor (every order is a delivery and
+ *                              the driver tip is mandatory) and a $500
+ *                              cap — a higher tip is almost certainly a
+ *                              UI bug.
  *   - `deliveryInstructions` — free-text note for the driver. Trimmed to
  *                              500 characters at the schema layer so a
  *                              pasted essay never reaches Postgres. Stored
@@ -48,6 +50,16 @@ import { z } from 'zod';
 export const MAX_DRIVER_TIP_CENTS = 50_000;
 
 /**
+ * Every order is a delivery, and the platform guarantees drivers a tip on
+ * each one: $2 minimum, business rule from product. The field is required
+ * (no default) — silently charging a customer a tip they never chose is
+ * worse than rejecting the request, so clients must state the tip
+ * explicitly. iOS mirrors this floor in `TipPolicy` for UX preview; this
+ * schema is the authoritative check.
+ */
+export const MIN_DRIVER_TIP_CENTS = 200;
+
+/**
  * Cap on the free-text driver note. Keeps the JSONB snapshot small (the
  * snapshot is read into memory at every order list / detail surface).
  */
@@ -57,7 +69,7 @@ export const CheckoutRequestSchema = z
   .object({
     deliveryAddressId: z.string().uuid(),
     paymentMethodId: z.string().uuid().optional(),
-    driverTipCents: z.number().int().nonnegative().max(MAX_DRIVER_TIP_CENTS).default(0),
+    driverTipCents: z.number().int().min(MIN_DRIVER_TIP_CENTS).max(MAX_DRIVER_TIP_CENTS),
     deliveryInstructions: z.string().trim().max(MAX_DELIVERY_INSTRUCTIONS_LENGTH).optional(),
   })
   .strict();

@@ -369,7 +369,7 @@ describe('/v1/payment-methods/aeropay/webhook — Phase 6.8 lifecycle', () => {
   it('ledger invariant: every settled order has sum(debits) === sum(credits)', async () => {
     // Drive three independent checkouts + settlements through real webhooks.
     const checkouts = [
-      await createCheckoutForAlice(app, { quantity: 1, tipCents: 0 }),
+      await createCheckoutForAlice(app, { quantity: 1, tipCents: 200 }),
       await createCheckoutForAlice(app, { quantity: 1, tipCents: 250 }),
       await createCheckoutForAlice(app, { quantity: 1, tipCents: 1000 }),
     ];
