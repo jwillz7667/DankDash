@@ -174,6 +174,23 @@ describe('PatchDispensaryRequestSchema', () => {
     expect(() => PatchDispensaryRequestSchema.parse({ region: 'WI' })).toThrow();
   });
 
+  it('rejects location on patch (the store point moves only with an address correction)', () => {
+    expect(() => PatchDispensaryRequestSchema.parse({ location: VALID_POINT })).toThrow();
+  });
+
+  it('accepts a deliveryPolygon patch (zones grow and shrink over a store life)', () => {
+    const parsed = PatchDispensaryRequestSchema.parse({ deliveryPolygon: VALID_POLYGON });
+    expect(parsed.deliveryPolygon).toEqual(VALID_POLYGON);
+  });
+
+  it('rejects a malformed deliveryPolygon (wrong geometry type)', () => {
+    expect(() =>
+      PatchDispensaryRequestSchema.parse({
+        deliveryPolygon: { type: 'MultiPolygon', coordinates: VALID_POLYGON.coordinates },
+      }),
+    ).toThrow();
+  });
+
   it('accepts a single field', () => {
     const parsed = PatchDispensaryRequestSchema.parse({ legalName: 'New Name LLC' });
     expect(parsed.legalName).toBe('New Name LLC');

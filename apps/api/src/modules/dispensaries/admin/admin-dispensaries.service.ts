@@ -140,6 +140,7 @@ export class AdminDispensariesService {
       ...(body.addressLine2 !== undefined ? { addressLine2: body.addressLine2 } : {}),
       ...(body.city !== undefined ? { city: body.city } : {}),
       ...(body.postalCode !== undefined ? { postalCode: body.postalCode } : {}),
+      ...(body.deliveryPolygon !== undefined ? { deliveryPolygon: body.deliveryPolygon } : {}),
       ...(body.hours !== undefined ? { hoursJson: body.hours } : {}),
       ...(body.phone !== undefined ? { phone: body.phone } : {}),
       ...(body.email !== undefined ? { email: body.email } : {}),

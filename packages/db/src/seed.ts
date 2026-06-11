@@ -242,8 +242,41 @@ const STAFF: readonly SeedStaff[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Dispensaries — three Twin Cities locations with realistic delivery polygons.
+// Dispensaries — three Twin Cities locations, all delivering metro-wide.
 // ---------------------------------------------------------------------------
+
+/**
+ * Shared delivery zone: Minneapolis, St. Paul, and the surrounding metro
+ * suburbs (roughly the seven-county core, Lakeville to Forest Lake, Waconia
+ * to Woodbury). All seeded dispensaries deliver metro-wide so no demo
+ * address inside the metro ever fails the geofence.
+ *
+ * The geofence is also the interstate guard — `check-geofence.ts` has no
+ * separate state-boundary rule, so this ring MUST stay inside Minnesota.
+ * The eastern edge is pinned at lng -92.83, ≥ ~2 km west of the St. Croix
+ * (the WI line: -92.80 at Stillwater and at the Prescott confluence), which
+ * trades away the riverfront blocks of Stillwater/Afton for a hard margin
+ * against a federal-line violation. Every other edge is deep inside MN.
+ */
+const TWIN_CITIES_METRO_DELIVERY_POLYGON: GeoPolygon = {
+  type: 'Polygon',
+  coordinates: [
+    [
+      [-93.85, 44.78], // SW — Victoria / Chaska / Waconia
+      [-93.65, 44.62], // S  — Jordan / Belle Plaine corridor
+      [-93.35, 44.54], // S  — Elko New Market / Lakeville / Farmington
+      [-93.0, 44.58], // SE — southern Dakota County (Hampton)
+      [-92.83, 44.66], // SE — Vermillion, south of Hastings
+      [-92.83, 45.18], // E  — Woodbury / Oakdale / Hugo (St. Croix margin)
+      [-92.95, 45.3], // NE — Forest Lake
+      [-93.3, 45.42], // N  — East Bethel / Linwood
+      [-93.65, 45.4], // NW — Elk River / Ramsey
+      [-93.85, 45.2], // W  — Rogers / Otsego / Albertville
+      [-93.95, 44.95], // W  — Delano / Watertown edge
+      [-93.85, 44.78],
+    ],
+  ],
+};
 
 interface SeedDispensary {
   readonly key: string;
@@ -299,18 +332,7 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     ratingAvg: '4.80',
     ratingCount: 214,
     location: { type: 'Point', coordinates: [-93.273, 44.987] },
-    deliveryPolygon: {
-      type: 'Polygon',
-      coordinates: [
-        [
-          [-93.33, 44.88],
-          [-93.33, 45.06],
-          [-93.18, 45.06],
-          [-93.18, 44.88],
-          [-93.33, 44.88],
-        ],
-      ],
-    },
+    deliveryPolygon: TWIN_CITIES_METRO_DELIVERY_POLYGON,
   },
   {
     key: 'stp',
@@ -327,18 +349,7 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     ratingAvg: '4.60',
     ratingCount: 156,
     location: { type: 'Point', coordinates: [-93.09, 44.954] },
-    deliveryPolygon: {
-      type: 'Polygon',
-      coordinates: [
-        [
-          [-93.18, 44.88],
-          [-93.18, 45.03],
-          [-93.02, 45.03],
-          [-93.02, 44.88],
-          [-93.18, 44.88],
-        ],
-      ],
-    },
+    deliveryPolygon: TWIN_CITIES_METRO_DELIVERY_POLYGON,
   },
   {
     key: 'mg',
@@ -355,23 +366,12 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     ratingAvg: '4.70',
     ratingCount: 89,
     location: { type: 'Point', coordinates: [-93.456, 45.073] },
-    deliveryPolygon: {
-      type: 'Polygon',
-      coordinates: [
-        [
-          [-93.52, 45.02],
-          [-93.52, 45.15],
-          [-93.38, 45.15],
-          [-93.38, 45.02],
-          [-93.52, 45.02],
-        ],
-      ],
-    },
+    deliveryPolygon: TWIN_CITIES_METRO_DELIVERY_POLYGON,
   },
 ];
 
 // ---------------------------------------------------------------------------
-// User addresses — one per active customer, each inside MPLS polygon for tests.
+// User addresses — one per active customer, each inside the metro polygon.
 // ---------------------------------------------------------------------------
 
 interface SeedAddress {

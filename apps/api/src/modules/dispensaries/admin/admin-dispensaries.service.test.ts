@@ -31,7 +31,6 @@ import type {
   DispensariesRepository,
   DispensaryStaffMember,
   DispensaryStaffRepository,
-  NewDispensary,
 } from '@dankdash/db';
 
 // 2026-05-18 (Mon) 14:00 America/Chicago = 19:00 UTC — store is open.
@@ -129,7 +128,7 @@ class FakeDispensariesRepo implements Pick<
   public rows = new Map<string, Dispensary>();
   public byLicense = new Map<string, Dispensary>();
   public createCalls: CreateDispensaryInput[] = [];
-  public updateCalls: { id: string; patch: Partial<NewDispensary> }[] = [];
+  public updateCalls: { id: string; patch: Parameters<DispensariesRepository['update']>[1] }[] = [];
   public statusCalls: { id: string; status: Dispensary['status'] }[] = [];
   public nextCreated: Dispensary = makeDispensary();
   /** Forces `create` to mint a row with the supplied id. */
@@ -180,7 +179,10 @@ class FakeDispensariesRepo implements Pick<
     return Promise.resolve(row);
   }
 
-  update(id: string, patch: Partial<NewDispensary>): Promise<Dispensary | null> {
+  update(
+    id: string,
+    patch: Parameters<DispensariesRepository['update']>[1],
+  ): Promise<Dispensary | null> {
     this.updateCalls.push({ id, patch });
     const existing = this.rows.get(id);
     if (existing === undefined) return Promise.resolve(null);
@@ -371,6 +373,31 @@ describe('AdminDispensariesService.patch', () => {
     });
     expect(res.legalName).toBe('Renamed Co.');
     expect(res.isAcceptingOrders).toBe(true);
+  });
+
+  it('forwards a deliveryPolygon patch to the repo update', async () => {
+    const rig = makeRig();
+    rig.dispensaries.seed(makeDispensary());
+    const widened = {
+      type: 'Polygon' as const,
+      coordinates: [
+        [
+          [-93.85, 44.78] as [number, number],
+          [-92.83, 44.78] as [number, number],
+          [-92.83, 45.3] as [number, number],
+          [-93.85, 45.3] as [number, number],
+          [-93.85, 44.78] as [number, number],
+        ],
+      ],
+    };
+
+    await rig.service.patch(
+      '01935f3d-0000-7000-8000-000000000001',
+      { deliveryPolygon: widened },
+      NOON_MONDAY,
+    );
+
+    expect(rig.dispensaries.updateCalls[0]?.patch).toEqual({ deliveryPolygon: widened });
   });
 
   it('allows nullable fields to be explicitly nulled', async () => {
