@@ -143,6 +143,44 @@ final class KeychainStoreTests: XCTestCase {
     }
   }
 
+  func test_nonInteractiveString_returnsValueForPlainItem() throws {
+    let attempt = try skipIfKeychainUnavailable {
+      try store.setString("refresh.opaque", forAccount: "refresh_token")
+      return try store.nonInteractiveString(forAccount: "refresh_token")
+    }
+    if let outcome = attempt {
+      XCTAssertEqual(outcome, .value("refresh.opaque"))
+    }
+  }
+
+  func test_nonInteractiveString_reportsMissingWithoutThrowing() throws {
+    let attempt = try skipIfKeychainUnavailable {
+      try store.nonInteractiveString(forAccount: "never_set")
+    }
+    if let outcome = attempt {
+      XCTAssertEqual(outcome, .missing)
+    }
+  }
+
+  func test_nonInteractiveString_readsFallbackStoredRefreshToken() throws {
+    // On a host without passcode/biometry the fallback path stores
+    // device-only, so the silent read must yield the bytes — this is the
+    // exact read the 401-refresh path performs when the in-memory cache
+    // is cold. (The `.requiresUserAuthentication` branch needs a real
+    // biometric ACL, which only exists on-device — covered by manual QA.)
+    let attempt = try skipIfKeychainUnavailable {
+      try store.setString(
+        "refresh.opaque",
+        forAccount: "refresh_token",
+        protection: .biometricWithDeviceFallback
+      )
+      return try store.nonInteractiveString(forAccount: "refresh_token")
+    }
+    if let outcome = attempt {
+      XCTAssertEqual(outcome, .value("refresh.opaque"))
+    }
+  }
+
   func test_biometricWithDeviceFallback_roundTripsValue() throws {
     // On a no-passcode host the fallback stores device-only, so reading the
     // bytes back doesn't trigger a biometric prompt. (Where the hardware can

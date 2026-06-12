@@ -21,6 +21,16 @@ struct AppEnvironment {
   let checkoutBaseURL: URL
   let cdnBaseURL: URL?
   let keychain: KeychainStore
+  /// Process-lifetime home of the decrypted refresh token. Shared by the
+  /// interceptor, `TokenStore.live`, and `SessionUnlockClient.live` so
+  /// the launch-time unlock gate decrypts once and every later refresh
+  /// reads memory instead of re-raising a Face ID sheet.
+  let sessionTokenCache: SessionTokenCache
+  /// Snapshot/compare of the device's biometric enrollment digest. The
+  /// unlock gate and login record the baseline; the foreground re-check
+  /// and the token-rotation guard compare against it so a re-enrollment
+  /// can't keep a session alive past the Keychain invalidation.
+  let biometryEnrollment: BiometryEnrollmentMonitor
   /// Shared APIClient. Created once during ``live`` initialization so the
   /// reducer dependency graph and the ``AppDelegate`` APNs-registration
   /// path use the same instance — same baseURL, same auth interceptor,
@@ -33,7 +43,13 @@ struct AppEnvironment {
     let checkout = Self.resolvedCheckoutBaseURL()
     let cdn = Self.resolvedCDNBaseURL()
     let keychain = KeychainStore(service: "com.dankdash.consumer.auth")
-    let interceptor = LiveAuthInterceptor(keychain: keychain)
+    let sessionTokenCache = SessionTokenCache()
+    let biometryEnrollment = BiometryEnrollmentMonitor()
+    let interceptor = LiveAuthInterceptor(
+      keychain: keychain,
+      cache: sessionTokenCache,
+      enrollment: biometryEnrollment
+    )
     let apiClient = APIClient(
       baseURL: base,
       session: URLSession(configuration: .ephemeral),
@@ -45,13 +61,25 @@ struct AppEnvironment {
       checkoutBaseURL: checkout,
       cdnBaseURL: cdn,
       keychain: keychain,
+      sessionTokenCache: sessionTokenCache,
+      biometryEnrollment: biometryEnrollment,
       apiClient: apiClient
     )
   }()
 
   func prepareDependencies(_ dependencies: inout DependencyValues) {
     dependencies.authAPIClient = .live(apiClient: apiClient)
-    dependencies.tokenStore = .live(keychain: keychain)
+    dependencies.tokenStore = .live(
+      keychain: keychain,
+      cache: sessionTokenCache,
+      enrollment: biometryEnrollment
+    )
+    dependencies.sessionUnlockClient = .live(
+      keychain: keychain,
+      cache: sessionTokenCache,
+      enrollment: biometryEnrollment,
+      reason: "Unlock your saved DankDash session"
+    )
     dependencies.catalogAPIClient = .live(apiClient: apiClient)
     dependencies.catalogCacheClient = .live()
     dependencies.locationClient = .live
@@ -163,18 +191,27 @@ struct AppEnvironment {
 /// and refresh-token retrieval go through the same Keychain entries the
 /// reducers' `TokenStore.live` maps onto, so a token persisted by login
 /// is the same one the APIClient injects on the next authenticated call.
-/// Refresh-token reads incur a biometric challenge per spec §5.1 — that
-/// only happens on the 401-refresh-retry path, never on the happy path.
 /// The refresh token is written with `.biometricWithDeviceFallback`, the
 /// same mode `TokenStore.live` uses, so a passcode-less device still keeps
 /// the user signed in across launches instead of dropping the session.
+///
+/// The 401-refresh path **never** prompts: it reads the process-lifetime
+/// ``SessionTokenCache`` first (primed by the launch unlock gate or a
+/// fresh login) and falls back to a non-interactive Keychain read for
+/// fallback-stored items only. A biometric-protected item that isn't in
+/// the cache yields `nil` → `APIError.noRefreshToken`, surfacing as a
+/// sign-in-again error instead of a surprise Face ID sheet.
 private actor LiveAuthInterceptor: AuthInterceptor {
   private let keychain: KeychainStore
+  private let cache: SessionTokenCache
+  private let enrollment: BiometryEnrollmentMonitor
   /// Logs only error *types* on persist failure — never token bytes.
   private let log = Logger(subsystem: "Res.DankDash", category: "AuthInterceptor")
 
-  init(keychain: KeychainStore) {
+  init(keychain: KeychainStore, cache: SessionTokenCache, enrollment: BiometryEnrollmentMonitor) {
     self.keychain = keychain
+    self.cache = cache
+    self.enrollment = enrollment
   }
 
   func accessToken() async throws -> String {
@@ -185,10 +222,27 @@ private actor LiveAuthInterceptor: AuthInterceptor {
   }
 
   func refreshToken() async -> String? {
-    try? keychain.optionalString(forAccount: TokenStore.AccountKey.refresh)
+    if let cached = await cache.currentRefreshToken() { return cached }
+    guard
+      case .value(let token) =
+        try? keychain.nonInteractiveString(forAccount: TokenStore.AccountKey.refresh)
+    else {
+      return nil
+    }
+    await cache.setRefreshToken(token)
+    return token
   }
 
   func persist(tokens: TokenPairDTO) async {
+    // A biometric re-enrollment already invalidated the stored refresh
+    // item; rewriting it here would bind the session to the NEW biometric
+    // set and resurrect it across cold launches. Refuse the write and
+    // drop the in-memory copy — the next 401 fails into sign-in-again.
+    guard !enrollment.hasEnrollmentChanged() else {
+      log.error("Refusing token persist: biometric enrollment changed since unlock")
+      await cache.clear()
+      return
+    }
     do {
       try keychain.setString(
         tokens.accessToken,
@@ -207,10 +261,14 @@ private actor LiveAuthInterceptor: AuthInterceptor {
     } catch {
       log.error("Failed to persist refresh token: \(String(describing: error), privacy: .public)")
     }
+    // The rotated refresh token must land in the cache too — the next
+    // refresh reads memory, and the Keychain copy is biometric-locked.
+    await cache.setRefreshToken(tokens.refreshToken)
   }
 
   func clearTokens() async {
     try? keychain.remove(account: TokenStore.AccountKey.access)
     try? keychain.remove(account: TokenStore.AccountKey.refresh)
+    await cache.clear()
   }
 }

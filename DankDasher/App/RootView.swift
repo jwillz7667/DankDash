@@ -15,12 +15,18 @@ import DankDashFeatures
 /// the view layer stays a pure projection of `state.screen`.
 struct RootView: View {
   @Bindable var store: StoreOf<DriverRootFeature>
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
     Group {
       switch store.screen {
       case .bootstrapping:
         BootstrapView()
+
+      case .locked:
+        SessionLockView(
+          store: store.scope(state: \.sessionLock, action: \.sessionLock)
+        )
 
       case .auth:
         AuthFlowView(store: store)
@@ -79,6 +85,13 @@ struct RootView: View {
     .background(DankColor.cream.ignoresSafeArea())
     .task {
       store.send(.onAppear)
+    }
+    .onChange(of: scenePhase) { _, newPhase in
+      // Re-check biometric enrollment on every foreground — a Settings
+      // round-trip is exactly how a re-enrollment happens mid-session.
+      if newPhase == .active {
+        store.send(.scenePhaseBecameActive)
+      }
     }
   }
 }
