@@ -106,7 +106,7 @@ final class DriverShiftFeatureTests: XCTestCase {
       Self.disableDependencies(&$0)
     }
     await store.send(.toggleOnlineTapped) {
-      $0.errorBanner = "Enable Always location in Settings to go online."
+      $0.errorBanner = "Location access is required to go online. Enable it in Settings."
     }
   }
 
@@ -144,12 +144,14 @@ final class DriverShiftFeatureTests: XCTestCase {
     // state lands correctly and skip the in-flight long-running ones.
     store.exhaustivity = .off
 
-    await store.send(.locationRationaleAllowTapped) {
-      $0.isShowingLocationRationale = false
-    }
+    // The rationale sheet stays up through the system prompt and is
+    // dismissed when the result lands (in authorizationRequestCompleted),
+    // so this action makes no synchronous state change.
+    await store.send(.locationRationaleAllowTapped)
     await store.skipReceivedActions()
 
     XCTAssertEqual(store.state.locationAuth, .authorizedAlways)
+    XCTAssertFalse(store.state.isShowingLocationRationale)
     XCTAssertEqual(store.state.activeShift, shift)
     XCTAssertEqual(store.state.driver?.currentStatus, .online)
     XCTAssertFalse(store.state.isPerformingShiftTransition)
@@ -171,23 +173,92 @@ final class DriverShiftFeatureTests: XCTestCase {
     }
   }
 
-  func test_rationaleAllow_whenInUseGrant_surfacesBanner() async {
+  func test_rationaleAllow_whenInUseGrant_startsShift() async {
+    // iOS only ever grants While-Using on the first prompt, so a new driver
+    // must still be able to go online with it — blocking on Always here is
+    // exactly the bug that stranded drivers.
+    let shift = Self.openShift()
+    let driver = Self.passedDriver()
     let store = TestStore(
-      initialState: DriverShiftFeature.State(locationAuth: .notDetermined, isShowingLocationRationale: true)
+      initialState: DriverShiftFeature.State(
+        driver: driver,
+        currentCoordinate: Coordinate(latitude: 44.9778, longitude: -93.2650),
+        locationAuth: .notDetermined,
+        isShowingLocationRationale: true
+      )
     ) {
       DriverShiftFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
       $0.backgroundLocationClient = .test(status: .authorizedWhenInUse)
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in shift },
+        endShift: { _ in throw DriverAPIError.unimplemented("endShift") },
+        updateStatus: { _ in throw DriverAPIError.unimplemented("updateStatus") }
+      )
+      $0.driverSessionStoreClient = DriverSessionStoreClient(
+        read: { nil },
+        write: { _ in },
+        updateHeartbeat: { _, _, _ in },
+        clear: {}
+      )
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
     }
+    store.exhaustivity = .off
 
-    await store.send(.locationRationaleAllowTapped) {
-      $0.isShowingLocationRationale = false
+    await store.send(.locationRationaleAllowTapped)
+    await store.skipReceivedActions()
+
+    XCTAssertEqual(store.state.locationAuth, .authorizedWhenInUse)
+    XCTAssertFalse(store.state.isShowingLocationRationale)
+    XCTAssertEqual(store.state.activeShift, shift, "While-Using is enough to go online")
+    XCTAssertEqual(store.state.driver?.currentStatus, .online)
+    XCTAssertNil(store.state.errorBanner)
+
+    await store.skipInFlightEffects()
+  }
+
+  func test_toggleOnline_whenInUseAlready_startsShiftWithoutRationale() async {
+    // A returning driver who previously granted While-Using should go
+    // straight online — no rationale re-prompt.
+    let shift = Self.openShift()
+    let driver = Self.passedDriver()
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: driver,
+        currentCoordinate: Coordinate(latitude: 44.9778, longitude: -93.2650),
+        locationAuth: .authorizedWhenInUse
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.backgroundLocationClient = .test(status: .authorizedWhenInUse)
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in shift },
+        endShift: { _ in throw DriverAPIError.unimplemented("endShift") },
+        updateStatus: { _ in throw DriverAPIError.unimplemented("updateStatus") }
+      )
+      $0.driverSessionStoreClient = DriverSessionStoreClient(
+        read: { nil },
+        write: { _ in },
+        updateHeartbeat: { _, _, _ in },
+        clear: {}
+      )
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
     }
-    await store.receive(\.authorizationRequestCompleted) {
-      $0.locationAuth = .authorizedWhenInUse
-      $0.errorBanner = "While Using is not enough — choose Always in Settings to go online."
-    }
+    store.exhaustivity = .off
+
+    await store.send(.toggleOnlineTapped)
+    await store.skipReceivedActions()
+
+    XCTAssertFalse(store.state.isShowingLocationRationale, "already-authorized driver skips the rationale")
+    XCTAssertEqual(store.state.activeShift, shift)
+    XCTAssertEqual(store.state.driver?.currentStatus, .online)
+
+    await store.skipInFlightEffects()
   }
 
   // MARK: - Toggle offline (already online)
