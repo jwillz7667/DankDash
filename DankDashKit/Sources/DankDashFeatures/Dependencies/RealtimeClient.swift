@@ -329,14 +329,16 @@ actor RealtimeSocketConnection {
     socket.on("order:status_changed") { [weak self] data, _ in
       self?.handle(eventName: "order:status_changed", data: data)
     }
-    socket.on("order:driver_assigned") { [weak self] data, _ in
-      self?.handle(eventName: "order:driver_assigned", data: data)
-    }
     socket.on("driver:location") { [weak self] data, _ in
       self?.handle(eventName: "driver:location", data: data)
     }
-    socket.on("order:eta_updated") { [weak self] data, _ in
-      self?.handle(eventName: "order:eta_updated", data: data)
+    // Server emits the ETA refresh as `customer:eta_updated` (see
+    // packages/realtime-events REALTIME_EVENT_TYPES). There is no
+    // `order:driver_assigned` event — driver assignment arrives as a
+    // `order:status_changed` → `driver_assigned`, and OrderTracking
+    // self-heals the driver profile with a one-shot detail refetch.
+    socket.on("customer:eta_updated") { [weak self] data, _ in
+      self?.handle(eventName: "customer:eta_updated", data: data)
     }
   }
 
@@ -355,73 +357,85 @@ actor RealtimeSocketConnection {
 enum RealtimeEventParser {
   static func parse(name: String, payload: Data) -> RealtimeOrderEvent? {
     let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
+    // The server stamps timestamps with JS `Date.toISOString()`, which
+    // always carries fractional seconds (`...:00.000Z`). `.iso8601` uses
+    // a formatter without `.withFractionalSeconds`, so it rejects every
+    // real payload — decode both shapes defensively.
+    decoder.dateDecodingStrategy = .custom { decoder in
+      let raw = try decoder.singleValueContainer().decode(String.self)
+      guard let date = Self.parseTimestamp(raw) else {
+        throw DecodingError.dataCorrupted(
+          .init(codingPath: decoder.codingPath, debugDescription: "unparseable ISO-8601 timestamp: \(raw)")
+        )
+      }
+      return date
+    }
     switch name {
     case "order:status_changed":
       guard let dto = try? decoder.decode(StatusChangedDTO.self, from: payload) else { return nil }
       guard let orderId = UUID(uuidString: dto.orderId) else { return nil }
-      guard let status = OrderStatus(rawValue: dto.status) else { return nil }
-      return .statusChanged(orderId: orderId, status: status, occurredAt: dto.occurredAt)
-
-    case "order:driver_assigned":
-      guard let dto = try? decoder.decode(DriverAssignedDTO.self, from: payload) else { return nil }
-      guard let orderId = UUID(uuidString: dto.orderId) else { return nil }
-      guard let driverId = UUID(uuidString: dto.driver.id) else { return nil }
-      let driver = DriverPublicProfile(
-        id: driverId,
-        displayName: dto.driver.displayName,
-        avatarKey: dto.driver.avatarKey,
-        vehicleSummary: dto.driver.vehicleSummary,
-        maskedPhone: dto.driver.maskedPhone
-      )
-      return .driverAssigned(orderId: orderId, driver: driver, occurredAt: dto.occurredAt)
+      guard let status = OrderStatus(rawValue: dto.toStatus) else { return nil }
+      return .statusChanged(orderId: orderId, status: status, occurredAt: dto.changedAt)
 
     case "driver:location":
       guard let dto = try? decoder.decode(DriverLocationDTO.self, from: payload) else { return nil }
       guard let orderId = UUID(uuidString: dto.orderId) else { return nil }
-      let coordinate = Coordinate(latitude: dto.latitude, longitude: dto.longitude)
-      return .driverLocation(orderId: orderId, coordinate: coordinate, capturedAt: dto.capturedAt)
+      let coordinate = Coordinate(latitude: dto.lat, longitude: dto.lng)
+      return .driverLocation(orderId: orderId, coordinate: coordinate, capturedAt: dto.recordedAt)
 
-    case "order:eta_updated":
+    case "customer:eta_updated":
       guard let dto = try? decoder.decode(EtaUpdatedDTO.self, from: payload) else { return nil }
       guard let orderId = UUID(uuidString: dto.orderId) else { return nil }
-      return .etaUpdated(orderId: orderId, etaMinutes: dto.etaMinutes, updatedAt: dto.updatedAt)
+      // Wire carries seconds; the UI renders whole minutes.
+      let etaMinutes = Int((dto.etaSeconds / 60).rounded())
+      return .etaUpdated(orderId: orderId, etaMinutes: etaMinutes, updatedAt: dto.computedAt)
 
     default:
       return nil
     }
   }
 
+  // `formatOptions` is set once at init and never mutated, and
+  // `date(from:)` is safe for concurrent reads — so sharing a single
+  // formatter across the socket callback threads is sound.
+  private nonisolated(unsafe) static let iso8601Fractional: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+
+  private nonisolated(unsafe) static let iso8601Plain: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+  }()
+
+  private static func parseTimestamp(_ raw: String) -> Date? {
+    iso8601Fractional.date(from: raw) ?? iso8601Plain.date(from: raw)
+  }
+
+  /// Mirrors `orderStatusChangedPayloadSchema` in `packages/realtime-events`.
+  /// Extra wire fields (customerId, dispensaryId, driverId, fromStatus,
+  /// envelopeId) are intentionally unmapped — `JSONDecoder` ignores keys
+  /// absent from the type.
   struct StatusChangedDTO: Decodable {
     let orderId: String
-    let status: String
-    let occurredAt: Date
+    let toStatus: String
+    let changedAt: Date
   }
 
-  struct DriverAssignedDTO: Decodable {
-    let orderId: String
-    let driver: DriverDTO
-    let occurredAt: Date
-
-    struct DriverDTO: Decodable {
-      let id: String
-      let displayName: String
-      let avatarKey: String?
-      let vehicleSummary: String?
-      let maskedPhone: String?
-    }
-  }
-
+  /// Mirrors `driverLocationPayloadSchema`.
   struct DriverLocationDTO: Decodable {
     let orderId: String
-    let latitude: Double
-    let longitude: Double
-    let capturedAt: Date
+    let lat: Double
+    let lng: Double
+    let recordedAt: Date
   }
 
+  /// Mirrors `customerEtaUpdatedPayloadSchema`.
   struct EtaUpdatedDTO: Decodable {
     let orderId: String
-    let etaMinutes: Int
-    let updatedAt: Date
+    let etaSeconds: Double
+    let computedAt: Date
   }
 }

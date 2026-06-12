@@ -6,22 +6,60 @@ import DankDashDomain
 final class RealtimeClientTests: XCTestCase {
   // MARK: - Parser
 
-  func test_parser_statusChanged_decodesValidPayload() throws {
+  /// The exact `order:status_changed` payload the realtime router emits
+  /// (every field from `orderStatusChangedPayloadSchema` + `envelopeId`),
+  /// with a fractional-second `changedAt` like JS `Date.toISOString()`.
+  /// This is the regression that proves the consumer/driver can decode the
+  /// real wire shape — the prior fixtures invented `status`/`occurredAt`,
+  /// which never existed on the wire, so live tracking silently decoded to
+  /// nil for every transition.
+  func test_parser_statusChanged_decodesRealServerPayload() throws {
     let orderId = UUID()
     let json = """
     {
       "orderId": "\(orderId.uuidString.lowercased())",
-      "status": "delivered",
-      "occurredAt": "2026-05-21T18:00:00Z"
+      "customerId": "\(UUID().uuidString.lowercased())",
+      "dispensaryId": "\(UUID().uuidString.lowercased())",
+      "driverId": "\(UUID().uuidString.lowercased())",
+      "fromStatus": "prepping",
+      "toStatus": "delivered",
+      "changedAt": "2026-05-21T18:00:00.123Z",
+      "envelopeId": "\(UUID().uuidString.lowercased())"
     }
     """.data(using: .utf8)!
     let event = RealtimeEventParser.parse(name: "order:status_changed", payload: json)
-    guard case let .statusChanged(parsedOrderId, status, _) = event else {
+    guard case let .statusChanged(parsedOrderId, status, occurredAt) = event else {
       XCTFail("expected statusChanged got \(String(describing: event))")
       return
     }
     XCTAssertEqual(parsedOrderId, orderId)
     XCTAssertEqual(status, .delivered)
+    // The fractional second must survive — the whole bug was `.iso8601`
+    // rejecting `.123Z`. Assert the sub-second remainder rather than the
+    // absolute epoch so the test can't drift on a hand-computed constant.
+    let fraction = occurredAt.timeIntervalSince1970.truncatingRemainder(dividingBy: 1)
+    XCTAssertEqual(fraction, 0.123, accuracy: 0.002)
+  }
+
+  func test_parser_statusChanged_decodesNonFractionalTimestamp() throws {
+    let orderId = UUID()
+    let json = """
+    {
+      "orderId": "\(orderId.uuidString.lowercased())",
+      "customerId": "\(UUID().uuidString.lowercased())",
+      "dispensaryId": "\(UUID().uuidString.lowercased())",
+      "driverId": null,
+      "fromStatus": "placed",
+      "toStatus": "accepted",
+      "changedAt": "2026-05-21T18:00:00Z"
+    }
+    """.data(using: .utf8)!
+    let event = RealtimeEventParser.parse(name: "order:status_changed", payload: json)
+    guard case let .statusChanged(_, status, _) = event else {
+      XCTFail("expected statusChanged got \(String(describing: event))")
+      return
+    }
+    XCTAssertEqual(status, .accepted)
   }
 
   func test_parser_statusChanged_returnsNilForUnknownStatus() {
@@ -29,8 +67,9 @@ final class RealtimeClientTests: XCTestCase {
     let json = """
     {
       "orderId": "\(orderId.uuidString.lowercased())",
-      "status": "teleported",
-      "occurredAt": "2026-05-21T18:00:00Z"
+      "fromStatus": "prepping",
+      "toStatus": "teleported",
+      "changedAt": "2026-05-21T18:00:00.000Z"
     }
     """.data(using: .utf8)!
     let event = RealtimeEventParser.parse(name: "order:status_changed", payload: json)
@@ -41,51 +80,37 @@ final class RealtimeClientTests: XCTestCase {
     let json = """
     {
       "orderId": "not-a-uuid",
-      "status": "delivered",
-      "occurredAt": "2026-05-21T18:00:00Z"
+      "fromStatus": "prepping",
+      "toStatus": "delivered",
+      "changedAt": "2026-05-21T18:00:00.000Z"
     }
     """.data(using: .utf8)!
     let event = RealtimeEventParser.parse(name: "order:status_changed", payload: json)
     XCTAssertNil(event)
   }
 
-  func test_parser_driverAssigned_decodesValidPayload() throws {
-    let orderId = UUID()
-    let driverId = UUID()
-    let json = """
-    {
-      "orderId": "\(orderId.uuidString.lowercased())",
-      "driver": {
-        "id": "\(driverId.uuidString.lowercased())",
-        "displayName": "Sam Driver",
-        "avatarKey": null,
-        "vehicleSummary": "Blue 2021 Honda Civic",
-        "maskedPhone": "+1 ••• ••• 1234"
-      },
-      "occurredAt": "2026-05-21T18:01:00Z"
-    }
-    """.data(using: .utf8)!
-    let event = RealtimeEventParser.parse(name: "order:driver_assigned", payload: json)
-    guard case let .driverAssigned(parsedOrderId, driver, _) = event else {
-      XCTFail("expected driverAssigned got \(String(describing: event))")
-      return
-    }
-    XCTAssertEqual(parsedOrderId, orderId)
-    XCTAssertEqual(driver.id, driverId)
-    XCTAssertEqual(driver.displayName, "Sam Driver")
-    XCTAssertEqual(driver.vehicleSummary, "Blue 2021 Honda Civic")
-    XCTAssertEqual(driver.maskedPhone, "+1 ••• ••• 1234")
-    XCTAssertNil(driver.avatarKey)
+  func test_parser_driverAssigned_isNotAWireEvent() {
+    // The server never emits `order:driver_assigned`; assignment arrives as
+    // `order:status_changed` → `driver_assigned`, and OrderTracking
+    // self-heals the driver profile via a detail refetch.
+    let json = #"{"orderId": "x"}"#.data(using: .utf8)!
+    XCTAssertNil(RealtimeEventParser.parse(name: "order:driver_assigned", payload: json))
   }
 
-  func test_parser_driverLocation_decodesValidPayload() throws {
+  func test_parser_driverLocation_decodesRealServerPayload() throws {
     let orderId = UUID()
     let json = """
     {
+      "driverId": "\(UUID().uuidString.lowercased())",
       "orderId": "\(orderId.uuidString.lowercased())",
-      "latitude": 44.9805,
-      "longitude": -93.2708,
-      "capturedAt": "2026-05-21T18:02:00Z"
+      "customerId": "\(UUID().uuidString.lowercased())",
+      "lat": 44.9805,
+      "lng": -93.2708,
+      "accuracyMeters": 5.0,
+      "speedMps": 8.3,
+      "headingDeg": 270.0,
+      "recordedAt": "2026-05-21T18:02:00.500Z",
+      "envelopeId": "\(UUID().uuidString.lowercased())"
     }
     """.data(using: .utf8)!
     let event = RealtimeEventParser.parse(name: "driver:location", payload: json)
@@ -98,22 +123,32 @@ final class RealtimeClientTests: XCTestCase {
     XCTAssertEqual(coordinate.longitude, -93.2708, accuracy: 0.0001)
   }
 
-  func test_parser_etaUpdated_decodesValidPayload() throws {
+  func test_parser_etaUpdated_decodesRealServerPayload() throws {
     let orderId = UUID()
     let json = """
     {
       "orderId": "\(orderId.uuidString.lowercased())",
-      "etaMinutes": 12,
-      "updatedAt": "2026-05-21T18:03:00Z"
+      "customerId": "\(UUID().uuidString.lowercased())",
+      "driverId": "\(UUID().uuidString.lowercased())",
+      "etaSeconds": 725,
+      "distanceMeters": 1800.0,
+      "source": "mapbox",
+      "computedAt": "2026-05-21T18:03:00.000Z"
     }
     """.data(using: .utf8)!
-    let event = RealtimeEventParser.parse(name: "order:eta_updated", payload: json)
+    let event = RealtimeEventParser.parse(name: "customer:eta_updated", payload: json)
     guard case let .etaUpdated(parsedOrderId, eta, _) = event else {
       XCTFail("expected etaUpdated got \(String(describing: event))")
       return
     }
     XCTAssertEqual(parsedOrderId, orderId)
-    XCTAssertEqual(eta, 12)
+    XCTAssertEqual(eta, 12, "725s rounds to 12 min")
+  }
+
+  func test_parser_etaUpdated_oldEventNameIsNotDecoded() {
+    // The server emits `customer:eta_updated`, never `order:eta_updated`.
+    let json = #"{"orderId": "x", "etaSeconds": 60, "computedAt": "2026-05-21T18:03:00Z"}"#.data(using: .utf8)!
+    XCTAssertNil(RealtimeEventParser.parse(name: "order:eta_updated", payload: json))
   }
 
   func test_parser_unknownEventName_returnsNil() {
