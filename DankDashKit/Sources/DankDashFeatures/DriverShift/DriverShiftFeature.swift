@@ -284,22 +284,29 @@ public struct DriverShiftFeature: Sendable {
             }
           )
         }
-        // Toggling online — gate on authorization. If not authorized,
-        // surface the rationale sheet first; the user accepts there,
-        // which dispatches `locationRationaleAllowTapped`.
+        // Toggling online — gate on authorization. A brand-new driver is
+        // `.notDetermined`, so surface the rationale sheet first; the user
+        // accepts there, which dispatches `locationRationaleAllowTapped`.
+        // Any authorized grant — including While-Using — is enough to start:
+        // iOS never grants Always on the first prompt, so requiring it here
+        // would strand every new driver (see `authorizationRequestCompleted`).
         switch state.locationAuth {
         case .denied, .restricted:
-          state.errorBanner = "Enable Always location in Settings to go online."
+          state.errorBanner = "Location access is required to go online. Enable it in Settings."
           return .none
-        case .notDetermined, .authorized, .authorizedWhenInUse:
+        case .notDetermined:
           state.isShowingLocationRationale = true
           return .none
-        case .authorizedAlways:
+        case .authorized, .authorizedWhenInUse, .authorizedAlways:
           return performShiftStart(state: &state)
         }
 
       case .locationRationaleAllowTapped:
-        state.isShowingLocationRationale = false
+        // Keep the rationale sheet presented while CoreLocation shows its
+        // system prompt. Dismissing it in this same tick races the alert
+        // presentation — the prompt can silently fail to appear, which
+        // reads to the driver as "Allow does nothing." We dismiss when the
+        // result lands, in `authorizationRequestCompleted`.
         return .run { [locationClient] send in
           let status = await locationClient.requestAlwaysAuthorization()
           await send(.authorizationRequestCompleted(status))
@@ -310,17 +317,21 @@ public struct DriverShiftFeature: Sendable {
         return .none
 
       case .authorizationRequestCompleted(let status):
+        state.isShowingLocationRationale = false
         state.locationAuth = status
         switch status {
-        case .authorizedAlways:
+        case .authorized, .authorizedWhenInUse, .authorizedAlways:
+          // While-Using is enough to start: foreground tracking works now,
+          // and `allowsBackgroundLocationUpdates` gives provisional
+          // background coverage, with iOS prompting to upgrade to Always
+          // after the first background session. iOS never offers Always on
+          // the first prompt, so accepting only Always here would mean a
+          // new driver can never go online from the in-app flow.
           return performShiftStart(state: &state)
         case .denied, .restricted:
-          state.errorBanner = "Always location is required to go online."
+          state.errorBanner = "Location access is required to go online. Enable it in Settings."
           return .none
-        case .authorizedWhenInUse:
-          state.errorBanner = "While Using is not enough — choose Always in Settings to go online."
-          return .none
-        case .notDetermined, .authorized:
+        case .notDetermined:
           return .none
         }
 

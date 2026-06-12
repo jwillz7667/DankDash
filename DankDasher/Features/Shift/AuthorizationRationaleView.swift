@@ -44,8 +44,8 @@ struct AuthorizationRationaleView: View {
           VStack(alignment: .leading, spacing: DankSpacing.sm) {
             bulletRow(
               icon: "circle.fill",
-              title: "Choose Always",
-              copy: "We pause tracking when you go offline. Background updates only run during an active shift."
+              title: "Allow while using",
+              copy: "That's all you need to go online. During an active delivery iOS may ask to keep sharing in the background — allow that too so tracking doesn't drop when your screen locks."
             )
             bulletRow(
               icon: "battery.75",
