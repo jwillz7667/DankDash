@@ -6,31 +6,30 @@ import DankDashNetwork
 /// Top-level navigation reducer. Owns one persistent State and routes
 /// view rendering via a `Screen` tag:
 ///
-///   1. `bootstrapping` — loads keychain on launch.
-///   2. `locked` — a stored session exists; the user must pass the
-///      Face ID / device-authentication gate (``SessionLockFeature``)
-///      before the session unlocks.
-///   3. `ageGate` — under-21 hard gate (Minn. Stat. §342.27 forbids
+///   1. `bootstrapping` — probes the keychain for a stored session on
+///      launch (presence only).
+///   2. `ageGate` — under-21 hard gate (Minn. Stat. §342.27 forbids
 ///      cannabis content for minors; KYC in Phase 17 is the authority,
 ///      this is the client-side first-line UX guard).
-///   4. `auth` — login / sign-up / forgot-password sub-flow.
-///   5. `signedIn` — home placeholder; Phase 17 swaps this for the
+///   3. `auth` — login / sign-up / forgot-password sub-flow.
+///   4. `signedIn` — home placeholder; Phase 17 swaps this for the
 ///      catalog/cart features.
 ///
 /// Child feature states live on the root State (not nested in the enum)
 /// so they survive screen transitions and so the reducer compositions
-/// stay flat — `Scope(state:action:)` rather than `ifCaseLet`. Bootstrap
-/// probes `tokenStore` for a stored session (presence only, no decrypt);
-/// a hit routes to `locked`, where the unlock gate decrypts the refresh
-/// token once into the process-lifetime cache. An unrecoverable session
-/// (`sessionInvalidated`) tears down through the same path as an
-/// explicit sign-out.
+/// stay flat — `Scope(state:action:)` rather than `ifCaseLet`.
+///
+/// Session persistence: a stored session routes straight to `signedIn`
+/// with no unlock gate — the tokens are `.afterFirstUnlock` keychain
+/// items the 401-refresh path reads non-interactively, so a signed-in
+/// user stays signed in across relaunches without re-entering a password
+/// or passing Face ID. (Biometry is reserved for payment, which happens
+/// on the web checkout.)
 @Reducer
 public struct RootFeature: Sendable {
   @ObservableState
   public struct State: Equatable, Sendable {
     public var screen: Screen
-    public var sessionLock: SessionLockFeature.State
     public var ageGate: AgeGateFeature.State
     public var login: LoginFeature.State
     public var signUp: SignUpFeature.State
@@ -50,7 +49,6 @@ public struct RootFeature: Sendable {
 
     public enum Screen: Equatable, Sendable {
       case bootstrapping
-      case locked
       case ageGate
       case auth
       case signedIn
@@ -64,7 +62,6 @@ public struct RootFeature: Sendable {
 
     public init(
       screen: Screen = .bootstrapping,
-      sessionLock: SessionLockFeature.State = .init(),
       ageGate: AgeGateFeature.State = .init(),
       login: LoginFeature.State = .init(),
       signUp: SignUpFeature.State = .init(),
@@ -75,7 +72,6 @@ public struct RootFeature: Sendable {
       pendingDeepLink: DeepLinkRoute? = nil
     ) {
       self.screen = screen
-      self.sessionLock = sessionLock
       self.ageGate = ageGate
       self.login = login
       self.signUp = signUp
@@ -90,13 +86,6 @@ public struct RootFeature: Sendable {
   public enum Action: Sendable {
     case onAppear
     case bootstrapResolved(hasSession: Bool)
-    /// Sent by the view layer on every `scenePhase` transition to
-    /// `.active`. Drives the biometric re-enrollment re-check — iOS
-    /// invalidates the Keychain refresh item on re-enrollment, but only
-    /// this check catches it while the process (and its in-memory token
-    /// cache) is still alive.
-    case scenePhaseBecameActive
-    case sessionLock(SessionLockFeature.Action)
     case ageGate(AgeGateFeature.Action)
     case authLoginScreenSelected
     case authSignUpScreenSelected
@@ -123,7 +112,6 @@ public struct RootFeature: Sendable {
 
   @Dependency(\.tokenStore) var tokens
   @Dependency(\.realtimeClient) var realtimeClient
-  @Dependency(\.sessionUnlockClient) var sessionUnlock
 
   public init() {}
 
@@ -134,7 +122,6 @@ public struct RootFeature: Sendable {
   /// The caller still owns clearing the keychain tokens (an effect).
   private static func resetToSignedOut(_ state: inout State) {
     state.signedInUser = nil
-    state.sessionLock = .init()
     state.login = .init()
     state.signUp = .init()
     state.forgotPassword = nil
@@ -145,10 +132,6 @@ public struct RootFeature: Sendable {
   }
 
   public var body: some ReducerOf<Self> {
-    Scope(state: \.sessionLock, action: \.sessionLock) {
-      SessionLockFeature()
-    }
-
     Scope(state: \.ageGate, action: \.ageGate) {
       AgeGateFeature()
     }
@@ -170,52 +153,18 @@ public struct RootFeature: Sendable {
       case .onAppear:
         guard case .bootstrapping = state.screen else { return .none }
         return .run { send in
-          // Presence probe only — must not decrypt the biometric refresh
-          // token at launch (that triggers Face ID and, without
-          // NSFaceIDUsageDescription, a TCC crash). The refresh token is
-          // decrypted later, on the 401-refresh path that needs its bytes.
+          // Presence probe only (no decrypt). A stored session routes
+          // straight to signedIn — the tokens are non-interactive
+          // keychain items, so persistence needs no unlock gate.
           let hasSession = await tokens.hasSession()
           await send(.bootstrapResolved(hasSession: hasSession))
         }
 
       case .bootstrapResolved(let hasSession):
-        if hasSession {
-          // A session is stored but not yet usable — the refresh token
-          // sits behind a biometric access control. Gate before signedIn
-          // so the decrypt happens exactly once, on an explicit screen,
-          // instead of as a surprise Face ID sheet mid-session.
-          state.sessionLock = .init()
-          state.screen = .locked
-        } else {
-          state.screen = .ageGate
-        }
-        return .none
-
-      case .sessionLock(.delegate(.unlocked)):
-        state.screen = .signedIn
-        return .none
-
-      case .scenePhaseBecameActive:
-        // Biometric re-enrollment invalidates the Keychain refresh item,
-        // but a warm in-process cache would keep the session alive (and
-        // the next rotation would re-bind it to the new biometric set).
-        // The check is a silent comparison — no prompt on normal
-        // foregrounds — and on mismatch runs the full sign-out teardown.
-        guard state.screen == .signedIn else { return .none }
-        return .run { send in
-          if await sessionUnlock.invalidateSessionIfEnrollmentChanged() {
-            await send(.signOutTapped)
-          }
-        }
-
-      // Both routes mean "this stored session is over" — reuse the full
-      // sign-out teardown (state reset + socket disconnect + token clear)
-      // so the lock screen can never strand a half-cleared session.
-      case .sessionLock(.delegate(.sessionInvalidated)),
-        .sessionLock(.delegate(.signOutRequested)):
-        return .send(.signOutTapped)
-
-      case .sessionLock:
+        // A stored session means the user stays signed in across launches
+        // with no password / Face ID prompt — the 401-refresh path reads
+        // the refresh token non-interactively to keep it alive.
+        state.screen = hasSession ? .signedIn : .ageGate
         return .none
 
       case .ageGate(.delegate(.passed)):

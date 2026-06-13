@@ -7,43 +7,38 @@ import DankDashNetwork
 /// Mirrors ``RootFeature`` from the consumer side but routes
 /// post-auth into one of two surfaces:
 ///
-///   1. `bootstrapping` — keychain probe on launch.
-///   2. `locked` — a stored session exists; the driver must pass the
-///      Face ID / device-authentication gate (``SessionLockFeature``)
-///      before the session unlocks and `loadingDriver` runs.
-///   3. `auth` — login / sign-up / forgot-password sub-flow (reuses
+///   1. `bootstrapping` — keychain probe on launch. A stored session
+///      routes straight to `loadingDriver` (no unlock gate) — the driver
+///      stays signed in across relaunches with no password / Face ID.
+///   2. `auth` — login / sign-up / forgot-password sub-flow (reuses
 ///      ``LoginFeature`` / ``SignUpFeature`` / ``ForgotPasswordFeature``
 ///      verbatim). Drivers are vetted employees onboarded through KYC,
 ///      so — unlike the consumer app — there is **no** under-21 age
 ///      gate ahead of sign-in; a fresh launch lands straight on login.
-///   4. `loadingDriver` — short-lived: post-auth, fetch the driver
+///   3. `loadingDriver` — short-lived: post-auth, fetch the driver
 ///      self-projection via ``DriverAppAPIClient/getMe`` so we know
-///      whether to land on onboarding or the shift home. Re-runs on
-///      bootstrap once the session gate unlocks.
-///   5. `onboarding` — driver record absent (404 on `getMe`) OR present
+///      whether to land on onboarding or the shift home. Also runs on
+///      bootstrap when a stored session is found.
+///   4. `onboarding` — driver record absent (404 on `getMe`) OR present
 ///      but background check not yet passed → render
 ///      ``DriverOnboardingFeature``. Listens for the
 ///      `.onboardingComplete(Driver)` delegate to advance once an admin
 ///      flips the background-check timestamp.
-///   6. `shift` — driver record exists and background check passed →
+///   5. `shift` — driver record exists and background check passed →
 ///      ``DriverShiftFeature`` (the map + online/offline + earnings
 ///      home).
-///   7. `earnings` — pushed from ``DriverShiftFeature``'s earnings-card
+///   6. `earnings` — pushed from ``DriverShiftFeature``'s earnings-card
 ///      tap; rendered as a child of `shift` so a sign-out flush still
 ///      reaches it.
 ///
 /// As with the consumer root, child states live on the root `State`
 /// (not inside the `Screen` enum) so they survive transitions and the
-/// reducer composition stays flat via `Scope(state:action:)`. The unlock
-/// gate decrypts the refresh token once into the process-lifetime cache;
-/// an unrecoverable session (`sessionInvalidated`) tears down through
-/// ``Action/signOutTapped``.
+/// reducer composition stays flat via `Scope(state:action:)`.
 @Reducer
 public struct DriverRootFeature: Sendable {
   @ObservableState
   public struct State: Equatable, Sendable {
     public var screen: Screen
-    public var sessionLock: SessionLockFeature.State
     public var login: LoginFeature.State
     public var signUp: SignUpFeature.State
     public var forgotPassword: ForgotPasswordFeature.State?
@@ -68,7 +63,6 @@ public struct DriverRootFeature: Sendable {
 
     public enum Screen: Equatable, Sendable {
       case bootstrapping
-      case locked
       case auth
       case loadingDriver
       case onboarding
@@ -87,7 +81,6 @@ public struct DriverRootFeature: Sendable {
 
     public init(
       screen: Screen = .bootstrapping,
-      sessionLock: SessionLockFeature.State = .init(),
       login: LoginFeature.State = .init(),
       signUp: SignUpFeature.State = .init(),
       forgotPassword: ForgotPasswordFeature.State? = nil,
@@ -104,7 +97,6 @@ public struct DriverRootFeature: Sendable {
       pendingDeepLinkURL: URL? = nil
     ) {
       self.screen = screen
-      self.sessionLock = sessionLock
       self.login = login
       self.signUp = signUp
       self.forgotPassword = forgotPassword
@@ -125,13 +117,6 @@ public struct DriverRootFeature: Sendable {
   public enum Action: Sendable {
     case onAppear
     case bootstrapResolved(hasSession: Bool)
-    /// Sent by the view layer on every `scenePhase` transition to
-    /// `.active`. Drives the biometric re-enrollment re-check — iOS
-    /// invalidates the Keychain refresh item on re-enrollment, but only
-    /// this check catches it while the process (and its in-memory token
-    /// cache) is still alive.
-    case scenePhaseBecameActive
-    case sessionLock(SessionLockFeature.Action)
 
     case authLoginScreenSelected
     case authSignUpScreenSelected
@@ -170,7 +155,6 @@ public struct DriverRootFeature: Sendable {
   @Dependency(\.tokenStore) var tokens
   @Dependency(\.driverAppAPIClient) var driverAppAPI
   @Dependency(\.driverRealtimeClient) var driverRealtime
-  @Dependency(\.sessionUnlockClient) var sessionUnlock
 
   public init() {}
 
@@ -179,10 +163,6 @@ public struct DriverRootFeature: Sendable {
   }
 
   public var body: some ReducerOf<Self> {
-    Scope(state: \.sessionLock, action: \.sessionLock) {
-      SessionLockFeature()
-    }
-
     Scope(state: \.login, action: \.login) {
       LoginFeature()
     }
@@ -204,60 +184,26 @@ public struct DriverRootFeature: Sendable {
       case .onAppear:
         guard case .bootstrapping = state.screen else { return .none }
         return .run { send in
-          // Presence probe only — must not decrypt the biometric refresh
-          // token at launch (that triggers Face ID and, without
-          // NSFaceIDUsageDescription, a TCC crash). The refresh token is
-          // decrypted later, on the 401-refresh path that needs its bytes.
+          // Presence probe only (no decrypt). A stored session loads the
+          // driver straight away — the tokens are non-interactive keychain
+          // items, so persistence needs no unlock gate.
           let hasSession = await tokens.hasSession()
           await send(.bootstrapResolved(hasSession: hasSession))
         }
 
       case .bootstrapResolved(let hasSession):
-        if hasSession {
-          // A session is stored but the refresh token sits behind a
-          // biometric access control — gate before fetching the driver
-          // so the decrypt happens once, on an explicit screen, not as
-          // a surprise Face ID sheet mid-shift.
-          state.sessionLock = .init()
-          state.screen = .locked
+        guard hasSession else {
+          // No age gate on the driver app — vetted employees go straight
+          // to sign-in.
+          state.screen = .auth
           return .none
         }
-        // No age gate on the driver app — vetted employees go straight
-        // to sign-in.
-        state.screen = .auth
-        return .none
-
-      case .sessionLock(.delegate(.unlocked)):
+        // A stored session keeps the driver signed in across relaunches
+        // with no password / Face ID prompt — fetch the driver record and
+        // route by application status.
         state.screen = .loadingDriver
         state.driverLoadError = nil
         return loadDriver()
-
-      case .scenePhaseBecameActive:
-        // Biometric re-enrollment invalidates the Keychain refresh item,
-        // but a warm in-process cache would keep the session alive (and
-        // the next rotation would re-bind it to the new biometric set).
-        // The check is a silent comparison — no prompt on normal
-        // foregrounds — and on mismatch runs the full sign-out teardown.
-        switch state.screen {
-        case .bootstrapping, .locked, .auth:
-          return .none
-        case .loadingDriver, .onboarding, .shift, .earnings, .activeRoute, .idScan, .deliveryComplete:
-          return .run { send in
-            if await sessionUnlock.invalidateSessionIfEnrollmentChanged() {
-              await send(.signOutTapped)
-            }
-          }
-        }
-
-      // Both routes mean "this stored session is over" — reuse the full
-      // sign-out teardown (state reset + socket disconnect + token clear)
-      // so the lock screen can never strand a half-cleared session.
-      case .sessionLock(.delegate(.sessionInvalidated)),
-        .sessionLock(.delegate(.signOutRequested)):
-        return .send(.signOutTapped)
-
-      case .sessionLock:
-        return .none
 
       case .authLoginScreenSelected:
         state.authScreen = .login
@@ -496,7 +442,6 @@ public struct DriverRootFeature: Sendable {
         state.signedInUser = nil
         state.driver = nil
         state.driverLoadError = nil
-        state.sessionLock = .init()
         state.login = .init()
         state.signUp = .init()
         state.forgotPassword = nil

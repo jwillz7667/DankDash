@@ -9,17 +9,12 @@ import DankDashNetwork
 /// dispatch parent actions outside the documented Delegate surface.
 struct RootView: View {
   @Bindable var store: StoreOf<RootFeature>
-  @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
     Group {
       switch store.screen {
       case .bootstrapping:
         BootstrapView()
-      case .locked:
-        SessionLockView(
-          store: store.scope(state: \.sessionLock, action: \.sessionLock)
-        )
       case .ageGate:
         AgeGateView(
           store: store.scope(state: \.ageGate, action: \.ageGate)
@@ -41,13 +36,6 @@ struct RootView: View {
     }
     .onChange(of: store.screen) { _, _ in
       handleDeepLinkIfReady()
-    }
-    .onChange(of: scenePhase) { _, newPhase in
-      // Re-check biometric enrollment on every foreground — a Settings
-      // round-trip is exactly how a re-enrollment happens mid-session.
-      if newPhase == .active {
-        store.send(.scenePhaseBecameActive)
-      }
     }
   }
 
