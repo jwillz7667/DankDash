@@ -22,6 +22,7 @@ export {
   MetrcTransactionsRepository,
 } from './compliance.repo.js';
 export {
+  type AvailableDeliveryRow,
   type DispatchCandidateRow,
   DispatchOffersRepository,
   DriverLocationHistoryRepository,

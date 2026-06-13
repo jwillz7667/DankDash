@@ -1201,6 +1201,105 @@ describe('repository coverage', () => {
       const forOrder = await offers.listForOrder(orderId);
       expect(forOrder.length).toBeGreaterThanOrEqual(2);
     });
+
+    it('listAvailableDeliveries: returns awaiting_driver orders within radius with pickup/dropoff coords + tip', async () => {
+      const pool = getPool();
+      const drivers = new DriversRepository(pool.db);
+      const dispensaries = new DispensariesRepository(pool.db);
+      const offers = new DispatchOffersRepository(pool.db);
+
+      const driver = await drivers.findByUserId(stableUuid('user', 'driver-3'));
+      const driverId = driver!.id;
+
+      const mpls = await dispensaries.findById(MPLS);
+      const pickupCoords = mpls!.location.coordinates; // [lng, lat]
+
+      // Put the driver online, parked right at the dispensary so the
+      // beeline distance is ~0 and well within any radius.
+      await drivers.setCurrentOrder(driverId, null);
+      await drivers.setStatus(driverId, 'online');
+      await drivers.updateLocation(driverId, {
+        type: 'Point',
+        coordinates: pickupCoords,
+      });
+
+      // A ready order: status awaiting_driver, a tip, and a dropoff
+      // GeoPoint in the snapshot (checkout writes `location` as [lng,lat]).
+      const dropoffLng = -93.25;
+      const dropoffLat = 44.95;
+      const shortCode = `AV${Math.floor(Math.random() * 1_000_000)}`;
+      const [order] = await pool.sql<{ id: string }[]>`
+        INSERT INTO orders (
+          short_code, user_id, dispensary_id, delivery_address_id,
+          status, awaiting_driver_at,
+          subtotal_cents, cannabis_tax_cents, sales_tax_cents,
+          delivery_fee_cents, driver_tip_cents, total_cents,
+          compliance_check_payload, delivery_address_snapshot
+        )
+        VALUES (
+          ${shortCode}, ${ALICE}, ${MPLS}, ${ADDR_ALICE},
+          'awaiting_driver', NOW(),
+          5_000, 0, 0, 700, 500, 6_200,
+          '{}'::jsonb,
+          ${JSON.stringify({
+            location: { type: 'Point', coordinates: [dropoffLng, dropoffLat] },
+          })}::jsonb
+        )
+        RETURNING id
+      `;
+      const orderId = order!.id;
+
+      const wideRadius = 50 * 1609.344; // 50 miles — comfortably includes it
+      const rows = await offers.listAvailableDeliveries(driverId, wideRadius);
+      const mine = rows.find((r) => r.orderId === orderId);
+
+      expect(mine).toBeDefined();
+      expect(mine!.shortCode).toBe(shortCode);
+      expect(mine!.dispensaryId).toBe(MPLS);
+      expect(mine!.tipCents).toBe(500);
+      expect(mine!.totalCents).toBe(6_200);
+      // Coords round-trip (float precision); pickup = dispensary location.
+      expect(mine!.pickupLng).toBeCloseTo(pickupCoords[0]!, 5);
+      expect(mine!.pickupLat).toBeCloseTo(pickupCoords[1]!, 5);
+      expect(mine!.dropoffLng).toBeCloseTo(dropoffLng, 5);
+      expect(mine!.dropoffLat).toBeCloseTo(dropoffLat, 5);
+      expect(mine!.distanceMeters).toBeLessThan(100);
+      expect(mine!.awaitingDriverAt).toBeInstanceOf(Date);
+      expect(mine!.pickupName.length).toBeGreaterThan(0);
+
+      // The ST_DWithin filter is real: move the driver to Los Angeles
+      // (~1,500 mi away) and the same wide 50-mi radius now excludes the
+      // Minneapolis pickup.
+      await drivers.updateLocation(driverId, {
+        type: 'Point',
+        coordinates: [-118.2437, 34.0522],
+      });
+      const farRows = await offers.listAvailableDeliveries(driverId, wideRadius);
+      expect(farRows.find((r) => r.orderId === orderId)).toBeUndefined();
+      // Restore the driver's location so the offer-cleanup assertions below
+      // (which don't depend on distance) run against a sane state.
+      await drivers.updateLocation(driverId, {
+        type: 'Point',
+        coordinates: pickupCoords,
+      });
+
+      // expireAllActiveForOrder clears every still-offered row for an order
+      // (the open-pool claim's offer cleanup).
+      await offers.create({
+        orderId,
+        driverId,
+        expiresAt: new Date(Date.now() + 60_000),
+        payoutEstimateCents: 1_200,
+        distanceMiles: '0.10',
+      });
+      const expiredCount = await offers.expireAllActiveForOrder(orderId, new Date());
+      expect(expiredCount).toBeGreaterThanOrEqual(1);
+      const stillActive = await offers.listActiveForDriver(driverId, new Date());
+      expect(stillActive.some((o) => o.orderId === orderId)).toBe(false);
+
+      // Cleanup so a busy driver-3 doesn't leak into other tests.
+      await drivers.setStatus(driverId, 'offline');
+    });
   });
 
   // -------------------------------------------------------------------------

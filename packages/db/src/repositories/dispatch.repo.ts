@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { type GeoPoint } from '../schema/custom-types.js';
 import {
   dispatchOffers,
@@ -35,6 +35,32 @@ export interface DispatchCandidateRow {
   readonly ratingAvg: number | null;
   readonly ratingCount: number;
   readonly lastDeliveryAt: Date | null;
+}
+
+/**
+ * Row shape for the open-pool available-deliveries query. One row per
+ * order sitting in `awaiting_driver` within the dispatch radius of the
+ * online driver asking — everything the dasher map needs to draw the
+ * pickup pin, the floating tip, and (on tap) the dispensary→dropoff
+ * route, without a second round-trip.
+ *
+ * Coords are plain `number` (WGS84 lat/lng). `distanceMeters` is the
+ * beeline from the driver's current location to the dispensary —
+ * surfaced so the map can sort nearest-first and show "X mi away".
+ */
+export interface AvailableDeliveryRow {
+  readonly orderId: string;
+  readonly shortCode: string;
+  readonly dispensaryId: string;
+  readonly pickupName: string;
+  readonly pickupLat: number;
+  readonly pickupLng: number;
+  readonly dropoffLat: number;
+  readonly dropoffLng: number;
+  readonly tipCents: number;
+  readonly totalCents: number;
+  readonly distanceMeters: number;
+  readonly awaitingDriverAt: Date | null;
 }
 
 interface DriverRow extends Omit<Driver, 'currentLocation'> {
@@ -514,6 +540,97 @@ export class DispatchOffersRepository extends BaseRepository {
       .orderBy(desc(dispatchOffers.offeredAt));
   }
 
+  /**
+   * Open-pool delivery board for one online driver. Returns every order
+   * parked in `awaiting_driver` whose dispensary lies within
+   * `maxRadiusMeters` of the driver's current location — the claimable
+   * pool, not a per-driver `dispatch_offers` targeting. First-come claim
+   * happens in the API service via `OrderTransitionService` (the machine
+   * guard makes a second claimer's DRIVER_ASSIGNED fail), so this read
+   * is intentionally lock-free: a stale row self-heals on the next poll
+   * or surfaces as a 409 at claim time.
+   *
+   * Geometry:
+   *   - pickup = `dispensaries.location` (geography) → `ST_Y/ST_X` of its
+   *     `::geometry` cast give lat/lng.
+   *   - dropoff = the order's `delivery_address_snapshot.location`
+   *     GeoJSON `[lng, lat]` (written by checkout's `serializeAddress`),
+   *     pulled out of the JSONB and cast to float8.
+   *   - distance = beeline driver→dispensary via `ST_Distance` (meters,
+   *     geography). `ST_DWithin` does the radius filter so the GiST index
+   *     on `drivers.current_location` carries the scan.
+   *
+   * `driverId` is the `drivers.id` PK (matches `DriverContext.driverId`).
+   * Nearest pickup first so the dasher map can lead with the closest job.
+   */
+  async listAvailableDeliveries(
+    driverId: string,
+    maxRadiusMeters: number,
+  ): Promise<readonly AvailableDeliveryRow[]> {
+    const distanceSql = sql<string>`ST_Distance(${drivers.currentLocation}, ${dispensaries.location})`;
+    const pickupLatSql = sql<number>`ST_Y(${dispensaries.location}::geometry)`;
+    const pickupLngSql = sql<number>`ST_X(${dispensaries.location}::geometry)`;
+    const dropoffLngSql = sql<
+      number | null
+    >`(${orders.deliveryAddressSnapshot}->'location'->'coordinates'->>0)::float8`;
+    const dropoffLatSql = sql<
+      number | null
+    >`(${orders.deliveryAddressSnapshot}->'location'->'coordinates'->>1)::float8`;
+    const pickupNameSql = sql<string>`COALESCE(${dispensaries.dba}, ${dispensaries.legalName})`;
+
+    const rows = await this.db
+      .select({
+        orderId: orders.id,
+        shortCode: orders.shortCode,
+        dispensaryId: orders.dispensaryId,
+        pickupName: pickupNameSql,
+        pickupLat: pickupLatSql,
+        pickupLng: pickupLngSql,
+        dropoffLat: dropoffLatSql,
+        dropoffLng: dropoffLngSql,
+        tipCents: orders.driverTipCents,
+        totalCents: orders.totalCents,
+        distanceMeters: distanceSql,
+        awaitingDriverAt: orders.awaitingDriverAt,
+      })
+      .from(orders)
+      .innerJoin(dispensaries, eq(dispensaries.id, orders.dispensaryId))
+      .innerJoin(drivers, eq(drivers.id, driverId))
+      .where(
+        and(
+          eq(orders.status, 'awaiting_driver'),
+          isNull(orders.driverId),
+          sql`${drivers.currentLocation} IS NOT NULL`,
+          sql`ST_DWithin(${drivers.currentLocation}, ${dispensaries.location}, ${maxRadiusMeters})`,
+        ),
+      )
+      .orderBy(asc(distanceSql));
+
+    return rows
+      .filter(
+        (row): row is typeof row & { dropoffLat: number; dropoffLng: number } =>
+          row.dropoffLat !== null && row.dropoffLng !== null,
+      )
+      .map((row) => ({
+        orderId: row.orderId,
+        shortCode: row.shortCode,
+        dispensaryId: row.dispensaryId,
+        pickupName: row.pickupName,
+        // ST_Y/ST_X and the `::float8`-cast dropoff coords come back as
+        // JS numbers (pg parses float8/OID 701 as Number). `ST_Distance`
+        // returns a NUMERIC (OID 1700) which pg surfaces as a string, so
+        // only that one needs an explicit coercion.
+        pickupLat: row.pickupLat,
+        pickupLng: row.pickupLng,
+        dropoffLat: row.dropoffLat,
+        dropoffLng: row.dropoffLng,
+        tipCents: row.tipCents,
+        totalCents: row.totalCents,
+        distanceMeters: Number(row.distanceMeters),
+        awaitingDriverAt: row.awaitingDriverAt,
+      }));
+  }
+
   async listForOrder(orderId: string): Promise<readonly DispatchOffer[]> {
     return this.db
       .select()
@@ -622,6 +739,24 @@ export class DispatchOffersRepository extends BaseRepository {
           sql`${dispatchOffers.id} <> ${keepOfferId}`,
         ),
       )
+      .returning({ id: dispatchOffers.id });
+    return rows.length;
+  }
+
+  /**
+   * Expire every still-`offered` row for an order — the open-pool claim
+   * path's analogue of {@link expireOtherActiveForOrder}. A pool claim
+   * has no winning `dispatch_offers` row to keep (the order is claimed
+   * straight off the `awaiting_driver` board, not off a targeted offer),
+   * so when the open-pool flag and legacy targeting briefly co-exist,
+   * any stray offers a prior worker tick left behind must all die when
+   * the order is claimed. Returns the count expired for telemetry.
+   */
+  async expireAllActiveForOrder(orderId: string, now: Date): Promise<number> {
+    const rows = await this.db
+      .update(dispatchOffers)
+      .set({ status: 'expired', respondedAt: now })
+      .where(and(eq(dispatchOffers.orderId, orderId), eq(dispatchOffers.status, 'offered')))
       .returning({ id: dispatchOffers.id });
     return rows.length;
   }
