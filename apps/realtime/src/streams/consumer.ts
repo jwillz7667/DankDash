@@ -214,7 +214,10 @@ export class StreamConsumer {
 
     const broadcasts = routeEnvelope(envelope);
     for (const b of broadcasts) {
-      this.io.of(b.namespace).to(b.room).emit(b.eventName, b.payload);
+      // `room === null` is a namespace-wide broadcast (e.g. the open-pool
+      // `delivery:claimed` pin removal); otherwise scope to the room.
+      const target = b.room === null ? this.io.of(b.namespace) : this.io.of(b.namespace).to(b.room);
+      target.emit(b.eventName, b.payload);
     }
     await this.ack(streamId);
   }

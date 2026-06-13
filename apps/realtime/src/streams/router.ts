@@ -12,6 +12,9 @@
  *   order:created          → /vendor[dispensary]
  *   order:status_changed   → /customer[user] + /vendor[dispensary]
  *                            (+ /driver[driver] if driver assigned)
+ *                            (+ /driver broadcast `delivery:claimed` when
+ *                             leaving `awaiting_driver` — open-pool pin
+ *                             removal for every dasher)
  *   driver:location        → /customer[user] (only the assigned customer)
  *   offer:new              → /driver[driver]
  *   offer:expired          → /driver[driver]
@@ -28,7 +31,14 @@ import type { RealtimeEnvelope, RealtimeEventType } from '@dankdash/realtime-eve
 
 export interface RoutedBroadcast {
   readonly namespace: '/customer' | '/vendor' | '/driver';
-  readonly room: string;
+  /**
+   * Target room within the namespace, or `null` for a namespace-wide
+   * broadcast (every connected socket in the namespace). The consumer
+   * emits to `io.of(ns).to(room)` for a room, `io.of(ns)` for null. Used
+   * by the open-pool `delivery:claimed` signal, which has no single
+   * recipient — every dasher must drop the pin.
+   */
+  readonly room: string | null;
   readonly eventName: string;
   readonly payload: Record<string, unknown>;
 }
@@ -83,6 +93,20 @@ export function routeEnvelope(envelope: RealtimeEnvelope): readonly RoutedBroadc
           room: driverRoom(p.driverId),
           eventName: eventName[event.type],
           payload: { ...p, envelopeId: envelope.id },
+        });
+      }
+      // Open-pool pin removal: an order leaving `awaiting_driver` is no
+      // longer claimable (a dasher won the race, or it was canceled /
+      // rejected / dispatch-failed). Tell EVERY dasher to drop the pin —
+      // a namespace-wide broadcast, not a per-driver room. The losing
+      // claimers also self-heal via the 409 on claim + the next poll, so
+      // a missed event is not fatal; this just makes the map snappy.
+      if (p.fromStatus === 'awaiting_driver') {
+        out.push({
+          namespace: '/driver',
+          room: null,
+          eventName: 'delivery:claimed',
+          payload: { orderId: p.orderId, envelopeId: envelope.id },
         });
       }
       return out;

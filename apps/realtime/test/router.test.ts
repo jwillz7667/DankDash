@@ -85,6 +85,71 @@ describe('routeEnvelope', () => {
     expect(out.map((b) => b.namespace)).toEqual(['/customer', '/vendor']);
   });
 
+  it('adds a namespace-wide delivery:claimed when an order leaves awaiting_driver (driver claimed)', () => {
+    const out = routeEnvelope(
+      envelope({
+        type: 'order:status_changed',
+        payload: {
+          orderId: ORDER_ID,
+          customerId: CUSTOMER_ID,
+          dispensaryId: DISPENSARY_ID,
+          driverId: DRIVER_ID,
+          fromStatus: 'awaiting_driver',
+          toStatus: 'driver_assigned',
+          changedAt: '2026-05-19T12:00:00.000Z',
+        },
+      }),
+    );
+    // customer + vendor + the assigned driver's room + the open-pool
+    // pin-removal broadcast to the whole /driver namespace.
+    expect(out.map((b) => b.namespace)).toEqual(['/customer', '/vendor', '/driver', '/driver']);
+    const claimed = out[3];
+    expect(claimed?.eventName).toBe('delivery:claimed');
+    expect(claimed?.room).toBeNull();
+    expect(claimed?.payload).toEqual({ orderId: ORDER_ID, envelopeId: ENV_ID });
+  });
+
+  it('broadcasts delivery:claimed even when the order was canceled out of awaiting_driver (no driver)', () => {
+    const out = routeEnvelope(
+      envelope({
+        type: 'order:status_changed',
+        payload: {
+          orderId: ORDER_ID,
+          customerId: CUSTOMER_ID,
+          dispensaryId: DISPENSARY_ID,
+          driverId: null,
+          fromStatus: 'awaiting_driver',
+          toStatus: 'canceled',
+          changedAt: '2026-05-19T12:00:00.000Z',
+        },
+      }),
+    );
+    // No per-driver room (driverId null), but the pin must still clear
+    // from every dasher's map.
+    expect(out.map((b) => b.namespace)).toEqual(['/customer', '/vendor', '/driver']);
+    const claimed = out[2];
+    expect(claimed?.eventName).toBe('delivery:claimed');
+    expect(claimed?.room).toBeNull();
+  });
+
+  it('does not broadcast delivery:claimed for transitions that do not leave awaiting_driver', () => {
+    const out = routeEnvelope(
+      envelope({
+        type: 'order:status_changed',
+        payload: {
+          orderId: ORDER_ID,
+          customerId: CUSTOMER_ID,
+          dispensaryId: DISPENSARY_ID,
+          driverId: DRIVER_ID,
+          fromStatus: 'driver_assigned',
+          toStatus: 'en_route_pickup',
+          changedAt: '2026-05-19T12:00:00.000Z',
+        },
+      }),
+    );
+    expect(out.some((b) => b.eventName === 'delivery:claimed')).toBe(false);
+  });
+
   it('drops driver:location when no customer is assigned (driver on duty, no order)', () => {
     const out = routeEnvelope(
       envelope({
