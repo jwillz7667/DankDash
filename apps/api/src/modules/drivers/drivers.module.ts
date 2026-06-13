@@ -67,6 +67,7 @@ import {
   type Database,
   type DocumentHasher,
 } from '@dankdash/db';
+import { DEFAULT_SCORING_PARAMS } from '@dankdash/dispatch';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -92,6 +93,12 @@ import { DriverCashoutController } from './controllers/driver-cashout.controller
 import { DriverEarningsController } from './controllers/driver-earnings.controller.js';
 import { DriverOrdersController } from './controllers/driver-orders.controller.js';
 import { VeriffWebhookController } from './controllers/veriff-webhook.controller.js';
+import { DriverDeliveriesController } from './deliveries/driver-deliveries.controller.js';
+import {
+  DriverDeliveriesService,
+  type DriverDeliveriesScopedRepos,
+  type DriverDeliveriesScopedReposFactory,
+} from './deliveries/driver-deliveries.service.js';
 import { DriverOffersController } from './offers/driver-offers.controller.js';
 import {
   DriverOffersService,
@@ -234,6 +241,28 @@ const driverOffersServiceProvider: FactoryProvider<DriverOffersService> = {
     new DriverOffersService(db, orderTransitions, driverOffersReposFor, events),
 };
 
+const driverDeliveriesReposFor: DriverDeliveriesScopedReposFactory = (
+  db: Database,
+): DriverDeliveriesScopedRepos => ({
+  dispatchOffers: new DispatchOffersRepository(db),
+  drivers: new DriversRepository(db),
+});
+
+const driverDeliveriesServiceProvider: FactoryProvider<DriverDeliveriesService> = {
+  provide: DriverDeliveriesService,
+  inject: [DRIZZLE_DB, OrderTransitionService],
+  useFactory: (db: Database, orderTransitions: OrderTransitionService): DriverDeliveriesService =>
+    new DriverDeliveriesService(
+      db,
+      orderTransitions,
+      driverDeliveriesReposFor,
+      // Same 10mi radius the dispatch scorer uses — single source of
+      // truth so the claimable pool and the legacy targeting agree on
+      // "near the dispensary".
+      DEFAULT_SCORING_PARAMS.maxRadiusMeters,
+    ),
+};
+
 const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
   provide: OrdersRepository,
   inject: [DRIZZLE_DB],
@@ -364,6 +393,7 @@ const providers: Provider[] = [
   driverOnboardingServiceProvider,
   driverShiftServiceProvider,
   driverOffersServiceProvider,
+  driverDeliveriesServiceProvider,
   driverAppServiceProvider,
   driverOrdersServiceProvider,
   driverIdScanServiceProvider,
@@ -386,6 +416,7 @@ const providers: Provider[] = [
     DriverOnboardingController,
     DriverShiftController,
     DriverOffersController,
+    DriverDeliveriesController,
     DriverAppController,
     DriverOrdersController,
     VeriffWebhookController,
@@ -398,6 +429,7 @@ const providers: Provider[] = [
     DriverOnboardingService,
     DriverShiftService,
     DriverOffersService,
+    DriverDeliveriesService,
     DriverAppService,
     DriverOrdersService,
     DriverIdScanService,

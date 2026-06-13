@@ -19,6 +19,7 @@
     "@dankdash/compliance": "workspace:*",
     "@dankdash/config": "workspace:*",
     "@dankdash/db": "workspace:*",
+    "@dankdash/dispatch": "workspace:*",
     "@dankdash/dispensaries": "workspace:*",
     "@dankdash/notifications": "workspace:*",
     "@dankdash/observability": "workspace:*",

@@ -85,6 +85,9 @@ importers:
       '@dankdash/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@dankdash/dispatch':
+        specifier: workspace:*
+        version: link:../../packages/dispatch
       '@dankdash/dispensaries':
         specifier: workspace:*
         version: link:../../packages/dispensaries
