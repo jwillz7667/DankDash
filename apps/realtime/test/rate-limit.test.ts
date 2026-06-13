@@ -38,7 +38,11 @@ describe('driver:location:update', () => {
     // delivery the location publishes with a null customerId and the router
     // drops it, so the assigned-customer broadcast can only be asserted once
     // a delivery is registered for this driver.
-    harness.membership.setActiveDelivery(driverUserId, { orderId, customerId });
+    harness.membership.setActiveDelivery(driverUserId, {
+      orderId,
+      customerId,
+      dispensaryId: uuidv7(),
+    });
 
     const driverSocket = await harness.connect('/driver', {
       token: harness.signToken({ sub: driverUserId, role: 'driver' }),

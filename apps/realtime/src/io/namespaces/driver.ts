@@ -301,6 +301,7 @@ export async function handleLocationUpdate(ctx: HandleLocationCtx): Promise<void
           driverId: ctx.driverId,
           orderId: delivery?.orderId ?? null,
           customerId: delivery?.customerId ?? null,
+          dispensaryId: delivery?.dispensaryId ?? null,
           lat: parsed.lat,
           lng: parsed.lng,
           accuracyMeters: parsed.accuracyMeters ?? null,

@@ -15,7 +15,8 @@
  *                            (+ /driver broadcast `delivery:claimed` when
  *                             leaving `awaiting_driver` — open-pool pin
  *                             removal for every dasher)
- *   driver:location        → /customer[user] (only the assigned customer)
+ *   driver:location        → /customer[user] (the assigned customer)
+ *                            (+ /vendor[dispensary] for the per-order map)
  *   offer:new              → /driver[driver]
  *   offer:expired          → /driver[driver]
  *   customer:eta_updated   → /customer[user] (only the assigned customer)
@@ -113,15 +114,27 @@ export function routeEnvelope(envelope: RealtimeEnvelope): readonly RoutedBroadc
     }
     case 'driver:location': {
       const p = event.payload;
-      if (p.customerId === null) return [];
-      return [
-        {
+      const out: RoutedBroadcast[] = [];
+      // The assigned customer's "track my driver" view.
+      if (p.customerId !== null) {
+        out.push({
           namespace: '/customer',
           room: userRoom(p.customerId),
           eventName: eventName[event.type],
           payload: { ...p, envelopeId: envelope.id },
-        },
-      ];
+        });
+      }
+      // The fulfilling dispensary's per-order delivery map (PR3). Same
+      // event shape; the portal filters by orderId client-side.
+      if (p.dispensaryId !== null) {
+        out.push({
+          namespace: '/vendor',
+          room: dispensaryRoom(p.dispensaryId),
+          eventName: eventName[event.type],
+          payload: { ...p, envelopeId: envelope.id },
+        });
+      }
+      return out;
     }
     case 'offer:new':
     case 'offer:expired': {
