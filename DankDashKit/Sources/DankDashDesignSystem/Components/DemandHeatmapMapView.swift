@@ -16,16 +16,22 @@ import DankDashDomain
 public struct DemandHeatmapMapView: View {
   private let cells: [DemandHeatmapCell]
   private let driverCoordinate: Coordinate?
+  private let availableDeliveries: [AvailableDelivery]
   private let initialCenter: Coordinate
+  private let onDeliveryTapped: (AvailableDelivery) -> Void
 
   public init(
     cells: [DemandHeatmapCell],
     driverCoordinate: Coordinate?,
-    initialCenter: Coordinate = Coordinate(latitude: 44.9778, longitude: -93.2650)
+    availableDeliveries: [AvailableDelivery] = [],
+    initialCenter: Coordinate = Coordinate(latitude: 44.9778, longitude: -93.2650),
+    onDeliveryTapped: @escaping (AvailableDelivery) -> Void = { _ in }
   ) {
     self.cells = cells
     self.driverCoordinate = driverCoordinate
+    self.availableDeliveries = availableDeliveries
     self.initialCenter = initialCenter
+    self.onDeliveryTapped = onDeliveryTapped
   }
 
   public var body: some View {
@@ -40,6 +46,26 @@ public struct DemandHeatmapMapView: View {
             lineWidth: 1
           )
       }
+      // Open-pool pickup pins — each carries the tip floating above the
+      // glyph; tapping one opens the claim sheet (parent-owned).
+      ForEach(availableDeliveries) { delivery in
+        Annotation(
+          delivery.pickupName,
+          coordinate: Self.clCoordinate(from: delivery.pickup)
+        ) {
+          Button {
+            onDeliveryTapped(delivery)
+          } label: {
+            DeliveryPinLabel(tipDollars: delivery.tipDollars)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(
+            "Delivery from \(delivery.pickupName), tip \(Self.tipText(delivery.tipDollars))"
+          )
+          .accessibilityIdentifier("shift.deliveryPin.\(delivery.orderId.uuidString)")
+        }
+        .annotationTitles(.hidden)
+      }
       if let driverCoordinate {
         Marker(
           "You",
@@ -51,8 +77,12 @@ public struct DemandHeatmapMapView: View {
     }
     .mapStyle(.standard(elevation: .flat))
     .clipShape(RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous))
-    .accessibilityElement(children: .ignore)
+    .accessibilityElement(children: .contain)
     .accessibilityLabel(accessibilityLabel)
+  }
+
+  static func tipText(_ tipDollars: Decimal) -> String {
+    tipDollars.formatted(.currency(code: "USD").precision(.fractionLength(0...2)))
   }
 
   // MARK: - Math
@@ -67,10 +97,13 @@ public struct DemandHeatmapMapView: View {
   }
 
   private var accessibilityLabel: String {
+    let deliveryPart = availableDeliveries.isEmpty
+      ? ""
+      : " \(availableDeliveries.count) available deliveries."
     if cells.isEmpty {
-      return "Map with no demand cells available."
+      return "Map with no demand cells available.\(deliveryPart)"
     }
-    return "Demand heatmap with \(cells.count) cells."
+    return "Demand heatmap with \(cells.count) cells.\(deliveryPart)"
   }
 
   /// Linear interpolation across the moss (low) → amber (medium) → danger
@@ -109,6 +142,37 @@ private struct ColorComponents {
       g: g + (other.g - g) * t,
       b: b + (other.b - b) * t
     )
+  }
+}
+
+/// Map annotation glyph for a claimable delivery: the tip dollar amount
+/// in a capsule floating above a storefront pin. Sized to stay legible
+/// against the heatmap fills without dominating the map.
+private struct DeliveryPinLabel: View {
+  let tipDollars: Decimal
+
+  var body: some View {
+    VStack(spacing: 1) {
+      Text(DemandHeatmapMapView.tipText(tipDollars))
+        .font(DankFont.caption.weight(.bold))
+        .foregroundStyle(DankColor.cream)
+        .padding(.horizontal, DankSpacing.xs)
+        .padding(.vertical, 2)
+        .background(DankColor.primary, in: Capsule())
+        .overlay(Capsule().strokeBorder(DankColor.cream.opacity(0.9), lineWidth: 1))
+      Image(systemName: "bag.fill")
+        .font(.system(size: 14, weight: .bold))
+        .foregroundStyle(DankColor.cream)
+        .padding(7)
+        .background(DankColor.primary, in: Circle())
+        .overlay(Circle().strokeBorder(DankColor.cream.opacity(0.9), lineWidth: 1.5))
+      Image(systemName: "triangle.fill")
+        .font(.system(size: 8))
+        .foregroundStyle(DankColor.primary)
+        .rotationEffect(.degrees(180))
+        .offset(y: -3)
+    }
+    .shadow(color: DankColor.Text.primary.opacity(0.25), radius: 3, x: 0, y: 1)
   }
 }
 
