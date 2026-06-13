@@ -175,7 +175,9 @@ describe('QueueBoard', () => {
     expect(screen.getByRole('region', { name: 'Order queue' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: /New column/u })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: /Prepping column/u })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: /Ready column/u })).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: /Ready . Finding a driver column/u }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('region', { name: /Out for Delivery column/u })).toBeInTheDocument();
   });
 

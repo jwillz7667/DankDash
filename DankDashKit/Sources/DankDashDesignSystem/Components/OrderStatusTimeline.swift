@@ -2,7 +2,7 @@ import SwiftUI
 import DankDashDomain
 
 /// Vertical milestone stepper for the order-tracking screen. Collapses
-/// the 20-state `OrderStatus` enum to five user-facing stages plus a
+/// the 20-state `OrderStatus` enum to six user-facing stages plus a
 /// failure branch, so the UI doesn't whip from "ID check" to "ID
 /// verified" mid-screen — those are both `arriving` to the user.
 ///
@@ -11,8 +11,9 @@ import DankDashDomain
 ///
 /// - `placed` → **Placed**
 /// - `accepted` / `prepping` → **Preparing**
-/// - `awaitingDriver` / `driverAssigned` → **Driver assigned**
-/// - `enRoutePickup` / `pickedUp` / `enRouteDropoff` → **On the way**
+/// - `awaitingDriver` (dispatch open, no driver yet) → **Ready for pickup**
+/// - `driverAssigned` / `enRoutePickup` → **Driver en route to store**
+/// - `pickedUp` / `enRouteDropoff` → **On the way**
 /// - `arrivedAtDropoff` / `idScanPending` / `idScanPassed` → **Arriving**
 /// - `delivered` → **Delivered**
 ///
@@ -25,6 +26,7 @@ public struct OrderStatusTimeline: View {
   public enum Milestone: Int, CaseIterable, Sendable {
     case placed
     case preparing
+    case readyForPickup
     case driverAssigned
     case onTheWay
     case arriving
@@ -34,7 +36,8 @@ public struct OrderStatusTimeline: View {
       switch self {
       case .placed: return "Placed"
       case .preparing: return "Preparing"
-      case .driverAssigned: return "Driver assigned"
+      case .readyForPickup: return "Ready for pickup"
+      case .driverAssigned: return "Driver en route to store"
       case .onTheWay: return "On the way"
       case .arriving: return "Arriving"
       case .delivered: return "Delivered"
@@ -45,7 +48,8 @@ public struct OrderStatusTimeline: View {
       switch self {
       case .placed: return "checkmark.circle"
       case .preparing: return "bag"
-      case .driverAssigned: return "person.fill.checkmark"
+      case .readyForPickup: return "bag.badge.clock"
+      case .driverAssigned: return "car.fill"
       case .onTheWay: return "car.fill"
       case .arriving: return "house.circle"
       case .delivered: return "checkmark.seal.fill"
@@ -127,9 +131,14 @@ public struct OrderStatusTimeline: View {
   static func milestone(for status: OrderStatus) -> Milestone {
     switch status {
     case .placed: return .placed
-    case .accepted, .prepping, .readyForPickup: return .preparing
-    case .awaitingDriver, .driverAssigned: return .driverAssigned
-    case .enRoutePickup, .pickedUp, .enRouteDropoff: return .onTheWay
+    case .accepted, .prepping: return .preparing
+    // `awaiting_driver` = the dispatch offer is live but no driver has
+    // accepted yet → "Ready for pickup", NOT a driver-stage milestone.
+    case .readyForPickup, .awaitingDriver: return .readyForPickup
+    // A driver has committed: driver_assigned + en_route_pickup are both
+    // "heading to the store".
+    case .driverAssigned, .enRoutePickup: return .driverAssigned
+    case .pickedUp, .enRouteDropoff: return .onTheWay
     case .arrivedAtDropoff, .idScanPending, .idScanPassed: return .arriving
     case .delivered: return .delivered
     case .paymentFailed, .rejected, .dispatchFailed, .canceled,
@@ -195,8 +204,8 @@ public struct OrderStatusTimeline: View {
     case .placed, .delivered: return nil
     case .accepted: return "Order accepted"
     case .prepping: return "Packing your order"
-    case .awaitingDriver: return "Looking for a driver"
-    case .driverAssigned: return "Driver assigned"
+    case .awaitingDriver: return "Finding your driver"
+    case .driverAssigned: return "Heading to store"
     case .enRoutePickup: return "Driver heading to store"
     case .pickedUp: return "Driver has your order"
     case .enRouteDropoff: return "Heading to your address"

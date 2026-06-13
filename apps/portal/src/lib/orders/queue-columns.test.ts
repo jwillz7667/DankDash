@@ -53,12 +53,12 @@ describe('columnKeyForStatus', () => {
     expect(columnKeyForStatus('prepping')).toBe('prepping');
   });
 
-  it('maps ready_for_pickup to ready', () => {
+  it('maps ready_for_pickup and awaiting_driver to ready (no driver accepted yet)', () => {
     expect(columnKeyForStatus('ready_for_pickup')).toBe('ready');
+    expect(columnKeyForStatus('awaiting_driver')).toBe('ready');
   });
 
-  it('maps awaiting_driver, driver_assigned, and en_route_pickup to out_for_delivery', () => {
-    expect(columnKeyForStatus('awaiting_driver')).toBe('out_for_delivery');
+  it('maps driver_assigned and en_route_pickup to out_for_delivery (driver accepted)', () => {
     expect(columnKeyForStatus('driver_assigned')).toBe('out_for_delivery');
     expect(columnKeyForStatus('en_route_pickup')).toBe('out_for_delivery');
   });
@@ -94,8 +94,10 @@ describe('bucketByColumn', () => {
 
     expect(buckets.new.map((o) => o.id)).toEqual(['o1']);
     expect(buckets.prepping.map((o) => o.id)).toEqual(['o2', 'o3']);
-    expect(buckets.ready.map((o) => o.id)).toEqual(['o4']);
-    expect(buckets.out_for_delivery.map((o) => o.id)).toEqual(['o5', 'o6']);
+    // ready_for_pickup + awaiting_driver both sit in "Ready / Finding a driver"
+    expect(buckets.ready.map((o) => o.id)).toEqual(['o4', 'o5']);
+    // out_for_delivery only once a driver has accepted
+    expect(buckets.out_for_delivery.map((o) => o.id)).toEqual(['o6']);
   });
 
   it('preserves the input order within a column (API-side oldest-first)', () => {

@@ -32,6 +32,9 @@ export interface VendorOrderActions {
   readonly markPrepped: (orderId: string) => Promise<TransitionResponse>;
   /** `prepping` → `ready_for_pickup`. */
   readonly markReady: (orderId: string) => Promise<TransitionResponse>;
-  /** `driver_assigned` → `picked_up` (vendor confirms handoff). */
+  /**
+   * `en_route_pickup` → `picked_up` (vendor confirms the driver took
+   * possession; only valid after the driver marked en route to the store).
+   */
   readonly markHandoff: (orderId: string) => Promise<TransitionResponse>;
 }

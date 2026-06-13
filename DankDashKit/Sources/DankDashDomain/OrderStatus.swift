@@ -121,7 +121,7 @@ public enum OrderStatus: String, Hashable, Sendable, CaseIterable, Codable {
     case .rejected: return "Rejected"
     case .prepping: return "Preparing"
     case .readyForPickup: return "Ready for pickup"
-    case .awaitingDriver: return "Awaiting driver"
+    case .awaitingDriver: return "Ready for pickup"
     case .dispatchFailed: return "No driver available"
     case .driverAssigned: return "Driver assigned"
     case .enRoutePickup: return "Driver heading to store"

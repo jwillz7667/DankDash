@@ -13,13 +13,15 @@
  *   - Prepping           — `accepted` (just accepted, batch not yet
  *                          assembled) and `prepping` (budtender picking
  *                          and bagging).
- *   - Ready              — `ready_for_pickup` (sealed bag tagged,
- *                          waiting on a driver).
- *   - Out for Delivery   — `awaiting_driver` (dispatch open) and
- *                          `driver_assigned` (driver accepted, en
- *                          route to the store; the order stays on the
- *                          dispensary board until handoff so they can
- *                          see who's coming).
+ *   - Ready              — `ready_for_pickup` (sealed bag tagged) and
+ *                          `awaiting_driver` (dispatch open, the offer is
+ *                          live on the dasher map but NO driver has
+ *                          accepted yet — "finding a driver", not en
+ *                          route).
+ *   - Out for Delivery   — `driver_assigned` and `en_route_pickup`: a
+ *                          driver has accepted and is heading to the
+ *                          store. The order stays on the dispensary board
+ *                          until handoff so they can see who's coming.
  *
  * `bucketByColumn` is the single chokepoint that maps the wire-shape
  * list of orders into the rendered columns — UI components consume its
@@ -56,17 +58,17 @@ export const QUEUE_COLUMNS: readonly QueueColumnConfig[] = [
   },
   {
     key: 'ready',
-    label: 'Ready',
-    helper: 'Tagged for handoff',
+    label: 'Ready · Finding a driver',
+    helper: 'Tagged; dispatch open',
     tone: 'warning',
-    statuses: ['ready_for_pickup'],
+    statuses: ['ready_for_pickup', 'awaiting_driver'],
   },
   {
     key: 'out_for_delivery',
     label: 'Out for Delivery',
-    helper: 'Driver inbound',
+    helper: 'Driver en route',
     tone: 'success',
-    statuses: ['awaiting_driver', 'driver_assigned', 'en_route_pickup'],
+    statuses: ['driver_assigned', 'en_route_pickup'],
   },
 ] as const;
 

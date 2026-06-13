@@ -165,9 +165,9 @@ describe('applyOrderStatusChanged', () => {
   });
 
   it('re-buckets in place when the status moves within the queue surface', () => {
-    // ready_for_pickup → awaiting_driver moves the card from the
-    // "Ready" column to "Out for Delivery"; the reducer must keep it
-    // in state so the board can re-bucket on the next paint.
+    // ready_for_pickup → awaiting_driver stays in the "Ready · Finding a
+    // driver" column (no driver has accepted yet); the reducer must keep
+    // it in state so the board can re-bucket on the next paint.
     const a = order({ id: 'o-1', status: 'ready_for_pickup' });
     const next = applyOrderStatusChanged(
       [a],
