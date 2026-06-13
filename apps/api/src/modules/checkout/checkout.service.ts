@@ -133,7 +133,9 @@ import {
 } from '@dankdash/types';
 import { generateShortCode, withCollisionRetry } from '@dankdash/utils';
 import { Inject, Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Decimal } from 'decimal.js';
+import { ORDER_PLACED_EVENT, OrderPlacedEvent } from '../orders/order-placed.events.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../payments/tokens.js';
 import type {
   CheckoutCapabilitiesResponse,
@@ -184,6 +186,7 @@ export class CheckoutService {
      * linked-bank-account requirement. Never relaxes compliance.
      */
     private readonly paymentsBypassEnabled: boolean,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -198,7 +201,10 @@ export class CheckoutService {
   }
 
   async checkout(userId: string, cartId: string, body: CheckoutRequest): Promise<CheckoutResponse> {
-    return this.db.transaction(async (tx) => {
+    // Captured inside the tx, emitted only after it commits — so the
+    // realtime new-order push can never advertise an order that rolled back.
+    let placedEvent: OrderPlacedEvent | undefined;
+    const response = await this.db.transaction(async (tx) => {
       const scoped = this.reposFor(tx);
 
       // Step 1: lock the cart row FOR UPDATE under the caller's userId.
@@ -334,6 +340,16 @@ export class CheckoutService {
         updatedAt: now,
       });
 
+      placedEvent = new OrderPlacedEvent({
+        orderId: order.id,
+        customerId: order.userId,
+        dispensaryId: order.dispensaryId,
+        shortCode: order.shortCode,
+        totalCents: order.totalCents,
+        status: order.status,
+        placedAt: order.placedAt,
+      });
+
       // Step 12: bulk-insert order_items. The per-line numeric totals
       // are decimal.js strings so the NUMERIC(12,3) columns ingest them
       // losslessly.
@@ -461,6 +477,16 @@ export class CheckoutService {
         complianceCheck: serializeEvaluation(evaluation),
       };
     });
+
+    // Post-commit realtime fanout: the order row + audit history are now
+    // durable. `OrderCreatedListener` republishes this onto the realtime
+    // stream so the vendor portal's live queue inserts the card and
+    // chimes. A lost emit is a UX degradation (portal polling backstops
+    // within ~15s), never a correctness loss — mirrors OrderRealtimeListener.
+    if (placedEvent !== undefined) {
+      this.eventEmitter.emit(ORDER_PLACED_EVENT, placedEvent);
+    }
+    return response;
   }
 
   /**
