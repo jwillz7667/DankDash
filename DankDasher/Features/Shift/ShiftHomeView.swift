@@ -28,9 +28,11 @@ struct ShiftHomeView: View {
         toggleMode: toggleMode,
         cells: store.heatmap,
         driverCoordinate: store.currentCoordinate,
+        availableDeliveries: store.availableDeliveries,
         earnings: store.earningsToday,
         onToggleShift: { store.send(.toggleOnlineTapped) },
-        onEarningsTapped: { store.send(.earningsCardTapped) }
+        onEarningsTapped: { store.send(.earningsCardTapped) },
+        onDeliveryTapped: { store.send(.deliveryPinTapped($0)) }
       )
 
       VStack(spacing: DankSpacing.sm) {
@@ -93,6 +95,32 @@ struct ShiftHomeView: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(store.presentedOffer?.isSubmitting == true)
+    }
+    .sheet(
+      isPresented: Binding(
+        get: { store.selectedDelivery != nil },
+        set: { isShown in
+          if !isShown { store.send(.deliveryDetailDismissed) }
+        }
+      )
+    ) {
+      deliveryDetailContent
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(store.isClaimingDelivery)
+    }
+  }
+
+  @ViewBuilder
+  private var deliveryDetailContent: some View {
+    if let delivery = store.selectedDelivery {
+      AvailableDeliveryDetailView(
+        delivery: delivery,
+        route: store.selectedDeliveryRoute,
+        isClaiming: store.isClaimingDelivery,
+        errorMessage: store.deliveryDetailError,
+        onClaim: { store.send(.claimDeliveryTapped) }
+      )
     }
   }
 

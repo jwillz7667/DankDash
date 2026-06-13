@@ -872,6 +872,265 @@ final class DriverShiftFeatureTests: XCTestCase {
     XCTAssertNil(store.state.presentedOffer)
   }
 
+  // MARK: - Open delivery pool
+
+  func test_deliveriesTick_online_loadsBoard() async {
+    let delivery = Self.availableDelivery()
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { [delivery] },
+        claim: { _ in throw DriverAPIError.unimplemented("claimDelivery") }
+      )
+    }
+
+    await store.send(.deliveriesTick)
+    await store.receive(\.availableDeliveriesLoaded.success) {
+      $0.availableDeliveries = [delivery]
+    }
+  }
+
+  func test_deliveriesTick_offline_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(driver: Self.passedDriver(currentStatus: .offline))
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      // list throws so a stray fetch would surface as an unexpected effect.
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { throw DriverAPIError.unimplemented("list should not be called offline") },
+        claim: { _ in throw DriverAPIError.unimplemented("claimDelivery") }
+      )
+    }
+
+    await store.send(.deliveriesTick)
+  }
+
+  func test_deliveriesTick_onActiveDelivery_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .enRoutePickup),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { throw DriverAPIError.unimplemented("list should not be called mid-delivery") },
+        claim: { _ in throw DriverAPIError.unimplemented("claimDelivery") }
+      )
+    }
+
+    await store.send(.deliveriesTick)
+  }
+
+  func test_availableDeliveriesLoaded_prunesSelectedWhenGone() async {
+    let stillThere = Self.availableDelivery()
+    let claimedAway = Self.availableDelivery(
+      orderId: UUID(uuidString: "00000000-0000-0000-0000-0000000000bb")!,
+      shortCode: "GONE"
+    )
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [stillThere, claimedAway],
+        selectedDelivery: claimedAway,
+        selectedDeliveryRoute: [claimedAway.pickup, claimedAway.dropoff]
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    // A refresh that no longer carries the selected delivery drops the sheet.
+    await store.send(.availableDeliveriesLoaded(.success([stillThere]))) {
+      $0.availableDeliveries = [stillThere]
+      $0.selectedDelivery = nil
+      $0.selectedDeliveryRoute = nil
+    }
+  }
+
+  func test_deliveryPinTapped_setsSelectionAndLoadsRoute() async {
+    let delivery = Self.availableDelivery()
+    let routeCoords = [delivery.pickup, Coordinate(latitude: 44.98, longitude: -93.27), delivery.dropoff]
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [delivery]
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.directionsClient = .test(
+        route: RouteDirections(
+          polyline: routeCoords,
+          steps: [],
+          expectedTravelTimeSeconds: 600,
+          distanceMeters: 2_100
+        )
+      )
+    }
+
+    await store.send(.deliveryPinTapped(delivery)) {
+      $0.selectedDelivery = delivery
+      $0.selectedDeliveryRoute = nil
+      $0.deliveryDetailError = nil
+    }
+    await store.receive(\.deliveryRouteLoaded) {
+      $0.selectedDeliveryRoute = routeCoords
+    }
+  }
+
+  func test_claimDelivery_success_emitsAcceptedDelegateAndRemovesPin() async {
+    let delivery = Self.availableDelivery()
+    let other = Self.availableDelivery(
+      orderId: UUID(uuidString: "00000000-0000-0000-0000-0000000000cc")!,
+      shortCode: "KEEP"
+    )
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [delivery, other],
+        selectedDelivery: delivery,
+        selectedDeliveryRoute: [delivery.pickup, delivery.dropoff]
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { [] },
+        claim: { orderId in orderId }
+      )
+    }
+
+    await store.send(.claimDeliveryTapped) {
+      $0.isClaimingDelivery = true
+      $0.deliveryDetailError = nil
+    }
+    await store.receive(\.claimDeliveryResponse.success) {
+      $0.isClaimingDelivery = false
+      $0.availableDeliveries = [other]
+      $0.selectedDelivery = nil
+      $0.selectedDeliveryRoute = nil
+    }
+    await store.receive(\.delegate.acceptedOffer)
+  }
+
+  func test_claimDelivery_alreadyClaimed_dropsPinAndBanners() async {
+    let delivery = Self.availableDelivery()
+    let conflict = APIError.server(
+      status: 409,
+      envelope: ErrorEnvelope(
+        error: ErrorEnvelope.ErrorBody(
+          code: "DRIVER_DELIVERY_ALREADY_CLAIMED",
+          message: "this delivery is no longer available"
+        )
+      )
+    )
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [delivery],
+        selectedDelivery: delivery,
+        selectedDeliveryRoute: [delivery.pickup, delivery.dropoff]
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { [] },
+        claim: { _ in throw conflict }
+      )
+    }
+
+    await store.send(.claimDeliveryTapped) {
+      $0.isClaimingDelivery = true
+      $0.deliveryDetailError = nil
+    }
+    await store.receive(\.claimDeliveryResponse.failure) {
+      $0.isClaimingDelivery = false
+      $0.availableDeliveries = []
+      $0.selectedDelivery = nil
+      $0.selectedDeliveryRoute = nil
+      $0.errorBanner = "Another driver grabbed that delivery."
+    }
+  }
+
+  func test_claimDelivery_recoverableError_keepsSheetWithError() async {
+    let delivery = Self.availableDelivery()
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [delivery],
+        selectedDelivery: delivery
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { [] },
+        claim: { _ in throw APIError.transport(URLError(.notConnectedToInternet)) }
+      )
+    }
+
+    await store.send(.claimDeliveryTapped) {
+      $0.isClaimingDelivery = true
+      $0.deliveryDetailError = nil
+    }
+    await store.receive(\.claimDeliveryResponse.failure) {
+      $0.isClaimingDelivery = false
+      $0.deliveryDetailError = "Couldn't reach DankDash. Check your connection."
+    }
+    // Sheet stays up for retry; the pin is not dropped.
+    XCTAssertEqual(store.state.selectedDelivery, delivery)
+    XCTAssertEqual(store.state.availableDeliveries, [delivery])
+  }
+
+  func test_deliveryDetailDismissed_clearsSelection() async {
+    let delivery = Self.availableDelivery()
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [delivery],
+        selectedDelivery: delivery,
+        selectedDeliveryRoute: [delivery.pickup, delivery.dropoff],
+        deliveryDetailError: "stale error"
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.deliveryDetailDismissed) {
+      $0.selectedDelivery = nil
+      $0.selectedDeliveryRoute = nil
+      $0.deliveryDetailError = nil
+    }
+    // The pin remains on the board — dismissing is a pass, not a removal.
+    XCTAssertEqual(store.state.availableDeliveries, [delivery])
+  }
+
   // MARK: - State helpers
 
   func test_isOnline_requiresShiftAndOnShiftStatus() {
@@ -967,6 +1226,25 @@ final class DriverShiftFeatureTests: XCTestCase {
     )
   }
 
+  nonisolated private static func availableDelivery(
+    orderId: UUID = UUID(uuidString: "00000000-0000-0000-0000-0000000000aa")!,
+    shortCode: String = "AB12",
+    tipCents: Int = 500
+  ) -> AvailableDelivery {
+    AvailableDelivery(
+      orderId: orderId,
+      shortCode: shortCode,
+      dispensaryId: UUID(uuidString: "00000000-0000-0000-0000-0000000000c2")!,
+      pickupName: "Bloom Dispensary",
+      pickup: Coordinate(latitude: 44.9778, longitude: -93.2650),
+      dropoff: Coordinate(latitude: 44.9836, longitude: -93.2766),
+      tipCents: tipCents,
+      totalCents: 8_240,
+      distanceMeters: 2_100,
+      awaitingDriverAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+  }
+
   nonisolated private static func activeSnapshot() -> DriverSessionStore.Snapshot {
     DriverSessionStore.Snapshot(
       shiftId: UUID(uuidString: "00000000-0000-0000-0000-0000000000c1")!,
@@ -989,6 +1267,15 @@ final class DriverShiftFeatureTests: XCTestCase {
     values.driverSessionStoreClient = .unimplemented
     values.dispatchOfferAPIClient = .unimplemented
     values.offerSubscriptionClient = .unimplemented
+    // Open-pool board: default to an empty list so the online side-effect
+    // fan-out (which now includes a deliveries poll) is a clean no-op in
+    // tests that don't exercise the pool. Claim is left throwing so an
+    // unexpected claim surfaces. directionsClient keeps its `.unimplemented`
+    // test value — only pin-tap tests need a real route.
+    values.deliveriesAPIClient = DeliveriesAPIClient(
+      list: { [] },
+      claim: { _ in throw DriverAPIError.unimplemented("claimDelivery") }
+    )
     values.hapticsClient = .noop
     values.continuousClock = ImmediateClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))

@@ -13,30 +13,41 @@ public struct DriverMapHomeView: View {
   private let toggleMode: ShiftToggle.Mode
   private let cells: [DemandHeatmapCell]
   private let driverCoordinate: Coordinate?
+  private let availableDeliveries: [AvailableDelivery]
   private let earnings: DriverEarnings?
   private let onToggleShift: () -> Void
   private let onEarningsTapped: () -> Void
+  private let onDeliveryTapped: (AvailableDelivery) -> Void
 
   public init(
     toggleMode: ShiftToggle.Mode,
     cells: [DemandHeatmapCell],
     driverCoordinate: Coordinate?,
+    availableDeliveries: [AvailableDelivery] = [],
     earnings: DriverEarnings?,
     onToggleShift: @escaping () -> Void,
-    onEarningsTapped: @escaping () -> Void
+    onEarningsTapped: @escaping () -> Void,
+    onDeliveryTapped: @escaping (AvailableDelivery) -> Void = { _ in }
   ) {
     self.toggleMode = toggleMode
     self.cells = cells
     self.driverCoordinate = driverCoordinate
+    self.availableDeliveries = availableDeliveries
     self.earnings = earnings
     self.onToggleShift = onToggleShift
     self.onEarningsTapped = onEarningsTapped
+    self.onDeliveryTapped = onDeliveryTapped
   }
 
   public var body: some View {
     ZStack(alignment: .topTrailing) {
-      DemandHeatmapMapView(cells: cells, driverCoordinate: driverCoordinate)
-        .ignoresSafeArea(edges: .bottom)
+      DemandHeatmapMapView(
+        cells: cells,
+        driverCoordinate: driverCoordinate,
+        availableDeliveries: availableDeliveries,
+        onDeliveryTapped: onDeliveryTapped
+      )
+      .ignoresSafeArea(edges: .bottom)
       ShiftToggle(mode: toggleMode, onToggle: onToggleShift)
         .padding(.top, DankSpacing.md)
         .padding(.trailing, DankSpacing.md)

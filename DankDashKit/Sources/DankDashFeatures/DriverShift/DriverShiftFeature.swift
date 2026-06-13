@@ -37,7 +37,30 @@ public struct DriverShiftFeature: Sendable {
     /// active; the scoped reducer drives the 30-second countdown and
     /// the accept/decline POSTs. Set by the offer subscription and
     /// cleared by every terminal delegate.
+    ///
+    /// This is the LEGACY single-best-driver targeting path, kept for
+    /// when `DISPATCH_OPEN_POOL_ENABLED` is off server-side. When the
+    /// open pool is on (the default) no targeted offers arrive, so this
+    /// stays nil and the claimable board below drives the UX instead.
     public var presentedOffer: DispatchOfferFeature.State?
+
+    /// Open delivery pool — claimable orders within range, polled on the
+    /// shift cadence and rendered as map pins with a floating tip. The
+    /// first driver to claim one wins; everyone else's pin disappears on
+    /// the next poll (or the 409 they get if they tap a stale pin).
+    public var availableDeliveries: [AvailableDelivery]
+    /// The delivery whose detail sheet is open (tapped a pin). nil = no
+    /// sheet. Drives the Accept-only popup with the dispensary → drop-off
+    /// route preview.
+    public var selectedDelivery: AvailableDelivery?
+    /// Road-following pickup → drop-off polyline for the open detail
+    /// sheet. nil while it resolves (or if directions failed — the sheet
+    /// falls back to a straight leg).
+    public var selectedDeliveryRoute: [Coordinate]?
+    public var isClaimingDelivery: Bool
+    /// In-sheet error (a recoverable claim failure that isn't "someone
+    /// else got it" — that case dismisses the sheet and banners instead).
+    public var deliveryDetailError: String?
 
     public init(
       driver: Driver? = nil,
@@ -54,7 +77,12 @@ public struct DriverShiftFeature: Sendable {
       isLoadingDriver: Bool = false,
       isLoadingEarnings: Bool = false,
       errorBanner: String? = nil,
-      presentedOffer: DispatchOfferFeature.State? = nil
+      presentedOffer: DispatchOfferFeature.State? = nil,
+      availableDeliveries: [AvailableDelivery] = [],
+      selectedDelivery: AvailableDelivery? = nil,
+      selectedDeliveryRoute: [Coordinate]? = nil,
+      isClaimingDelivery: Bool = false,
+      deliveryDetailError: String? = nil
     ) {
       self.driver = driver
       self.activeShift = activeShift
@@ -71,6 +99,11 @@ public struct DriverShiftFeature: Sendable {
       self.isLoadingEarnings = isLoadingEarnings
       self.errorBanner = errorBanner
       self.presentedOffer = presentedOffer
+      self.availableDeliveries = availableDeliveries
+      self.selectedDelivery = selectedDelivery
+      self.selectedDeliveryRoute = selectedDeliveryRoute
+      self.isClaimingDelivery = isClaimingDelivery
+      self.deliveryDetailError = deliveryDetailError
     }
 
     /// Convenience — the reducer treats "any shift not yet ended" as
@@ -127,6 +160,15 @@ public struct DriverShiftFeature: Sendable {
     case presentedOffer(DispatchOfferFeature.Action)
     case offerSheetDismissed
 
+    // Open delivery pool
+    case deliveriesTick
+    case availableDeliveriesLoaded(Result<[AvailableDelivery], ShiftErrorBox>)
+    case deliveryPinTapped(AvailableDelivery)
+    case deliveryRouteLoaded([Coordinate]?)
+    case claimDeliveryTapped
+    case claimDeliveryResponse(Result<UUID, ClaimErrorBox>)
+    case deliveryDetailDismissed
+
     case delegate(Delegate)
 
     @CasePathable
@@ -150,6 +192,9 @@ public struct DriverShiftFeature: Sendable {
     case heartbeatTimer
     case batteryEvents
     case offerStream
+    case deliveriesTimer
+    case deliveryRoute
+    case claim
   }
 
   @Dependency(\.backgroundLocationClient) var locationClient
@@ -159,6 +204,8 @@ public struct DriverShiftFeature: Sendable {
   @Dependency(\.driverHeatmapAPIClient) var heatmapAPI
   @Dependency(\.driverSessionStoreClient) var sessionStore
   @Dependency(\.offerSubscriptionClient) var offerSubscription
+  @Dependency(\.deliveriesAPIClient) var deliveriesAPI
+  @Dependency(\.directionsClient) var directionsClient
   @Dependency(\.continuousClock) var clock
   @Dependency(\.date.now) var now
 
@@ -167,6 +214,11 @@ public struct DriverShiftFeature: Sendable {
   /// can age-out drivers that stopped reporting.
   public static let heatmapRefreshInterval: Duration = .seconds(60)
   public static let heartbeatInterval: Duration = .seconds(90)
+  /// Open-pool board refresh. Tighter than the heatmap so a claimed
+  /// pin clears (and a fresh ready order appears) within a few seconds —
+  /// the 409-on-claim is the correctness backstop, this just keeps the
+  /// map feeling live.
+  public static let deliveriesRefreshInterval: Duration = .seconds(15)
 
   public init() {}
 
@@ -266,12 +318,17 @@ public struct DriverShiftFeature: Sendable {
           state.isPerformingShiftTransition = true
           state.errorBanner = nil
           state.presentedOffer = nil
+          state.availableDeliveries = []
+          state.selectedDelivery = nil
+          state.selectedDeliveryRoute = nil
           let coord = state.currentCoordinate ?? .init(latitude: 0, longitude: 0)
           return .merge(
             .cancel(id: CancelID.locationStream),
             .cancel(id: CancelID.heatmapTimer),
             .cancel(id: CancelID.heartbeatTimer),
             .cancel(id: CancelID.offerStream),
+            .cancel(id: CancelID.deliveriesTimer),
+            .cancel(id: CancelID.deliveryRoute),
             .run { [shiftAPI, locationClient, sessionStore] send in
               await locationClient.endUpdates()
               do {
@@ -375,6 +432,9 @@ public struct DriverShiftFeature: Sendable {
         state.heatmap = []
         state.locationMode = .standard(accuracy: .balanced)
         state.presentedOffer = nil
+        state.availableDeliveries = []
+        state.selectedDelivery = nil
+        state.selectedDeliveryRoute = nil
         // Carry the closed-out shift onto the earnings card so the
         // "today" total reflects the just-completed run without a
         // round-trip — the next earnings refresh will reconcile.
@@ -567,6 +627,112 @@ public struct DriverShiftFeature: Sendable {
         state.presentedOffer = nil
         return .none
 
+      case .deliveriesTick:
+        // Only poll the open pool while online and free — a driver
+        // already on a delivery can't take a second one, and the server
+        // returns an empty board for them anyway.
+        guard state.isOnline, state.driver?.isOnActiveDelivery != true else { return .none }
+        return .run { [deliveriesAPI] send in
+          do {
+            let deliveries = try await deliveriesAPI.list()
+            await send(.availableDeliveriesLoaded(.success(deliveries)))
+          } catch {
+            await send(.availableDeliveriesLoaded(.failure(ShiftErrorBox(error))))
+          }
+        }
+
+      case .availableDeliveriesLoaded(.success(let deliveries)):
+        state.availableDeliveries = deliveries
+        // If the sheet is open for a delivery that just left the board
+        // (claimed by someone else, canceled), drop it — the driver
+        // can't claim a pin that no longer exists, and leaving the sheet
+        // up would only earn them a 409.
+        if let selected = state.selectedDelivery,
+           !deliveries.contains(where: { $0.orderId == selected.orderId }) {
+          state.selectedDelivery = nil
+          state.selectedDeliveryRoute = nil
+          state.deliveryDetailError = nil
+          return .cancel(id: CancelID.deliveryRoute)
+        }
+        return .none
+
+      case .availableDeliveriesLoaded(.failure):
+        // The board is a read-side overlay — a failed refresh keeps the
+        // last-known pins (the next tick retries). Endpoint-not-yet-
+        // available and transient errors both fall through silently.
+        return .none
+
+      case .deliveryPinTapped(let delivery):
+        state.selectedDelivery = delivery
+        state.selectedDeliveryRoute = nil
+        state.deliveryDetailError = nil
+        // Best-effort road-following preview from pickup to drop-off. A
+        // directions failure is non-fatal — the sheet renders a straight
+        // leg instead (LiveMapView's deliveryLeg with two points).
+        return .run { [directionsClient] send in
+          let coordinates = try? await directionsClient
+            .calculateRoute(delivery.pickup, delivery.dropoff, .automobile)
+            .polyline
+          await send(.deliveryRouteLoaded(coordinates))
+        }
+        .cancellable(id: CancelID.deliveryRoute, cancelInFlight: true)
+
+      case .deliveryRouteLoaded(let coordinates):
+        // Ignore a late route for a sheet the driver already dismissed.
+        guard state.selectedDelivery != nil else { return .none }
+        state.selectedDeliveryRoute = coordinates
+        return .none
+
+      case .claimDeliveryTapped:
+        guard let selected = state.selectedDelivery, !state.isClaimingDelivery else { return .none }
+        state.isClaimingDelivery = true
+        state.deliveryDetailError = nil
+        return .run { [deliveriesAPI] send in
+          do {
+            let orderId = try await deliveriesAPI.claim(selected.orderId)
+            await send(.claimDeliveryResponse(.success(orderId)))
+          } catch {
+            await send(.claimDeliveryResponse(.failure(ClaimErrorBox(error))))
+          }
+        }
+        .cancellable(id: CancelID.claim, cancelInFlight: true)
+
+      case .claimDeliveryResponse(.success(let orderId)):
+        state.isClaimingDelivery = false
+        state.availableDeliveries.removeAll { $0.orderId == orderId }
+        state.selectedDelivery = nil
+        state.selectedDeliveryRoute = nil
+        state.deliveryDetailError = nil
+        // Route into the active-route screen — same delegate the legacy
+        // targeted-offer accept fires, so the parent's handling is shared.
+        return .send(.delegate(.acceptedOffer(orderId: orderId)))
+
+      case .claimDeliveryResponse(.failure(let box)):
+        state.isClaimingDelivery = false
+        if box.isAlreadyClaimed {
+          // Another driver won the race (or the order left the pool).
+          // Dismiss the sheet, drop the pin, and surface a gentle banner
+          // — not the in-sheet error, since the sheet is going away.
+          if let selected = state.selectedDelivery {
+            state.availableDeliveries.removeAll { $0.orderId == selected.orderId }
+          }
+          state.selectedDelivery = nil
+          state.selectedDeliveryRoute = nil
+          state.deliveryDetailError = nil
+          state.errorBanner = "Another driver grabbed that delivery."
+          return .cancel(id: CancelID.deliveryRoute)
+        }
+        // Recoverable failure (transport, server) — keep the sheet up so
+        // the driver can retry.
+        state.deliveryDetailError = box.userFacingMessage()
+        return .none
+
+      case .deliveryDetailDismissed:
+        state.selectedDelivery = nil
+        state.selectedDeliveryRoute = nil
+        state.deliveryDetailError = nil
+        return .cancel(id: CancelID.deliveryRoute)
+
       case .delegate:
         return .none
       }
@@ -665,7 +831,20 @@ public struct DriverShiftFeature: Sendable {
       observeLocationStream(),
       startHeatmapTimer(seededCoordinate: currentCoordinate),
       startHeartbeatTimer(),
-      observeOfferStream()
+      observeOfferStream(),
+      startDeliveriesTimer()
+    )
+  }
+
+  private func startDeliveriesTimer() -> Effect<Action> {
+    .merge(
+      .send(.deliveriesTick),
+      .run { [clock] send in
+        for await _ in clock.timer(interval: Self.deliveriesRefreshInterval) {
+          await send(.deliveriesTick)
+        }
+      }
+      .cancellable(id: CancelID.deliveriesTimer, cancelInFlight: true)
     )
   }
 
@@ -780,6 +959,73 @@ public struct ShiftErrorBox: Error, Equatable, Sendable {
     case .server(let message): message
     case .unauthorized: "Sign in again to continue."
     case .unimplemented: "This is not available yet."
+    case .other(let message): message
+    }
+  }
+}
+
+// MARK: - Claim error box
+
+/// Equatable wrapper around the open-pool claim error surface, mirroring
+/// ``OfferErrorBox``. Classifies the "someone else got it / no longer
+/// claimable" cluster (HTTP 409, `DRIVER_DELIVERY_ALREADY_CLAIMED`,
+/// `DRIVER_DELIVERY_NOT_AVAILABLE`, `DRIVER_BUSY_WITH_ORDER`) as
+/// ``alreadyClaimed`` because the map UX branches on it — the detail
+/// sheet dismisses and the pin drops without an angry in-sheet error.
+public struct ClaimErrorBox: Error, Equatable, Sendable {
+  public enum Kind: Equatable, Sendable {
+    case alreadyClaimed
+    case transport
+    case unauthorized
+    case malformed(String)
+    case server(message: String, code: String?)
+    case other(String)
+  }
+
+  public let kind: Kind
+
+  public init(_ error: Error) {
+    if let driverError = error as? DriverAPIError {
+      switch driverError {
+      case .malformedPayload(let label): self.kind = .malformed(label)
+      case .unimplemented(let name): self.kind = .other(name)
+      }
+      return
+    }
+    if let apiError = error as? APIError {
+      switch apiError {
+      case .server(let status, let envelope):
+        if status == 409
+          || envelope.error.code == "DRIVER_DELIVERY_ALREADY_CLAIMED"
+          || envelope.error.code == "DRIVER_DELIVERY_NOT_AVAILABLE"
+          || envelope.error.code == "DRIVER_BUSY_WITH_ORDER"
+        {
+          self.kind = .alreadyClaimed
+        } else {
+          self.kind = .server(message: envelope.error.message, code: envelope.error.code)
+        }
+      case .transport: self.kind = .transport
+      case .unauthorized, .noRefreshToken: self.kind = .unauthorized
+      case .unexpectedStatus, .decoding, .configuration:
+        self.kind = .other(String(describing: apiError))
+      }
+      return
+    }
+    self.kind = .other(String(describing: error))
+  }
+
+  public var isAlreadyClaimed: Bool {
+    if case .alreadyClaimed = kind { return true }
+    return false
+  }
+
+  public func userFacingMessage() -> String {
+    switch kind {
+    case .alreadyClaimed: "Another driver grabbed that delivery."
+    case .transport: "Couldn't reach DankDash. Check your connection."
+    case .unauthorized: "Sign in again to continue."
+    case .malformed: "Couldn't read the response. We'll try again."
+    case .server(let message, _): message
     case .other(let message): message
     }
   }
