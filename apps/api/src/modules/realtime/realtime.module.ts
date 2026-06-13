@@ -20,6 +20,7 @@ import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { REDIS_CLIENT } from '../../infrastructure/redis.module.js';
+import { OrderCreatedListener } from './order-created.listener.js';
 import { OrderRealtimeListener } from './order-realtime.listener.js';
 
 const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
@@ -35,10 +36,16 @@ const listenerProvider: FactoryProvider<OrderRealtimeListener> = {
     new OrderRealtimeListener({ redis, orders }),
 };
 
-const providers: Provider[] = [ordersRepoProvider, listenerProvider];
+const orderCreatedListenerProvider: FactoryProvider<OrderCreatedListener> = {
+  provide: OrderCreatedListener,
+  inject: [REDIS_CLIENT],
+  useFactory: (redis: Redis): OrderCreatedListener => new OrderCreatedListener({ redis }),
+};
+
+const providers: Provider[] = [ordersRepoProvider, listenerProvider, orderCreatedListenerProvider];
 
 @Module({
   providers,
-  exports: [OrderRealtimeListener],
+  exports: [OrderRealtimeListener, OrderCreatedListener],
 })
 export class RealtimeModule {}

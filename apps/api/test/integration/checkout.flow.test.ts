@@ -32,6 +32,7 @@ import {
   type CreatePaymentInput,
 } from '@dankdash/aeropay';
 import { stableUuid, type Database } from '@dankdash/db';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DRIZZLE_DB } from '../../src/infrastructure/drizzle.module.js';
@@ -534,13 +535,14 @@ describe('/v1/carts/:id/checkout — PAYMENTS_BYPASS_ENABLED test mode', () => {
         { token: AEROPAY_CLIENT, value: aeropay },
         {
           token: CheckoutService,
-          inject: [DRIZZLE_DB, AEROPAY_CLIENT],
-          factory: (db, ap) =>
+          inject: [DRIZZLE_DB, AEROPAY_CLIENT, EventEmitter2],
+          factory: (db, ap, eventEmitter) =>
             new CheckoutService(
               db as Database,
               createCheckoutScopedRepos,
               ap as AeropayClientLike,
               true,
+              eventEmitter as EventEmitter2,
             ),
         },
       ],

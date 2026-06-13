@@ -42,6 +42,7 @@ import {
   RepositoryError,
   ValidationError,
 } from '@dankdash/types';
+import { type EventEmitter2 } from '@nestjs/event-emitter';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CartExpiredError,
@@ -49,6 +50,7 @@ import {
   type CheckoutScopedRepos,
   type CheckoutScopedReposFactory,
 } from './checkout.service.js';
+import { type OrderPlacedEvent } from '../orders/order-placed.events.js';
 import type { AeropayClientLike } from '../payments/tokens.js';
 import type {
   Cart,
@@ -694,6 +696,7 @@ class FakeAeropayClient implements AeropayClientLike {
 
 interface Rig {
   readonly service: CheckoutService;
+  readonly eventEmitter: EventEmitter2;
   readonly carts: FakeCartsRepo;
   readonly items: FakeCartItemsRepo;
   readonly listings: FakeListingsRepo;
@@ -744,8 +747,16 @@ function makeRig(options: { readonly paymentsBypassEnabled?: boolean } = {}): Ri
       paymentTransactions,
       ledgerEntries,
     }) as unknown as CheckoutScopedRepos;
+  const eventEmitter = { emit: vi.fn() } as unknown as EventEmitter2;
   return {
-    service: new CheckoutService(fakeDb, factory, aeropay, options.paymentsBypassEnabled ?? false),
+    service: new CheckoutService(
+      fakeDb,
+      factory,
+      aeropay,
+      options.paymentsBypassEnabled ?? false,
+      eventEmitter,
+    ),
+    eventEmitter,
     carts,
     items,
     listings,
@@ -834,6 +845,32 @@ describe('CheckoutService.checkout — happy path', () => {
     expect(res.order.status).toBe('placed');
     expect(res.order.placedAt).toMatch(/T\d\d:\d\d:\d\d/);
     expect(res.order.statusChangedAt).toMatch(/T\d\d:\d\d:\d\d/);
+  });
+
+  it('emits ORDER_PLACED_EVENT post-commit so the realtime new-order fanout fires', async () => {
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(rig.eventEmitter.emit).toHaveBeenCalledOnce();
+    const [eventName, payload] = (rig.eventEmitter.emit as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, OrderPlacedEvent];
+    expect(eventName).toBe('order.placed');
+    expect(payload.orderId).toBe(res.order.id);
+    expect(payload.customerId).toBe(USER_ID);
+    expect(payload.shortCode).toBe(res.order.shortCode);
+    expect(payload.totalCents).toBe(res.order.totalCents);
+    expect(payload.status).toBe('placed');
+    expect(payload.placedAt).toBeInstanceOf(Date);
+  });
+
+  it('does not emit ORDER_PLACED_EVENT when checkout rolls back', async () => {
+    rig.items.rows.clear(); // empty cart → 422, tx never commits
+    await expect(
+      rig.service.checkout(USER_ID, CART_ID, { deliveryAddressId: ADDRESS_ID, driverTipCents: 0 }),
+    ).rejects.toThrow();
+    expect(rig.eventEmitter.emit).not.toHaveBeenCalled();
   });
 
   it('projects one order item per cart line with decimal-string THC/CBD/weight totals', async () => {

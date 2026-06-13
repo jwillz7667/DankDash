@@ -32,6 +32,7 @@ import {
 } from '@dankdash/db';
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { PaymentsModule } from '../payments/payments.module.js';
@@ -68,13 +69,19 @@ export function createCheckoutScopedRepos(scopedDb: Database): CheckoutScopedRep
 
 const checkoutServiceProvider: FactoryProvider<CheckoutService> = {
   provide: CheckoutService,
-  inject: [DRIZZLE_DB, AEROPAY_CLIENT, ConfigService],
-  useFactory: (db: Database, aeropay: AeropayClientLike, config: ConfigService): CheckoutService =>
+  inject: [DRIZZLE_DB, AEROPAY_CLIENT, ConfigService, EventEmitter2],
+  useFactory: (
+    db: Database,
+    aeropay: AeropayClientLike,
+    config: ConfigService,
+    eventEmitter: EventEmitter2,
+  ): CheckoutService =>
     new CheckoutService(
       db,
       createCheckoutScopedRepos,
       aeropay,
       config.get<boolean>('PAYMENTS_BYPASS_ENABLED') ?? false,
+      eventEmitter,
     ),
 };
 
