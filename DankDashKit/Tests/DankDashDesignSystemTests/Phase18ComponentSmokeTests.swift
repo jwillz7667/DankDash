@@ -285,10 +285,12 @@ final class Phase18ComponentSmokeTests: XCTestCase {
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .placed), .placed)
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .accepted), .preparing)
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .prepping), .preparing)
-    XCTAssertEqual(OrderStatusTimeline.milestone(for: .readyForPickup), .preparing)
-    XCTAssertEqual(OrderStatusTimeline.milestone(for: .awaitingDriver), .driverAssigned)
+    // awaiting_driver = dispatch open, no driver yet → Ready for pickup
+    XCTAssertEqual(OrderStatusTimeline.milestone(for: .readyForPickup), .readyForPickup)
+    XCTAssertEqual(OrderStatusTimeline.milestone(for: .awaitingDriver), .readyForPickup)
+    // a driver has committed → driver-en-route stage
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .driverAssigned), .driverAssigned)
-    XCTAssertEqual(OrderStatusTimeline.milestone(for: .enRoutePickup), .onTheWay)
+    XCTAssertEqual(OrderStatusTimeline.milestone(for: .enRoutePickup), .driverAssigned)
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .pickedUp), .onTheWay)
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .enRouteDropoff), .onTheWay)
     XCTAssertEqual(OrderStatusTimeline.milestone(for: .arrivedAtDropoff), .arriving)
