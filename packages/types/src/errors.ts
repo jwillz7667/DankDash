@@ -297,6 +297,8 @@ export type DriverErrorCode =
   | 'DRIVER_OFFER_ALREADY_RESPONDED'
   | 'DRIVER_BUSY_WITH_ORDER'
   | 'DRIVER_ORDER_NOT_ACTIVE'
+  | 'DRIVER_DELIVERY_NOT_AVAILABLE'
+  | 'DRIVER_DELIVERY_ALREADY_CLAIMED'
   | 'DRIVER_BACKGROUND_INCOMPLETE'
   | 'DRIVER_INSURANCE_EXPIRED'
   | 'DRIVER_NOT_ONLINE';
@@ -313,6 +315,12 @@ const DRIVER_STATUS_CODES: Readonly<Record<DriverErrorCode, number>> = {
   DRIVER_OFFER_ALREADY_RESPONDED: 409,
   DRIVER_BUSY_WITH_ORDER: 409,
   DRIVER_ORDER_NOT_ACTIVE: 409,
+  // Open-pool delivery claim: the order was never claimable (404-ish but
+  // the row exists, so 404) vs. another driver won the first-come race
+  // (409 Conflict — the dasher app maps this to "another driver grabbed
+  // it" and drops the pin).
+  DRIVER_DELIVERY_NOT_AVAILABLE: 404,
+  DRIVER_DELIVERY_ALREADY_CLAIMED: 409,
   DRIVER_BACKGROUND_INCOMPLETE: 422,
   DRIVER_INSURANCE_EXPIRED: 422,
   DRIVER_NOT_ONLINE: 422,
