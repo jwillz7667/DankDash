@@ -151,7 +151,13 @@ async function main(): Promise<void> {
     { webhookEvents, logger },
     { cronMetrics },
   );
-  const dispatchTask = scheduleDispatchJob({ orders, drivers, dispatchOffers, logger });
+  const dispatchTask = scheduleDispatchJob({
+    orders,
+    drivers,
+    dispatchOffers,
+    logger,
+    openPoolEnabled: env.DISPATCH_OPEN_POOL_ENABLED,
+  });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
 
   // Archive bucket shares the same R2 account as the rest of the storage

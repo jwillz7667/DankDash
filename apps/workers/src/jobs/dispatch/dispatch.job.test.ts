@@ -621,3 +621,97 @@ describe('runDispatchJob', () => {
     expect(summary.failedNoDrivers).toBe(0);
   });
 });
+
+describe('runDispatchJob — open delivery pool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('issues NO targeted offer while within budget — the order waits on the open board', async () => {
+    // awaiting_driver 30s ago, default 3-minute budget → far from
+    // exhausted. Open pool must not offer or even query candidates.
+    const fakes = makeFakes({
+      awaitingOrders: [makeOrder()],
+      candidates: [makeCandidate()],
+    });
+    const { logger } = makeLogger();
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        openPoolEnabled: true,
+      },
+    });
+
+    expect(summary.offered).toBe(0);
+    expect(summary.waitedNoCandidates).toBe(1);
+    expect(fakes.createOffer).not.toHaveBeenCalled();
+    // No targeting work at all while the order is claimable.
+    expect(fakes.findCandidates).not.toHaveBeenCalled();
+    expect(fakes.listForOrder).not.toHaveBeenCalled();
+  });
+
+  it('keeps the safety net: budget exhausted with drivers in range → dispatch_failed (budget_exhausted)', async () => {
+    const ancient = new Date(NOW.getTime() - 4 * 60_000);
+    const fakes = makeFakes({
+      awaitingOrders: [makeOrder({ awaitingDriverAt: ancient })],
+      candidates: [makeCandidate()],
+    });
+    const { logger } = makeLogger();
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        openPoolEnabled: true,
+      },
+    });
+
+    expect(summary.failedBudgetExhausted).toBe(1);
+    expect(summary.failedNoDrivers).toBe(0);
+    expect(fakes.createOffer).not.toHaveBeenCalled();
+    // The DISPATCH_FAILED transition went through applyTransition.
+    expect(fakes.applyTransition).toHaveBeenCalledTimes(1);
+    const resolver = fakes.applyTransition.mock.calls[0]?.[1] as TransitionResolver;
+    const decision = resolver({
+      id: 'order-1',
+      status: 'awaiting_driver',
+      userId: 'user-1',
+      dispensaryId: 'disp-1',
+      driverId: null,
+    });
+    expect(decision.eventType).toBe('DISPATCH_FAILED');
+    expect(decision.payload).toEqual({ reason: 'budget_exhausted' });
+  });
+
+  it('budget exhausted with an empty pool → dispatch_failed (no_eligible_drivers)', async () => {
+    const ancient = new Date(NOW.getTime() - 4 * 60_000);
+    const fakes = makeFakes({
+      awaitingOrders: [makeOrder({ awaitingDriverAt: ancient })],
+      candidates: [],
+    });
+    const { logger } = makeLogger();
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        openPoolEnabled: true,
+      },
+    });
+
+    expect(summary.failedNoDrivers).toBe(1);
+    expect(summary.failedBudgetExhausted).toBe(0);
+    expect(fakes.findCandidates).toHaveBeenCalledTimes(1);
+  });
+});

@@ -61,6 +61,20 @@ export interface DispatchJobDeps {
   readonly attemptParams?: AttemptParams;
   /** Override the default scoring params (10mi radius, weights, etc). */
   readonly scoringParams?: ScoringParams;
+  /**
+   * Open delivery pool. When `true`, the tick issues NO targeted
+   * `dispatch_offers` — a ready order is claimable by any eligible
+   * online driver via `POST /v1/driver/deliveries/:orderId/claim`. The
+   * tick keeps ONLY the overall dispatch-budget safety net: an order
+   * nobody claims within `attemptParams.totalBudgetMs` is transitioned
+   * to `dispatch_failed`, identical to the targeted path's timeout.
+   *
+   * Omitted/`false` (the default for callers that don't set it, e.g.
+   * the existing targeting tests) preserves the legacy single-best-
+   * driver sequential offering. The worker wires this from
+   * `DISPATCH_OPEN_POOL_ENABLED` (env default `true`).
+   */
+  readonly openPoolEnabled?: boolean;
 }
 
 export interface DispatchJobInput {
@@ -167,6 +181,10 @@ async function dispatchSingleOrder(
   const scoringParams = deps.scoringParams ?? DEFAULT_SCORING_PARAMS;
   const attemptParams = deps.attemptParams ?? DEFAULT_ATTEMPT_PARAMS;
 
+  if (deps.openPoolEnabled === true) {
+    return dispatchOpenPoolOrder(order, attemptStartedAt, now, scoringParams, attemptParams, deps);
+  }
+
   // Pull candidates + offer history in parallel — no causal dependency
   // between them, and at peak we want the dispatch latency budget spent
   // on the SQL round-trips, not on serial waiting.
@@ -246,6 +264,48 @@ async function dispatchSingleOrder(
         ? 'failedNoDrivers'
         : 'failedBudgetExhausted';
   }
+}
+
+/**
+ * Open-pool tick for one order. The worker issues no offers — the
+ * order sits on the shared `awaiting_driver` board and any eligible
+ * online driver claims it via the driver API. The ONLY thing the tick
+ * still owns is the dispatch-budget safety net: if the order has waited
+ * past `totalBudgetMs` with no claim, transition it to `dispatch_failed`
+ * so it doesn't hang forever.
+ *
+ * The failure reason is read off the current candidate pool (queried
+ * only at the moment of failure, not every tick) so telemetry keeps the
+ * same `no_eligible_drivers` vs `budget_exhausted` split the targeted
+ * path emits: an empty pool at timeout means nobody was ever in range;
+ * a non-empty pool means drivers were available but none claimed.
+ */
+async function dispatchOpenPoolOrder(
+  order: Order,
+  attemptStartedAt: Date,
+  now: Date,
+  scoringParams: ScoringParams,
+  attemptParams: AttemptParams,
+  deps: DispatchJobDeps,
+): Promise<PerOrderOutcome> {
+  const budgetDeadline = new Date(attemptStartedAt.getTime() + attemptParams.totalBudgetMs);
+  if (now.getTime() < budgetDeadline.getTime()) {
+    // Still within the dispatch window — leave the order on the open
+    // board for a driver to claim. No DB write; the next tick re-checks.
+    deps.logger.debug(
+      { orderId: order.id, until: budgetDeadline },
+      'dispatch: open pool — awaiting a claim within budget',
+    );
+    return 'waitedNoCandidates';
+  }
+
+  const candidates = await deps.drivers.findDispatchCandidatesNearDispensary(
+    order.dispensaryId,
+    scoringParams.maxRadiusMeters,
+  );
+  const reason = candidates.length === 0 ? 'no_eligible_drivers' : 'budget_exhausted';
+  await failOrder(order, reason, deps);
+  return reason === 'no_eligible_drivers' ? 'failedNoDrivers' : 'failedBudgetExhausted';
 }
 
 async function persistOffer(
