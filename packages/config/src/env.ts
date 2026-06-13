@@ -176,6 +176,23 @@ export const EnvSchema = z
      *     checkout transaction and is snapshotted onto the order.
      */
     PAYMENTS_BYPASS_ENABLED: booleanFromString.default(false),
+
+    /**
+     * Open delivery pool. When `true` (default), a ready order
+     * (`awaiting_driver`) is claimable by ANY eligible online driver
+     * within the dispatch radius — the dispatch worker skips its
+     * sequential `OFFER_NEXT` targeting (no per-driver `dispatch_offers`
+     * rows), and drivers claim straight off the pool via
+     * `POST /v1/driver/deliveries/:orderId/claim` (first-come-wins via
+     * the order state-machine guard). The overall dispatch-budget
+     * timeout → `DISPATCH_FAILED` safety net stays active so an order
+     * nobody claims still fails out instead of hanging.
+     *
+     * Set `false` to revert to the legacy single-best-driver targeting
+     * (`packages/dispatch` scorer + timed offers). Gated so the behaviour
+     * change is reversible without a code deploy.
+     */
+    DISPATCH_OPEN_POOL_ENABLED: booleanFromString.default(true),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not
