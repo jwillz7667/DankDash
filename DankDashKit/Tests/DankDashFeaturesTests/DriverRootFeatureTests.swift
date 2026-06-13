@@ -28,25 +28,6 @@ final class DriverRootFeatureTests: XCTestCase {
     }
   }
 
-  func test_onAppear_withSession_routesToLocked() async {
-    let store = TestStore(initialState: DriverRootFeature.State()) {
-      DriverRootFeature()
-    } withDependencies: {
-      Self.disableDependencies(&$0)
-      $0.tokenStore = TokenStore(
-        loadAccess: { "access" },
-        loadRefresh: { "refresh" },
-        persist: { _ in },
-        clear: {}
-      )
-    }
-
-    await store.send(.onAppear)
-    await store.receive(\.bootstrapResolved) {
-      $0.screen = .locked
-    }
-  }
-
   func test_onAppear_withSession_driverPassed_landsOnShift() async {
     let driver = Self.passedDriver()
     let store = TestStore(initialState: DriverRootFeature.State()) {
@@ -68,11 +49,9 @@ final class DriverRootFeatureTests: XCTestCase {
     }
     store.exhaustivity = .off
 
+    // Persistent login: a stored session loads the driver straight away —
+    // no unlock gate.
     await store.send(.onAppear)
-    await store.skipReceivedActions()
-    XCTAssertEqual(store.state.screen, .locked, "stored session gates behind unlock first")
-
-    await store.send(.sessionLock(.delegate(.unlocked)))
     await store.skipReceivedActions()
     XCTAssertEqual(store.state.screen, .shift)
     XCTAssertEqual(store.state.driver, driver)
@@ -102,8 +81,6 @@ final class DriverRootFeatureTests: XCTestCase {
 
     await store.send(.onAppear)
     await store.skipReceivedActions()
-    await store.send(.sessionLock(.delegate(.unlocked)))
-    await store.skipReceivedActions()
     XCTAssertEqual(store.state.screen, .onboarding)
     XCTAssertEqual(store.state.driver, pending)
     XCTAssertEqual(store.state.onboarding.driver, pending)
@@ -130,8 +107,6 @@ final class DriverRootFeatureTests: XCTestCase {
     store.exhaustivity = .off
 
     await store.send(.onAppear)
-    await store.skipReceivedActions()
-    await store.send(.sessionLock(.delegate(.unlocked)))
     await store.skipReceivedActions()
     XCTAssertEqual(store.state.screen, .onboarding)
     XCTAssertNil(store.state.driver, "404 means no driver record yet")
@@ -160,159 +135,29 @@ final class DriverRootFeatureTests: XCTestCase {
 
     await store.send(.onAppear)
     await store.skipReceivedActions()
-    await store.send(.sessionLock(.delegate(.unlocked)))
-    await store.skipReceivedActions()
     XCTAssertEqual(store.state.screen, .loadingDriver, "real failure pins us on the loading screen so retry stays visible")
     XCTAssertEqual(store.state.driverLoadError, "Down for maintenance")
   }
 
-  // MARK: - Session lock
+  // MARK: - Deep links across bootstrap
 
-  func test_sessionLockInvalidated_signsOutAndRoutesToAuth() async {
-    let storage = TokenStorage()
-    let store = TestStore(
-      initialState: DriverRootFeature.State(
-        screen: .locked,
-        sessionLock: SessionLockFeature.State(
-          failureMessage: "Face ID didn't complete.",
-          hasAutoAttempted: true
-        )
-      )
-    ) {
-      DriverRootFeature()
-    } withDependencies: {
-      Self.disableDependencies(&$0)
-      $0.tokenStore = TokenStore(
-        loadAccess: { await storage.access },
-        loadRefresh: { await storage.refresh },
-        persist: { _ in },
-        clear: { await storage.clear() }
-      )
-      $0.driverRealtimeClient.disconnect = {}
-    }
-
-    // Non-exhaustive: signOutTapped resets onboarding to .init(), whose
-    // application draft carries a fresh UUID + live timestamps that an
-    // exhaustive state-change closure can never reproduce.
-    store.exhaustivity = .off
-
-    await store.send(.sessionLock(.delegate(.sessionInvalidated)))
-    await store.skipReceivedActions()
-    await store.finish()
-
-    XCTAssertEqual(store.state.screen, .auth)
-    XCTAssertEqual(store.state.sessionLock, SessionLockFeature.State())
-    let cleared = await storage.clearedCount
-    XCTAssertEqual(
-      cleared, 1,
-      "An invalidated session (e.g. biometry re-enrollment) must clear the dead tokens."
-    )
-  }
-
-  func test_sessionLockSignOutRequested_signsOutAndRoutesToAuth() async {
-    let storage = TokenStorage()
-    let store = TestStore(
-      initialState: DriverRootFeature.State(
-        screen: .locked,
-        sessionLock: SessionLockFeature.State(hasAutoAttempted: true)
-      )
-    ) {
-      DriverRootFeature()
-    } withDependencies: {
-      Self.disableDependencies(&$0)
-      $0.tokenStore = TokenStore(
-        loadAccess: { await storage.access },
-        loadRefresh: { await storage.refresh },
-        persist: { _ in },
-        clear: { await storage.clear() }
-      )
-      $0.driverRealtimeClient.disconnect = {}
-    }
-
-    store.exhaustivity = .off
-
-    await store.send(.sessionLock(.delegate(.signOutRequested)))
-    await store.skipReceivedActions()
-    await store.finish()
-
-    XCTAssertEqual(store.state.screen, .auth)
-    XCTAssertEqual(store.state.sessionLock, SessionLockFeature.State())
-    let cleared = await storage.clearedCount
-    XCTAssertEqual(cleared, 1)
-  }
-
-  func test_scenePhaseActive_enrollmentChanged_signsOut() async {
-    // Biometry re-enrollment with a live process: iOS invalidated the
-    // Keychain refresh item but the in-memory cache would keep the
-    // session refreshing. The foreground re-check must run the full
-    // sign-out teardown.
-    let storage = TokenStorage()
-    let store = TestStore(initialState: DriverRootFeature.State(screen: .shift)) {
-      DriverRootFeature()
-    } withDependencies: {
-      Self.disableDependencies(&$0)
-      $0.tokenStore = TokenStore(
-        loadAccess: { await storage.access },
-        loadRefresh: { await storage.refresh },
-        persist: { _ in },
-        clear: { await storage.clear() }
-      )
-      $0.driverRealtimeClient.disconnect = {}
-      $0.sessionUnlockClient = SessionUnlockClient(
-        unlock: { .invalid },
-        invalidateSessionIfEnrollmentChanged: { true }
-      )
-    }
-    store.exhaustivity = .off
-
-    await store.send(.scenePhaseBecameActive)
-    await store.skipReceivedActions()
-    await store.finish()
-
-    XCTAssertEqual(store.state.screen, .auth)
-    let cleared = await storage.clearedCount
-    XCTAssertEqual(cleared, 1, "a re-enrolled session must clear the dead tokens")
-  }
-
-  func test_scenePhaseActive_whileLocked_skipsEnrollmentCheck() async {
-    // Pre-unlock screens never consult the monitor — the gate itself
-    // already arbitrates the session there.
-    let checked = DisconnectRecorder()
-    let store = TestStore(initialState: DriverRootFeature.State(screen: .locked)) {
-      DriverRootFeature()
-    } withDependencies: {
-      Self.disableDependencies(&$0)
-      $0.sessionUnlockClient = SessionUnlockClient(
-        unlock: { .invalid },
-        invalidateSessionIfEnrollmentChanged: {
-          await checked.record()
-          return false
-        }
-      )
-    }
-
-    await store.send(.scenePhaseBecameActive)
-    await store.finish()
-
-    let checks = await checked.count
-    XCTAssertEqual(checks, 0, "the enrollment re-check only runs for a signed-in session")
-  }
-
-  // MARK: - Deep links across the unlock gate
-
-  func test_deepLinkWhileLocked_survivesUnlock_andReplaysIntoActiveRoute() async {
-    // The cold-start APNs path: offer push → launch → Face ID gate →
-    // offer screen. The stash and the replay are covered separately
-    // elsewhere; this pins the URL *surviving the locked → unlocked
-    // transition* — a hygiene reset in the unlock handler would
-    // silently swallow every cold-start offer link.
+  func test_deepLinkDuringBootstrap_survivesAndReplaysIntoActiveRoute() async {
+    // Cold-start APNs path: an offer push arrives while the app is still
+    // bootstrapping a stored session. It must stash (no gate to pass) and
+    // replay into the active route once the driver record loads.
     let orderId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     let url = URL(string: "dankdasher://offer/\(orderId.uuidString)")!
     let driver = Self.passedDriver()
-    let store = TestStore(initialState: DriverRootFeature.State(screen: .locked)) {
+    let store = TestStore(initialState: DriverRootFeature.State()) {
       DriverRootFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
+      $0.tokenStore = TokenStore(
+        loadAccess: { "access" },
+        loadRefresh: { "refresh" },
+        persist: { _ in },
+        clear: {}
+      )
       $0.driverAppAPIClient = DriverAppAPIClient(
         getMe: { driver },
         getCurrentRoute: { throw DriverAPIError.unimplemented("getCurrentRoute") },
@@ -322,12 +167,11 @@ final class DriverRootFeatureTests: XCTestCase {
     }
     store.exhaustivity = .off
 
-    // Offer push arrives while the Face ID gate is up — stash, don't route.
+    // Offer push arrives during bootstrap — stash, don't route yet.
     await store.send(.deepLinkReceived(url))
-    XCTAssertEqual(store.state.screen, .locked)
     XCTAssertEqual(store.state.pendingDeepLinkURL, url)
 
-    await store.send(.sessionLock(.delegate(.unlocked)))
+    await store.send(.onAppear)
     await store.skipReceivedActions()
 
     XCTAssertEqual(store.state.screen, .activeRoute)

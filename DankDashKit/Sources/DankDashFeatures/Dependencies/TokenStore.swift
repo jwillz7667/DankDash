@@ -50,33 +50,26 @@ public struct TokenStore: Sendable {
 }
 
 public extension TokenStore {
-  /// Production binding backed by KeychainStore. Access token uses
-  /// afterFirstUnlock; refresh token uses biometric protection per spec
-  /// §5.1, falling back to device-only where the hardware can't honor
-  /// biometry (`.biometricWithDeviceFallback`) so the session always
-  /// survives a relaunch instead of silently evaporating.
+  /// Production binding backed by KeychainStore. Both tokens use
+  /// `.afterFirstUnlock`: readable without any user-presence check once
+  /// the device has been unlocked since boot, so a signed-in session
+  /// survives app relaunches silently — no Face ID, no password. (Payment
+  /// authorization happens on the web checkout, which has its own auth; the
+  /// native apps never gate on biometry.) The 30-day sliding refresh token
+  /// keeps the user signed in indefinitely with periodic use.
   ///
-  /// `cache` is the process-lifetime home of the decrypted refresh
-  /// token. `persist` primes it (a fresh login/registration *is* an
-  /// unlocked session) and `loadRefresh` consults it first so no code
-  /// path on this surface ever triggers an implicit Face ID challenge —
-  /// the interactive decrypt belongs exclusively to
-  /// ``SessionUnlockClient``.
-  ///
-  /// `enrollment`: a fresh login re-baselines the biometric enrollment
-  /// snapshot (the new session is trusted under *today's* biometric set,
-  /// even if it changed while signed out); sign-out drops the baseline so
-  /// nothing stale carries into the next account.
+  /// `cache` is the process-lifetime home of the refresh token — `persist`
+  /// primes it and `loadRefresh` consults it first so a hot session avoids
+  /// even the cheap keychain round-trip.
   static func live(
     keychain: KeychainStore,
-    cache: SessionTokenCache,
-    enrollment: BiometryEnrollmentMonitor
+    cache: SessionTokenCache
   ) -> TokenStore {
     TokenStore(
       loadAccess: { try? keychain.optionalString(forAccount: AccountKey.access) },
       loadRefresh: {
         if let cached = await cache.currentRefreshToken() { return cached }
-        guard case .value(let token) = try? keychain.nonInteractiveString(forAccount: AccountKey.refresh) else {
+        guard let token = try? keychain.optionalString(forAccount: AccountKey.refresh) else {
           return nil
         }
         await cache.setRefreshToken(token)
@@ -96,23 +89,19 @@ public extension TokenStore {
           try keychain.setString(
             tokens.refreshToken,
             forAccount: AccountKey.refresh,
-            protection: .biometricWithDeviceFallback
+            protection: .afterFirstUnlock
           )
         } catch {
           tokenStoreLog.error("Failed to persist refresh token: \(String(describing: error), privacy: .public)")
         }
         await cache.setRefreshToken(tokens.refreshToken)
-        enrollment.recordBaseline()
       },
       clear: {
         try? keychain.remove(account: AccountKey.access)
         try? keychain.remove(account: AccountKey.refresh)
         await cache.clear()
-        enrollment.clearBaseline()
       },
       hasSession: {
-        // Presence-only — never decrypts the biometric refresh token,
-        // so launch never triggers Face ID (or its TCC crash).
         keychain.contains(account: AccountKey.access)
           && keychain.contains(account: AccountKey.refresh)
       }

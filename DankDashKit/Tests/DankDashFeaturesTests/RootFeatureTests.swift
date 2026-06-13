@@ -24,7 +24,9 @@ final class RootFeatureTests: XCTestCase {
     }
   }
 
-  func test_onAppear_withSession_routesToLocked() async {
+  func test_onAppear_withSession_routesStraightToSignedIn() async {
+    // Persistent login: a stored session lands on signedIn with no unlock
+    // gate — the user stays signed in across relaunches, no password / Face ID.
     let store = TestStore(initialState: RootFeature.State()) {
       RootFeature()
     } withDependencies: {
@@ -38,159 +40,8 @@ final class RootFeatureTests: XCTestCase {
 
     await store.send(.onAppear)
     await store.receive(\.bootstrapResolved) {
-      $0.screen = .locked
-    }
-  }
-
-  func test_sessionLockUnlocked_routesToSignedIn() async {
-    let store = TestStore(initialState: RootFeature.State(screen: .locked)) {
-      RootFeature()
-    }
-
-    await store.send(.sessionLock(.delegate(.unlocked))) {
       $0.screen = .signedIn
     }
-  }
-
-  func test_sessionLockInvalidated_signsOutAndRoutesToAuth() async {
-    let cleared = ClearedRecorder()
-    let disconnected = ClearedRecorder()
-    let store = TestStore(initialState: RootFeature.State(
-      screen: .locked,
-      sessionLock: SessionLockFeature.State(
-        failureMessage: "Face ID didn't complete.",
-        hasAutoAttempted: true
-      )
-    )) {
-      RootFeature()
-    } withDependencies: {
-      $0.tokenStore = TokenStore(
-        loadAccess: { nil },
-        loadRefresh: { nil },
-        persist: { _ in },
-        clear: { await cleared.markCleared() }
-      )
-      $0.realtimeClient.disconnect = { await disconnected.markCleared() }
-    }
-
-    await store.send(.sessionLock(.delegate(.sessionInvalidated)))
-    await store.receive(\.signOutTapped) {
-      $0.sessionLock = .init()
-      $0.screen = .auth
-    }
-    await store.finish()
-
-    let wasCleared = await cleared.value
-    XCTAssertTrue(
-      wasCleared,
-      "An invalidated session (e.g. biometry re-enrollment) must clear the dead tokens."
-    )
-    let wasDisconnected = await disconnected.value
-    XCTAssertTrue(wasDisconnected)
-  }
-
-  func test_sessionLockSignOutRequested_signsOutAndRoutesToAuth() async {
-    let cleared = ClearedRecorder()
-    let store = TestStore(initialState: RootFeature.State(
-      screen: .locked,
-      sessionLock: SessionLockFeature.State(hasAutoAttempted: true)
-    )) {
-      RootFeature()
-    } withDependencies: {
-      $0.tokenStore = TokenStore(
-        loadAccess: { nil },
-        loadRefresh: { nil },
-        persist: { _ in },
-        clear: { await cleared.markCleared() }
-      )
-      $0.realtimeClient.disconnect = {}
-    }
-
-    await store.send(.sessionLock(.delegate(.signOutRequested)))
-    await store.receive(\.signOutTapped) {
-      $0.sessionLock = .init()
-      $0.screen = .auth
-    }
-    await store.finish()
-
-    let wasCleared = await cleared.value
-    XCTAssertTrue(
-      wasCleared,
-      "The lock screen's escape hatch must clear the stored session before showing login."
-    )
-  }
-
-  func test_scenePhaseActive_enrollmentChanged_signsOut() async {
-    // Biometry re-enrollment with a live process: iOS invalidated the
-    // Keychain refresh item but the in-memory cache would keep the
-    // session refreshing. The foreground re-check must run the full
-    // sign-out teardown.
-    let cleared = ClearedRecorder()
-    let disconnected = ClearedRecorder()
-    let store = TestStore(initialState: RootFeature.State(screen: .signedIn)) {
-      RootFeature()
-    } withDependencies: {
-      $0.tokenStore = TokenStore(
-        loadAccess: { nil },
-        loadRefresh: { nil },
-        persist: { _ in },
-        clear: { await cleared.markCleared() }
-      )
-      $0.realtimeClient.disconnect = { await disconnected.markCleared() }
-      $0.sessionUnlockClient = SessionUnlockClient(
-        unlock: { .invalid },
-        invalidateSessionIfEnrollmentChanged: { true }
-      )
-    }
-
-    await store.send(.scenePhaseBecameActive)
-    await store.receive(\.signOutTapped) {
-      $0.screen = .auth
-    }
-    await store.finish()
-
-    let wasCleared = await cleared.value
-    XCTAssertTrue(wasCleared, "a re-enrolled session must clear the dead tokens")
-    let wasDisconnected = await disconnected.value
-    XCTAssertTrue(wasDisconnected)
-  }
-
-  func test_scenePhaseActive_enrollmentUnchanged_isNoOp() async {
-    let store = TestStore(initialState: RootFeature.State(screen: .signedIn)) {
-      RootFeature()
-    } withDependencies: {
-      $0.sessionUnlockClient = SessionUnlockClient(
-        unlock: { .invalid },
-        invalidateSessionIfEnrollmentChanged: { false }
-      )
-    }
-
-    // Exhaustive store: any received action or state change would fail.
-    await store.send(.scenePhaseBecameActive)
-    await store.finish()
-  }
-
-  func test_scenePhaseActive_whileLocked_skipsEnrollmentCheck() async {
-    // Pre-unlock screens never consult the monitor — the gate itself
-    // already arbitrates the session there.
-    let checked = ClearedRecorder()
-    let store = TestStore(initialState: RootFeature.State(screen: .locked)) {
-      RootFeature()
-    } withDependencies: {
-      $0.sessionUnlockClient = SessionUnlockClient(
-        unlock: { .invalid },
-        invalidateSessionIfEnrollmentChanged: {
-          await checked.markCleared()
-          return false
-        }
-      )
-    }
-
-    await store.send(.scenePhaseBecameActive)
-    await store.finish()
-
-    let wasChecked = await checked.value
-    XCTAssertFalse(wasChecked, "the enrollment re-check only runs for a signed-in session")
   }
 
   func test_ageGatePassed_routesToAuth() async {
@@ -404,10 +255,6 @@ final class RootFeatureTests: XCTestCase {
 
     await store.send(.onAppear)
     await store.receive(\.bootstrapResolved) {
-      $0.screen = .locked
-    }
-
-    await store.send(.sessionLock(.delegate(.unlocked))) {
       $0.screen = .signedIn
     }
 
