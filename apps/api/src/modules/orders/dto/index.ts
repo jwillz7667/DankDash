@@ -184,6 +184,25 @@ const OrderTimestampsSchema = z
   })
   .strict();
 
+const GeoCoordinateSchema = z
+  .object({
+    latitude: z.number().gte(-90).lte(90),
+    longitude: z.number().gte(-180).lte(180),
+  })
+  .strict();
+
+const OrderDeliveryGeoSchema = z
+  .object({
+    /** The fulfilling dispensary (pickup). */
+    pickup: GeoCoordinateSchema,
+    /** The customer drop-off, from the order's address snapshot. */
+    dropoff: GeoCoordinateSchema,
+    /** Last-known driver GPS; null until a driver is assigned and reports. */
+    driver: GeoCoordinateSchema.nullable(),
+  })
+  .strict();
+export type OrderDeliveryGeo = z.infer<typeof OrderDeliveryGeoSchema>;
+
 export const OrderResponseSchema = z
   .object({
     id: z.string().uuid(),
@@ -209,6 +228,16 @@ export const OrderResponseSchema = z
         driver: z.number().int().min(1).max(5).nullable(),
       })
       .strict(),
+    /**
+     * Delivery geometry for the vendor per-order live map (Phase: open
+     * pool). Present only on the vendor order-detail endpoint
+     * (`GET /v1/vendor/orders/:id`); omitted on the listing + driver/
+     * customer surfaces that reuse this shape. `driver` is the last-known
+     * GPS for the assigned driver (null until assigned / first ping) so
+     * the portal map paints pickup + dropoff immediately and the driver
+     * marker once it has a fix.
+     */
+    delivery: OrderDeliveryGeoSchema.optional(),
   })
   .strict();
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;

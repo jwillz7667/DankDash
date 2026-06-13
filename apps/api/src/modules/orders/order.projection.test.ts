@@ -7,8 +7,13 @@
  * (and obviously) instead of silently widening the contract.
  */
 import { describe, expect, it } from 'vitest';
-import { projectOrder, projectOrderListItem, projectVendorQueueOrder } from './order.projection.js';
-import type { Order, VendorQueueOrderRow } from '@dankdash/db';
+import {
+  projectOrder,
+  projectOrderListItem,
+  projectVendorOrderDelivery,
+  projectVendorQueueOrder,
+} from './order.projection.js';
+import type { Dispensary, Driver, Order, VendorQueueOrderRow } from '@dankdash/db';
 
 const PLACED_AT = new Date('2026-05-18T19:00:00.000Z');
 const STATUS_CHANGED_AT = new Date('2026-05-18T19:01:00.000Z');
@@ -177,6 +182,44 @@ describe('projectVendorQueueOrder', () => {
     expect(projected.acceptedAt).toBe('2026-05-18T19:05:00.000Z');
     expect(projected.preppingAt).toBe('2026-05-18T19:10:00.000Z');
     expect(projected.preparedAt).toBeNull();
+  });
+});
+
+describe('projectVendorOrderDelivery', () => {
+  // The projection reads only `dispensary.location` and
+  // `driver.currentLocation`, so minimal casts keep the fixtures focused.
+  const dispensary = {
+    location: { type: 'Point', coordinates: [-93.265, 44.9778] },
+  } as unknown as Dispensary;
+
+  const snapshotOrder = makeRow({
+    deliveryAddressSnapshot: {
+      location: { type: 'Point', coordinates: [-93.1, 44.94] },
+    },
+  });
+
+  it('maps GeoJSON [lng, lat] tuples to { latitude, longitude } without transposing', () => {
+    const geo = projectVendorOrderDelivery(snapshotOrder, dispensary, null);
+
+    expect(geo.pickup).toEqual({ latitude: 44.9778, longitude: -93.265 });
+    expect(geo.dropoff).toEqual({ latitude: 44.94, longitude: -93.1 });
+    // No driver assigned → no marker.
+    expect(geo.driver).toBeNull();
+  });
+
+  it('surfaces the driver point from the assigned driver last-known location', () => {
+    const driver = {
+      currentLocation: { type: 'Point', coordinates: [-93.2, 44.96] },
+    } as unknown as Driver;
+
+    const geo = projectVendorOrderDelivery(snapshotOrder, dispensary, driver);
+    expect(geo.driver).toEqual({ latitude: 44.96, longitude: -93.2 });
+  });
+
+  it('emits a null driver point when the assigned driver has no GPS fix yet', () => {
+    const driver = { currentLocation: null } as unknown as Driver;
+    const geo = projectVendorOrderDelivery(snapshotOrder, dispensary, driver);
+    expect(geo.driver).toBeNull();
   });
 });
 

@@ -15,7 +15,9 @@
  */
 import {
   type Database,
+  type Dispensary,
   type DispensariesRepository,
+  type Driver,
   type DriversRepository,
   type Order,
   type OrderEventsRepository,
@@ -191,6 +193,33 @@ export class OrdersService {
       throw OrderError.notFound(orderId);
     }
     return order;
+  }
+
+  /**
+   * Vendor order-detail read with the geometry the per-order live map
+   * needs: the order, its dispensary (pickup point), and — when assigned —
+   * the driver row (last-known GPS). Tenant-scoped the same way as
+   * {@link findForDispensary} (cross-dispensary → 404). A missing
+   * dispensary is impossible under the `onDelete: 'restrict'` FK but maps
+   * to 404 rather than leaking a partial projection.
+   */
+  async getVendorOrderDetail(
+    dispensaryId: string,
+    orderId: string,
+  ): Promise<{ order: Order; dispensary: Dispensary; driver: Driver | null }> {
+    const repos = this.reposFactory(this.db);
+    const order = await repos.orders.findById(orderId);
+    if (order?.dispensaryId !== dispensaryId) {
+      throw OrderError.notFound(orderId);
+    }
+    const [dispensary, driver] = await Promise.all([
+      repos.dispensaries.findById(order.dispensaryId),
+      order.driverId === null ? Promise.resolve(null) : repos.drivers.findByUserId(order.driverId),
+    ]);
+    if (dispensary === null) {
+      throw OrderError.notFound(orderId);
+    }
+    return { order, dispensary, driver };
   }
 
   /**
