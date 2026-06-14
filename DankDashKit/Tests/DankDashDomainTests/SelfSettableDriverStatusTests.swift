@@ -25,6 +25,24 @@ final class SelfSettableDriverStatusTests: XCTestCase {
     XCTAssertEqual(SelfSettableDriverStatus.unavailable.asDriverStatus, .unavailable)
   }
 
+  func test_asSelfSettable_mapsTheThreeSelfSetStatuses() {
+    XCTAssertEqual(DriverStatus.online.asSelfSettable, .online)
+    XCTAssertEqual(DriverStatus.onBreak.asSelfSettable, .onBreak)
+    XCTAssertEqual(DriverStatus.unavailable.asSelfSettable, .unavailable)
+  }
+
+  func test_asSelfSettable_isNilForMachineDrivenAndOffline() {
+    XCTAssertNil(DriverStatus.enRoutePickup.asSelfSettable)
+    XCTAssertNil(DriverStatus.enRouteDropoff.asSelfSettable)
+    XCTAssertNil(DriverStatus.offline.asSelfSettable)
+  }
+
+  func test_asSelfSettable_roundTripsThroughAsDriverStatus() {
+    for status in SelfSettableDriverStatus.allCases {
+      XCTAssertEqual(status.asDriverStatus.asSelfSettable, status)
+    }
+  }
+
   func test_displayLabelNonEmptyForEveryCase() {
     for status in SelfSettableDriverStatus.allCases {
       XCTAssertFalse(status.displayLabel.isEmpty, "\(status) displayLabel empty")

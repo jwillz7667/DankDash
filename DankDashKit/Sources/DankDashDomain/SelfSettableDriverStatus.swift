@@ -36,3 +36,22 @@ public enum SelfSettableDriverStatus: String, Hashable, Sendable, CaseIterable, 
     }
   }
 }
+
+public extension DriverStatus {
+  /// The self-settable projection of this status, or `nil` for the
+  /// machine-driven (`enRoutePickup` / `enRouteDropoff`) and terminal
+  /// (`offline`) cases a driver can't set via `POST /v1/driver/status`.
+  ///
+  /// Used by the shift heartbeat to *re-assert the current availability*
+  /// rather than force a value the driver didn't choose — forcing
+  /// `.online` on every tick silently un-paused an `on_break` /
+  /// `unavailable` driver.
+  var asSelfSettable: SelfSettableDriverStatus? {
+    switch self {
+    case .online: .online
+    case .onBreak: .onBreak
+    case .unavailable: .unavailable
+    case .enRoutePickup, .enRouteDropoff, .offline: nil
+    }
+  }
+}

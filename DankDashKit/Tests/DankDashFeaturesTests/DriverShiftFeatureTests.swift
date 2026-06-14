@@ -563,6 +563,64 @@ final class DriverShiftFeatureTests: XCTestCase {
     await store.send(.heartbeatTick)
   }
 
+  func test_heartbeatTick_onBreak_reassertsOnBreakNotOnline() async {
+    // Regression: the heartbeat used to force `.online` every 90s, which
+    // silently un-paused an on-break / unavailable driver. It must
+    // re-assert the driver's CURRENT self-set status instead.
+    let statuses = Locker<[SelfSettableDriverStatus]>(value: [])
+    let coord = Coordinate(latitude: 44.97, longitude: -93.26)
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .onBreak),
+        activeShift: Self.openShift(),
+        currentCoordinate: coord
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in throw DriverAPIError.unimplemented("startShift") },
+        endShift: { _ in throw DriverAPIError.unimplemented("endShift") },
+        updateStatus: { status in
+          await statuses.append(status)
+          return Self.passedDriver(currentStatus: .onBreak)
+        }
+      )
+      $0.driverSessionStoreClient = DriverSessionStoreClient(
+        read: { nil },
+        write: { _ in },
+        updateHeartbeat: { _, _, _ in },
+        clear: {}
+      )
+    }
+
+    await store.send(.heartbeatTick)
+    await store.finish()
+    let recorded = await statuses.value
+    XCTAssertEqual(recorded, [.onBreak], "heartbeat must not clobber a deliberate pause")
+  }
+
+  func test_deliveriesTick_paused_isNoOp() async {
+    // An on-shift but paused driver (unavailable) must not pull the board.
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .unavailable),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.deliveriesAPIClient = DeliveriesAPIClient(
+        list: { throw DriverAPIError.unimplemented("list should not be called while paused") },
+        claim: { _ in throw DriverAPIError.unimplemented("claimDelivery") }
+      )
+    }
+
+    await store.send(.deliveriesTick)
+  }
+
   // MARK: - Status menu
 
   func test_statusMenuTapped_opensSheet() async {
@@ -603,6 +661,73 @@ final class DriverShiftFeatureTests: XCTestCase {
     await store.receive(\.statusUpdated.success) {
       $0.driver = onBreakDriver
     }
+  }
+
+  func test_statusOptionTapped_unavailable_clearsBoardButKeepsShiftRecoverable() async {
+    let unavailableDriver = Self.passedDriver(currentStatus: .unavailable)
+    let delivery = Self.availableDelivery()
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        isShowingStatusMenu: true,
+        availableDeliveries: [delivery],
+        selectedDelivery: delivery,
+        selectedDeliveryRoute: [delivery.pickup, delivery.dropoff]
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in throw DriverAPIError.unimplemented("startShift") },
+        endShift: { _ in throw DriverAPIError.unimplemented("endShift") },
+        updateStatus: { _ in unavailableDriver }
+      )
+    }
+
+    await store.send(.statusOptionTapped(.unavailable)) {
+      $0.isShowingStatusMenu = false
+    }
+    await store.receive(\.statusUpdated.success) {
+      $0.driver = unavailableDriver
+      // Paused → the claimable board and any open sheet are cleared.
+      $0.availableDeliveries = []
+      $0.selectedDelivery = nil
+      $0.selectedDeliveryRoute = nil
+    }
+    // The shift is still open, so the master toggle reads online and the
+    // status pill stays reachable — the path back to Online is intact.
+    XCTAssertTrue(store.state.isOnline)
+    XCTAssertFalse(store.state.isAcceptingWork)
+  }
+
+  func test_statusOptionTapped_recoversFromUnavailableToOnline() async {
+    let onlineDriver = Self.passedDriver(currentStatus: .online)
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .unavailable),
+        activeShift: Self.openShift(),
+        isShowingStatusMenu: true
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in throw DriverAPIError.unimplemented("startShift") },
+        endShift: { _ in throw DriverAPIError.unimplemented("endShift") },
+        updateStatus: { _ in onlineDriver }
+      )
+    }
+
+    await store.send(.statusOptionTapped(.online)) {
+      $0.isShowingStatusMenu = false
+    }
+    await store.receive(\.statusUpdated.success) {
+      $0.driver = onlineDriver
+    }
+    XCTAssertTrue(store.state.isAcceptingWork, "back online → accepting work again")
   }
 
   // MARK: - Misc UI
@@ -683,6 +808,25 @@ final class DriverShiftFeatureTests: XCTestCase {
   func test_offerReceived_whileOffline_isNoOp() async {
     let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
     let store = TestStore(initialState: DriverShiftFeature.State()) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.offerReceived(offer))
+    XCTAssertNil(store.state.presentedOffer)
+  }
+
+  func test_offerReceived_whilePaused_isNoOp() async {
+    // On shift but unavailable → on-shift, NOT accepting; a stale targeted
+    // offer racing the pause must not pop a sheet.
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .unavailable),
+        activeShift: Self.openShift()
+      )
+    ) {
       DriverShiftFeature()
     } withDependencies: {
       Self.disableDependencies(&$0)
@@ -1141,6 +1285,31 @@ final class DriverShiftFeatureTests: XCTestCase {
     XCTAssertFalse(state.isOnline, "shift on disk but server says offline → not online")
     state.driver = Self.passedDriver(currentStatus: .online)
     XCTAssertTrue(state.isOnline)
+  }
+
+  func test_isOnline_trueForPausedSubstatuses_soTheToggleAndPillStayReachable() {
+    var state = DriverShiftFeature.State(activeShift: Self.openShift())
+    // The bug: `unavailable` read as "not on shift", which disabled the
+    // status pill (no path back) and made the toggle try to start an
+    // already-open shift. Both paused substatuses are now on-shift.
+    state.driver = Self.passedDriver(currentStatus: .unavailable)
+    XCTAssertTrue(state.isOnline, "unavailable is a soft pause, still on shift")
+    state.driver = Self.passedDriver(currentStatus: .onBreak)
+    XCTAssertTrue(state.isOnline, "on_break is a soft pause, still on shift")
+  }
+
+  func test_isAcceptingWork_onlyTrueWhenOnlineAndOnShift() {
+    var state = DriverShiftFeature.State(activeShift: Self.openShift())
+    state.driver = Self.passedDriver(currentStatus: .online)
+    XCTAssertTrue(state.isAcceptingWork)
+    for paused in [DriverStatus.onBreak, .unavailable, .enRoutePickup, .enRouteDropoff] {
+      state.driver = Self.passedDriver(currentStatus: paused)
+      XCTAssertFalse(state.isAcceptingWork, "\(paused) must not pull work")
+    }
+    // Online status but no open shift → not accepting either.
+    state.activeShift = nil
+    state.driver = Self.passedDriver(currentStatus: .online)
+    XCTAssertFalse(state.isAcceptingWork, "no shift → not accepting")
   }
 
   func test_isShiftToggleInteractive_blocksDuringActiveDelivery() {

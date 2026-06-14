@@ -108,9 +108,20 @@ public struct DriverShiftFeature: Sendable {
 
     /// Convenience — the reducer treats "any shift not yet ended" as
     /// online, regardless of which substatus (online / enRoutePickup /
-    /// enRouteDropoff / onBreak) the driver currently carries.
+    /// enRouteDropoff / onBreak / unavailable) the driver currently
+    /// carries. Drives the master toggle (GO ONLINE vs GO OFFLINE), the
+    /// status pill's reachability, and location tracking.
     public var isOnline: Bool {
       activeShift != nil && (driver?.currentStatus.isOnShift ?? false)
+    }
+
+    /// The driver is actively taking new work — `online` specifically.
+    /// The soft-pause substatuses (`onBreak` / `unavailable`) are
+    /// on-shift but must NOT pull the open-pool board or receive
+    /// targeted offers; `enRoute*` is already committed to a delivery.
+    /// Distinct from ``isOnline`` ("the shift is running").
+    public var isAcceptingWork: Bool {
+      isOnline && driver?.currentStatus == .online
     }
 
     public var isShiftToggleInteractive: Bool {
@@ -530,15 +541,19 @@ public struct DriverShiftFeature: Sendable {
 
       case .heartbeatTick:
         guard let coord = state.currentCoordinate, state.isOnline else { return .none }
-        // Heartbeat updates the session-store snapshot and re-asserts
-        // the current status to the server so dispatch doesn't age
-        // the driver out. We choose .online because heartbeat fires
-        // outside any explicit status change — if the driver flipped
-        // to on-break, that path's own action sent the status.
-        let status: SelfSettableDriverStatus = .online
+        // Heartbeat updates the session-store snapshot and re-asserts the
+        // driver's CURRENT self-set status so dispatch sees freshness
+        // without clobbering a deliberate pause. Forcing `.online` here
+        // used to silently un-pause an on-break / unavailable driver on
+        // the next 90s tick. `enRoute*` has no self-settable projection,
+        // so the status ping is skipped mid-delivery (the location
+        // heartbeat still fires).
+        let selfSettable = state.driver?.currentStatus.asSelfSettable
         return .run { [shiftAPI, sessionStore, now] _ in
           await sessionStore.updateHeartbeat(coord.latitude, coord.longitude, now)
-          _ = try? await shiftAPI.updateStatus(status)
+          if let selfSettable {
+            _ = try? await shiftAPI.updateStatus(selfSettable)
+          }
         }
 
       case .statusMenuTapped:
@@ -562,6 +577,17 @@ public struct DriverShiftFeature: Sendable {
 
       case .statusUpdated(.success(let driver)):
         state.driver = driver
+        // Pausing (on_break / unavailable) clears the claimable board and
+        // any open claim sheet — a paused driver can't take work, and a
+        // stale pin would only earn a 409 on tap. The board repopulates
+        // on the next deliveries tick once they flip back to online.
+        if driver.currentStatus != .online {
+          state.availableDeliveries = []
+          state.selectedDelivery = nil
+          state.selectedDeliveryRoute = nil
+          state.deliveryDetailError = nil
+          return .cancel(id: CancelID.deliveryRoute)
+        }
         return .none
 
       case .statusUpdated(.failure(let box)):
@@ -586,8 +612,10 @@ public struct DriverShiftFeature: Sendable {
         // Ignore an offer landing for a different driver (shouldn't
         // happen — the endpoint filters by the authenticated driver
         // server-side — but a stale token in the stream queue can race
-        // a sign-out), or one we're already presenting.
-        guard state.isOnline else { return .none }
+        // a sign-out), or one we're already presenting. A paused driver
+        // (on_break / unavailable) is on shift but not accepting, so
+        // gate on `isAcceptingWork`, not just `isOnline`.
+        guard state.isAcceptingWork else { return .none }
         if let presented = state.presentedOffer, presented.offer.id == offer.id {
           return .none
         }
@@ -628,10 +656,11 @@ public struct DriverShiftFeature: Sendable {
         return .none
 
       case .deliveriesTick:
-        // Only poll the open pool while online and free — a driver
-        // already on a delivery can't take a second one, and the server
-        // returns an empty board for them anyway.
-        guard state.isOnline, state.driver?.isOnActiveDelivery != true else { return .none }
+        // Only poll the open pool while accepting work and free — a
+        // paused driver (on_break / unavailable) shouldn't see claimable
+        // orders, and a driver already on a delivery can't take a second
+        // one (the server returns an empty board for both anyway).
+        guard state.isAcceptingWork, state.driver?.isOnActiveDelivery != true else { return .none }
         return .run { [deliveriesAPI] send in
           do {
             let deliveries = try await deliveriesAPI.list()
@@ -892,12 +921,20 @@ public struct DriverShiftFeature: Sendable {
 // MARK: - DriverStatus helpers
 
 private extension DriverStatus {
-  /// True for any case where the driver is "on shift" from the
-  /// reducer's perspective — used to drive the toggle's online state.
+  /// True for any case where the driver is "on shift" — i.e. they
+  /// started a shift and haven't gone offline. The soft-pause
+  /// substatuses (`onBreak` / `unavailable`) ARE on shift: they pause
+  /// incoming work without ending the shift, so the master toggle reads
+  /// "online" and the status pill stays reachable to flip back. Only
+  /// `offline` (no shift) is off.
+  ///
+  /// Excluding `unavailable` here previously trapped the driver: the
+  /// status pill disabled, and the toggle tried to `startShift` on an
+  /// already-open shift (server 409).
   var isOnShift: Bool {
     switch self {
-    case .online, .enRoutePickup, .enRouteDropoff, .onBreak: true
-    case .offline, .unavailable: false
+    case .online, .enRoutePickup, .enRouteDropoff, .onBreak, .unavailable: true
+    case .offline: false
     }
   }
 }
