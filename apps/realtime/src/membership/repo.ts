@@ -26,6 +26,9 @@ import type { Database, OrderStatus } from '@dankdash/db';
 export interface ActiveDelivery {
   readonly orderId: string;
   readonly customerId: string;
+  /** The fulfilling dispensary — routes the driver's location to the
+   * vendor's per-order map in addition to the customer. */
+  readonly dispensaryId: string;
 }
 
 /**
@@ -110,7 +113,11 @@ export class DrizzleMembershipRepository implements MembershipRepository {
     // stale row can never shadow the live one. `orders_driver_idx` (partial
     // on driver_id) makes this a single-row index probe.
     const rows = await this.db
-      .select({ orderId: orders.id, customerId: orders.userId })
+      .select({
+        orderId: orders.id,
+        customerId: orders.userId,
+        dispensaryId: orders.dispensaryId,
+      })
       .from(orders)
       .where(
         and(

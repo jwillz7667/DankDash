@@ -21,6 +21,7 @@ function item(args: {
       driverId: args.driverId,
       orderId: args.orderId ?? null,
       customerId: args.customerId ?? null,
+      dispensaryId: null,
       lat: args.lat,
       lng: args.lng,
       accuracyMeters: args.accuracyMeters ?? null,

@@ -138,6 +138,7 @@ describe('realtime stream → broadcast routing', () => {
         driverId,
         orderId: uuidv7(),
         customerId: assignedCustomer,
+        dispensaryId: null,
         lat: 44.9778,
         lng: -93.265,
         accuracyMeters: 6,

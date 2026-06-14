@@ -16,7 +16,7 @@ import { VendorOrdersController } from './vendor-orders.controller.js';
 import type { OrderTransitionService } from './order-transition.service.js';
 import type { OrdersService } from './orders.service.js';
 import type { VendorContext } from '../listings/vendor/vendor-context.types.js';
-import type { Order, OrderStatus, VendorQueueOrderRow } from '@dankdash/db';
+import type { Dispensary, Driver, Order, OrderStatus, VendorQueueOrderRow } from '@dankdash/db';
 import type { OrderEventType } from '@dankdash/orders';
 
 const USER_ID = '01935f3d-0000-7000-8000-000000000003';
@@ -86,17 +86,30 @@ function makeOrder(status: Order['status'] = 'placed'): Order {
 
 class FakeOrdersService {
   public findForDispensaryCalls: { dispensaryId: string; orderId: string }[] = [];
+  public getVendorOrderDetailCalls: { dispensaryId: string; orderId: string }[] = [];
   public listQueueCalls: {
     dispensaryId: string;
     statuses: readonly OrderStatus[];
     limit: number;
   }[] = [];
   public order: Order = makeOrder();
+  public dispensary: Dispensary = {
+    location: { type: 'Point', coordinates: [-93.265, 44.9778] },
+  } as unknown as Dispensary;
+  public driver: Driver | null = null;
   public queueRows: readonly VendorQueueOrderRow[] = [];
 
   findForDispensary = (dispensaryId: string, orderId: string): Promise<Order> => {
     this.findForDispensaryCalls.push({ dispensaryId, orderId });
     return Promise.resolve(this.order);
+  };
+
+  getVendorOrderDetail = (
+    dispensaryId: string,
+    orderId: string,
+  ): Promise<{ order: Order; dispensary: Dispensary; driver: Driver | null }> => {
+    this.getVendorOrderDetailCalls.push({ dispensaryId, orderId });
+    return Promise.resolve({ order: this.order, dispensary: this.dispensary, driver: this.driver });
   };
 
   listForDispensaryQueue = (
@@ -209,17 +222,21 @@ describe('VendorOrdersController', () => {
   });
 
   describe('get (drawer detail)', () => {
-    it('returns the full OrderResponse for the dispensary-owned order', async () => {
+    it('returns the full OrderResponse plus the delivery geometry for the live map', async () => {
       const { controller, svc } = makeController();
 
       const res = await controller.get(CTX, ORDER_ID);
 
-      expect(svc.findForDispensaryCalls).toEqual([
+      expect(svc.getVendorOrderDetailCalls).toEqual([
         { dispensaryId: DISPENSARY_ID, orderId: ORDER_ID },
       ]);
       expect(res.id).toBe(ORDER_ID);
       expect(res.status).toBe('placed');
       expect(res.timestamps.placedAt).toBe(PINNED_NOW.toISOString());
+      // PR3: the detail endpoint carries pickup/dropoff (+ driver once
+      // assigned) so the portal map paints before the first live tick.
+      expect(res.delivery?.pickup).toEqual({ latitude: 44.9778, longitude: -93.265 });
+      expect(res.delivery?.driver).toBeNull();
     });
   });
 

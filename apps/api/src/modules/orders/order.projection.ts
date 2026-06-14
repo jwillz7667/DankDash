@@ -11,8 +11,13 @@
  * controller's return type a plain JSON shape, which is easier to
  * snapshot in tests.
  */
-import type { OrderListItem, OrderResponse, VendorQueueOrderResponse } from './dto/index.js';
-import type { Order, VendorQueueOrderRow } from '@dankdash/db';
+import type {
+  OrderDeliveryGeo,
+  OrderListItem,
+  OrderResponse,
+  VendorQueueOrderResponse,
+} from './dto/index.js';
+import type { Dispensary, Driver, Order, VendorQueueOrderRow } from '@dankdash/db';
 
 const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString());
 
@@ -91,6 +96,45 @@ export function projectOrder(o: Order): OrderResponse {
       dispensary: o.dispensaryRating,
       driver: o.driverRating,
     },
+  };
+}
+
+interface DropoffSnapshotGeo {
+  readonly location?: { readonly coordinates?: readonly [number, number] };
+}
+
+/**
+ * Delivery geometry for the vendor per-order live map. Pickup comes from
+ * the dispensary's `location`, drop-off from the order's frozen address
+ * snapshot (`[lng, lat]` GeoJSON written by checkout's `serializeAddress`
+ * — same source the customer + driver dropoff projections read), and the
+ * driver point from the assigned driver's last-known `current_location`
+ * (null until a driver is assigned and reports a fix). The portal paints
+ * pickup + dropoff on load and animates the driver marker off the live
+ * `driver:location` stream thereafter.
+ *
+ * Coordinates are emitted as `{ latitude, longitude }` (not the GeoJSON
+ * `[lng, lat]` tuple) so the client can't transpose the axes.
+ */
+export function projectVendorOrderDelivery(
+  order: Order,
+  dispensary: Dispensary,
+  driver: Driver | null,
+): OrderDeliveryGeo {
+  const [pickupLng, pickupLat] = dispensary.location.coordinates;
+  const snapshot = order.deliveryAddressSnapshot as DropoffSnapshotGeo;
+  const dropoffCoords = snapshot.location?.coordinates ?? [0, 0];
+  const driverPoint =
+    driver?.currentLocation == null
+      ? null
+      : {
+          latitude: driver.currentLocation.coordinates[1],
+          longitude: driver.currentLocation.coordinates[0],
+        };
+  return {
+    pickup: { latitude: pickupLat, longitude: pickupLng },
+    dropoff: { latitude: dropoffCoords[1], longitude: dropoffCoords[0] },
+    driver: driverPoint,
   };
 }
 

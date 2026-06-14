@@ -150,7 +150,7 @@ describe('routeEnvelope', () => {
     expect(out.some((b) => b.eventName === 'delivery:claimed')).toBe(false);
   });
 
-  it('drops driver:location when no customer is assigned (driver on duty, no order)', () => {
+  it('drops driver:location when no customer or dispensary is assigned (driver on duty, no order)', () => {
     const out = routeEnvelope(
       envelope({
         type: 'driver:location',
@@ -158,6 +158,7 @@ describe('routeEnvelope', () => {
           driverId: DRIVER_ID,
           orderId: null,
           customerId: null,
+          dispensaryId: null,
           lat: 44.978,
           lng: -93.265,
           accuracyMeters: 10,
@@ -170,7 +171,7 @@ describe('routeEnvelope', () => {
     expect(out).toEqual([]);
   });
 
-  it('routes driver:location to only the assigned customer when one is present', () => {
+  it('routes driver:location to the assigned customer AND the fulfilling dispensary', () => {
     const out = routeEnvelope(
       envelope({
         type: 'driver:location',
@@ -178,6 +179,7 @@ describe('routeEnvelope', () => {
           driverId: DRIVER_ID,
           orderId: ORDER_ID,
           customerId: CUSTOMER_ID,
+          dispensaryId: DISPENSARY_ID,
           lat: 44.978,
           lng: -93.265,
           accuracyMeters: 10,
@@ -187,9 +189,35 @@ describe('routeEnvelope', () => {
         },
       }),
     );
-    expect(out).toHaveLength(1);
+    expect(out).toHaveLength(2);
     expect(out[0]?.namespace).toBe('/customer');
     expect(out[0]?.room).toBe(`user:${CUSTOMER_ID}`);
+    expect(out[1]?.namespace).toBe('/vendor');
+    expect(out[1]?.room).toBe(`dispensary:${DISPENSARY_ID}`);
+    // Same wire shape on both legs; the portal filters by orderId.
+    expect(out[1]?.eventName).toBe('driver:location');
+    expect(out[1]?.payload).toMatchObject({ orderId: ORDER_ID, envelopeId: ENV_ID });
+  });
+
+  it('routes driver:location to the customer only when no dispensary is present', () => {
+    const out = routeEnvelope(
+      envelope({
+        type: 'driver:location',
+        payload: {
+          driverId: DRIVER_ID,
+          orderId: ORDER_ID,
+          customerId: CUSTOMER_ID,
+          dispensaryId: null,
+          lat: 44.978,
+          lng: -93.265,
+          accuracyMeters: 10,
+          speedMps: 5,
+          headingDeg: 90,
+          recordedAt: '2026-05-19T12:00:00.000Z',
+        },
+      }),
+    );
+    expect(out.map((b) => b.namespace)).toEqual(['/customer']);
   });
 
   it('routes offer:new to the targeted driver room', () => {

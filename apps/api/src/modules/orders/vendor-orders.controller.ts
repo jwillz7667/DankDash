@@ -41,7 +41,11 @@ import {
   type TransitionResponse,
 } from './dto/index.js';
 import { OrderTransitionService } from './order-transition.service.js';
-import { projectOrder, projectVendorQueueOrder } from './order.projection.js';
+import {
+  projectOrder,
+  projectVendorOrderDelivery,
+  projectVendorQueueOrder,
+} from './order.projection.js';
 import { OrdersService } from './orders.service.js';
 import type { VendorContext } from '../listings/vendor/vendor-context.types.js';
 
@@ -91,8 +95,14 @@ export class VendorOrdersController {
     @CurrentDispensary() ctx: VendorContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<OrderResponse> {
-    const order = await this.orders.findForDispensary(ctx.dispensaryId, id);
-    return projectOrder(order);
+    const { order, dispensary, driver } = await this.orders.getVendorOrderDetail(
+      ctx.dispensaryId,
+      id,
+    );
+    return {
+      ...projectOrder(order),
+      delivery: projectVendorOrderDelivery(order, dispensary, driver),
+    };
   }
 
   @Post(':id/accept')

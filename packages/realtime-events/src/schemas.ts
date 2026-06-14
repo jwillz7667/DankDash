@@ -55,6 +55,11 @@ export const driverLocationPayloadSchema = z.object({
   driverId: uuid,
   orderId: uuid.nullable(),
   customerId: uuid.nullable(),
+  // The dispensary fulfilling the active order, so the router can fan the
+  // location to the vendor's per-order tracking map as well as the
+  // customer. Null when the driver isn't on a delivery (same gate as
+  // orderId/customerId).
+  dispensaryId: uuid.nullable(),
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
   accuracyMeters: positiveNumber.nullable(),

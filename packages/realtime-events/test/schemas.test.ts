@@ -73,6 +73,7 @@ describe('realtime envelope schema', () => {
           driverId: '01900000-0000-7000-8000-000000000005',
           orderId: null,
           customerId: null,
+          dispensaryId: null,
           lat: 91,
           lng: 0,
           accuracyMeters: null,
@@ -83,6 +84,29 @@ describe('realtime envelope schema', () => {
       },
     };
     expect(() => realtimeEnvelopeSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts a well-formed driver:location carrying order, customer, and dispensary', () => {
+    const env: RealtimeEnvelope = {
+      ...SAMPLE_ENVELOPE,
+      event: {
+        type: 'driver:location',
+        payload: {
+          driverId: '01900000-0000-7000-8000-000000000005',
+          orderId: '01900000-0000-7000-8000-00000000000a',
+          customerId: '01900000-0000-7000-8000-00000000000b',
+          dispensaryId: '01900000-0000-7000-8000-00000000000d',
+          lat: 44.9778,
+          lng: -93.265,
+          accuracyMeters: 8,
+          speedMps: 5,
+          headingDeg: 90,
+          recordedAt: '2026-05-19T12:00:00.000Z',
+        },
+      },
+    };
+    const parsed = realtimeEnvelopeSchema.parse(env);
+    expect(parsed.event.type).toBe('driver:location');
   });
 
   it('accepts a well-formed customer:eta_updated envelope', () => {

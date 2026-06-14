@@ -29,6 +29,7 @@ const DRIVER_RECORD_ID = '01900000-0000-7000-8000-0000000000c1';
 const DRIVER_USER_ID = '01900000-0000-7000-8000-0000000000c2';
 const ACTIVE_ORDER_ID = '01900000-0000-7000-8000-0000000000a1';
 const ACTIVE_CUSTOMER_ID = '01900000-0000-7000-8000-0000000000b1';
+const ACTIVE_DISPENSARY_ID = '01900000-0000-7000-8000-0000000000d1';
 // What a malicious client would try to inject to target someone else.
 const SPOOFED_ORDER_ID = '01900000-0000-7000-8000-0000000000a9';
 const SPOOFED_CUSTOMER_ID = '01900000-0000-7000-8000-0000000000b9';
@@ -140,6 +141,7 @@ describe('handleLocationUpdate — server-authoritative routing identity (H6)', 
     const { membership } = makeMembership({
       orderId: ACTIVE_ORDER_ID,
       customerId: ACTIVE_CUSTOMER_ID,
+      dispensaryId: ACTIVE_DISPENSARY_ID,
     });
     const { socket } = makeSocket();
     const { redis, lastEnvelope } = makeRedis();
@@ -166,6 +168,7 @@ describe('handleLocationUpdate — server-authoritative routing identity (H6)', 
     const payload = env.event.payload as Record<string, unknown>;
     expect(payload['customerId']).toBe(ACTIVE_CUSTOMER_ID);
     expect(payload['orderId']).toBe(ACTIVE_ORDER_ID);
+    expect(payload['dispensaryId']).toBe(ACTIVE_DISPENSARY_ID);
     expect(payload['customerId']).not.toBe(SPOOFED_CUSTOMER_ID);
     expect(payload['orderId']).not.toBe(SPOOFED_ORDER_ID);
     expect(payload['driverId']).toBe(DRIVER_RECORD_ID);
@@ -187,12 +190,14 @@ describe('handleLocationUpdate — server-authoritative routing identity (H6)', 
     const payload = lastEnvelope().event.payload as Record<string, unknown>;
     expect(payload['customerId']).toBeNull();
     expect(payload['orderId']).toBeNull();
+    expect(payload['dispensaryId']).toBeNull();
   });
 
   it('reuses the delivery lookup within the TTL window, then re-queries after it', async () => {
     const { membership, calls } = makeMembership({
       orderId: ACTIVE_ORDER_ID,
       customerId: ACTIVE_CUSTOMER_ID,
+      dispensaryId: ACTIVE_DISPENSARY_ID,
     });
     const { socket } = makeSocket(10);
     const { redis } = makeRedis();
@@ -242,6 +247,7 @@ describe('handleLocationUpdate — server-authoritative routing identity (H6)', 
     const { membership } = makeMembership({
       orderId: ACTIVE_ORDER_ID,
       customerId: ACTIVE_CUSTOMER_ID,
+      dispensaryId: ACTIVE_DISPENSARY_ID,
     });
     const { socket, emitted } = makeSocket(1); // capacity 1, no refill
     const { redis, calls } = makeRedis();
@@ -262,6 +268,7 @@ describe('handleLocationUpdate — server-authoritative routing identity (H6)', 
     const { membership } = makeMembership({
       orderId: ACTIVE_ORDER_ID,
       customerId: ACTIVE_CUSTOMER_ID,
+      dispensaryId: ACTIVE_DISPENSARY_ID,
     });
     const { socket, emitted } = makeSocket();
     const { redis, calls } = makeRedis();
@@ -294,6 +301,7 @@ describe('handleLocationUpdate — server-authoritative routing identity (H6)', 
     const { membership } = makeMembership({
       orderId: ACTIVE_ORDER_ID,
       customerId: ACTIVE_CUSTOMER_ID,
+      dispensaryId: ACTIVE_DISPENSARY_ID,
     });
     const { socket, emitted } = makeSocket();
     const { redis } = makeRedis({ throws: true });
@@ -313,6 +321,7 @@ describe('resolveActiveDelivery — TTL cache boundary', () => {
     const { membership, calls } = makeMembership({
       orderId: ACTIVE_ORDER_ID,
       customerId: ACTIVE_CUSTOMER_ID,
+      dispensaryId: ACTIVE_DISPENSARY_ID,
     });
     const cache: { entry: { value: ActiveDelivery | null; resolvedAtMs: number } | null } = {
       entry: null,

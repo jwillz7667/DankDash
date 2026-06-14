@@ -133,6 +133,7 @@ function item(args: {
       driverId: args.driverId ?? DRIVER_A,
       orderId: args.orderId === undefined ? ORDER_ID : args.orderId,
       customerId: null,
+      dispensaryId: null,
       lat: args.lat,
       lng: args.lng,
       accuracyMeters: null,
