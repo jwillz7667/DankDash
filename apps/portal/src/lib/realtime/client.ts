@@ -77,6 +77,27 @@ export interface OrderStatusChange {
 }
 
 /**
+ * Live driver GPS for an in-progress delivery. The realtime service fans
+ * this to the fulfilling dispensary's vendor room (alongside the
+ * customer) so the per-order map can animate the driver marker.
+ * `orderId` is non-null on the vendor leg (the order being delivered);
+ * consumers filter by it since one socket sees every active delivery for
+ * the dispensary.
+ */
+export interface DriverLocation {
+  readonly driverId: string;
+  readonly orderId: string | null;
+  readonly customerId: string | null;
+  readonly dispensaryId: string | null;
+  readonly lat: number;
+  readonly lng: number;
+  readonly accuracyMeters: number | null;
+  readonly speedMps: number | null;
+  readonly headingDeg: number | null;
+  readonly recordedAt: string;
+}
+
+/**
  * Map of server-side event names to their typed payloads. New events
  * added here must be mirrored on the realtime service's vendor
  * namespace; the portal otherwise silently drops them.
@@ -84,6 +105,7 @@ export interface OrderStatusChange {
 export interface RealtimeEventMap {
   'order:created': OrderSummary;
   'order:status_changed': OrderStatusChange;
+  'driver:location': DriverLocation;
 }
 
 export type RealtimeEventName = keyof RealtimeEventMap;

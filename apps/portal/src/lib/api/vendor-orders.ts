@@ -118,6 +118,24 @@ export interface VendorOrderRatings {
   readonly driver: number | null;
 }
 
+export interface GeoCoordinate {
+  readonly latitude: number;
+  readonly longitude: number;
+}
+
+/**
+ * Delivery geometry for the per-order live map. Mirrors the API's
+ * optional `delivery` block on `GET /v1/vendor/orders/:id` — present once
+ * the server can resolve it, absent on surfaces that reuse this shape.
+ * `driver` is the assigned driver's last-known GPS (null until assigned /
+ * first ping); the live `driver:location` stream supersedes it.
+ */
+export interface VendorOrderDeliveryGeo {
+  readonly pickup: GeoCoordinate;
+  readonly dropoff: GeoCoordinate;
+  readonly driver: GeoCoordinate | null;
+}
+
 export interface VendorOrderDetail {
   readonly id: string;
   readonly shortCode: string;
@@ -135,6 +153,7 @@ export interface VendorOrderDetail {
   readonly totalCents: number;
   readonly timestamps: VendorOrderTimestamps;
   readonly ratings: VendorOrderRatings;
+  readonly delivery?: VendorOrderDeliveryGeo;
 }
 
 export interface ListVendorQueueParams {

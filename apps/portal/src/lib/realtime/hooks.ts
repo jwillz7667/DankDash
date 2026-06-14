@@ -22,6 +22,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   RealtimeClient,
+  type DriverLocation,
   type OrderStatusChange,
   type OrderSummary,
   type RealtimeStatus,
@@ -106,4 +107,85 @@ export function useRealtimeOrders(options: UseRealtimeOrdersOptions): UseRealtim
   }, [url, token, dispensaryId, enabled, options.clientFactory]);
 
   return { status };
+}
+
+export interface UseDriverLocationOptions {
+  readonly url: string;
+  readonly token: string;
+  readonly dispensaryId?: string;
+  /**
+   * Only `driver:location` events whose `orderId` matches are surfaced —
+   * one vendor socket sees every active delivery for the dispensary, so
+   * the per-order map filters down to its own order.
+   */
+  readonly orderId: string;
+  readonly enabled?: boolean;
+  readonly clientFactory?: (opts: {
+    readonly url: string;
+    readonly token: string;
+    readonly dispensaryId?: string;
+  }) => RealtimeClient;
+}
+
+export interface UseDriverLocationResult {
+  readonly status: RealtimeStatus;
+  /** Latest matching driver location, or null until the first tick. */
+  readonly location: DriverLocation | null;
+}
+
+/**
+ * Subscribe to live driver GPS for one order. Owns the socket lifecycle
+ * (mirrors `useRealtimeOrders`) and keeps only the latest location for
+ * `orderId` in state — the per-order delivery map re-renders the marker
+ * off it. Returns `{ status, location }`; `location` is null until the
+ * first matching tick (the map paints pickup + dropoff from the SSR
+ * snapshot meanwhile).
+ */
+export function useDriverLocation(options: UseDriverLocationOptions): UseDriverLocationResult {
+  const { url, token, dispensaryId, orderId, enabled = true } = options;
+  const [status, setStatus] = useState<RealtimeStatus>('idle');
+  const [location, setLocation] = useState<DriverLocation | null>(null);
+  const orderIdRef = useRef(orderId);
+
+  useEffect(() => {
+    orderIdRef.current = orderId;
+  }, [orderId]);
+
+  useEffect(() => {
+    if (!enabled || token.length === 0) {
+      setStatus('idle');
+      return;
+    }
+
+    const client = options.clientFactory
+      ? options.clientFactory({
+          url,
+          token,
+          ...(dispensaryId !== undefined ? { dispensaryId } : {}),
+        })
+      : new RealtimeClient({
+          url,
+          token,
+          ...(dispensaryId !== undefined ? { dispensaryId } : {}),
+        });
+
+    const unsubStatus = client.onStatusChange((next) => {
+      setStatus(next);
+    });
+    client.connect();
+
+    const unsubLocation = client.on('driver:location', (payload) => {
+      if (payload.orderId === orderIdRef.current) {
+        setLocation(payload);
+      }
+    });
+
+    return () => {
+      unsubStatus();
+      unsubLocation();
+      client.disconnect();
+    };
+  }, [url, token, dispensaryId, enabled, options.clientFactory]);
+
+  return { status, location };
 }
