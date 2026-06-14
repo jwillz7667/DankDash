@@ -12,66 +12,73 @@
  *   - A session whose `mfaRequired` is true can only see `/two-factor`
  *     and the sign-out routes. Trying to reach anything else
  *     redirects to `/two-factor`.
- *   - A `RefreshAccessTokenError` on the session forces a re-login.
+ *   - A `RefreshAccessTokenError` on the session (the refresh token died)
+ *     clears the cookie and forces a clean re-login — INCLUDING on
+ *     `/login` itself, where it renders the form in place rather than
+ *     bouncing to `/dashboard`. See `routeRequest` for why that branch
+ *     order matters.
  *
- * The matcher excludes static assets so we don't pay the JWT decode
- * for every favicon hit.
+ * The routing graph is the pure `routeRequest` in
+ * `lib/auth/middleware-routing` (unit-tested without NextAuth); this
+ * file decodes the session and applies the decision to a NextResponse.
+ * The matcher excludes static assets so we don't pay the JWT decode for
+ * every favicon hit.
  */
 import { NextResponse } from 'next/server';
 import NextAuth from 'next-auth';
 import { resolveAuthConfig } from './lib/auth/config.js';
+import { routeRequest, SESSION_COOKIE_NAMES } from './lib/auth/middleware-routing.js';
 
 const { auth } = NextAuth(resolveAuthConfig());
 
-const PUBLIC_PATHS = new Set<string>(['/login']);
-const TWO_FACTOR_PATH = '/two-factor';
-
 export default auth((req) => {
   const { nextUrl } = req;
-  const session = req.auth;
   const path = nextUrl.pathname;
 
-  // Public assets and Auth.js's own routes — let them through.
+  // Auth.js owns its own routes — never gate them.
   if (path.startsWith('/api/auth/')) {
     return NextResponse.next();
   }
 
-  const isPublic = PUBLIC_PATHS.has(path);
-  const isTwoFactor = path === TWO_FACTOR_PATH;
+  const decision = routeRequest({ path, session: req.auth });
 
-  // Refresh-token death: clobber the session and force re-login.
-  if (session?.error === 'RefreshAccessTokenError') {
-    if (!isPublic) {
-      const loginUrl = new URL('/login', nextUrl);
-      loginUrl.searchParams.set('callbackUrl', nextUrl.pathname);
-      const response = NextResponse.redirect(loginUrl);
-      response.cookies.delete('authjs.session-token');
-      response.cookies.delete('__Secure-authjs.session-token');
-      return response;
+  let response: NextResponse;
+  if (decision.kind === 'next') {
+    response = NextResponse.next();
+  } else {
+    const target = new URL(decision.to, nextUrl);
+    if (decision.callbackUrl !== undefined) {
+      target.searchParams.set('callbackUrl', decision.callbackUrl);
     }
+    response = NextResponse.redirect(target);
   }
 
-  if (session && isPublic) {
-    // Already signed in; route home (or to /two-factor if outstanding).
-    const target = session.mfaRequired ? TWO_FACTOR_PATH : '/dashboard';
-    return NextResponse.redirect(new URL(target, nextUrl));
+  if (decision.clearSession === true) {
+    clearSessionCookies(response);
   }
 
-  if (!session) {
-    if (isPublic || isTwoFactor) {
-      return NextResponse.next();
-    }
-    const loginUrl = new URL('/login', nextUrl);
-    loginUrl.searchParams.set('callbackUrl', nextUrl.pathname);
-    return NextResponse.redirect(loginUrl);
-  }
-
-  if (session.mfaRequired && !isTwoFactor) {
-    return NextResponse.redirect(new URL(TWO_FACTOR_PATH, nextUrl));
-  }
-
-  return NextResponse.next();
+  return response;
 });
+
+/**
+ * Expire every session-cookie variant. The deletion Set-Cookie must
+ * carry `Secure` for the `__Secure-`-prefixed names — browsers reject a
+ * Set-Cookie for a `__Secure-` cookie that lacks the attribute, so a
+ * bare `cookies.delete(name)` silently fails to clear it (the original
+ * cause of the un-clearable dead-session redirect loop). We set an
+ * expired value with matching attributes instead.
+ */
+function clearSessionCookies(response: NextResponse): void {
+  for (const name of SESSION_COOKIE_NAMES) {
+    response.cookies.set(name, '', {
+      path: '/',
+      maxAge: 0,
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: name.startsWith('__Secure-'),
+    });
+  }
+}
 
 /**
  * Skip middleware on static assets and the Next.js internals; otherwise
