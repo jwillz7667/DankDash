@@ -99,3 +99,25 @@ describe('loadEnv partial-mode production guard', () => {
     expect(() => loadEnv({ source })).toThrow(EnvValidationError);
   });
 });
+
+describe('DISPATCH_RADIUS_MILES', () => {
+  it('defaults to the spec 10mi when unset', () => {
+    const env = loadEnv({ source: validSource({ NODE_ENV: 'development' }) });
+
+    expect(env.DISPATCH_RADIUS_MILES).toBe(10);
+  });
+
+  it('coerces a numeric string to a number', () => {
+    const env = loadEnv({
+      source: validSource({ NODE_ENV: 'development', DISPATCH_RADIUS_MILES: '30' }),
+    });
+
+    expect(env.DISPATCH_RADIUS_MILES).toBe(30);
+  });
+
+  it('rejects a non-positive radius', () => {
+    const source = validSource({ NODE_ENV: 'development', DISPATCH_RADIUS_MILES: '0' });
+
+    expect(() => loadEnv({ source })).toThrow(EnvValidationError);
+  });
+});

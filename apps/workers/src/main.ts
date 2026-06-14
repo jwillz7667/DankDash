@@ -45,6 +45,7 @@ import {
   createEncryptionServiceFromBase64,
   createPoolFromEnv,
 } from '@dankdash/db';
+import { DEFAULT_SCORING_PARAMS } from '@dankdash/dispatch';
 import { EtaService, MapboxClient } from '@dankdash/eta';
 import {
   HttpClient as MetrcHttpClient,
@@ -157,6 +158,13 @@ async function main(): Promise<void> {
     dispatchOffers,
     logger,
     openPoolEnabled: env.DISPATCH_OPEN_POOL_ENABLED,
+    // Override the spec-default 10mi radius with the configured value
+    // (miles → meters). Tunable per-env without a code deploy; the
+    // metro is far wider than 10mi.
+    scoringParams: {
+      ...DEFAULT_SCORING_PARAMS,
+      maxRadiusMeters: env.DISPATCH_RADIUS_MILES * 1609.344,
+    },
   });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
 

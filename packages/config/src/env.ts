@@ -193,6 +193,18 @@ export const EnvSchema = z
      * change is reversible without a code deploy.
      */
     DISPATCH_OPEN_POOL_ENABLED: booleanFromString.default(true),
+
+    /**
+     * Driver→dispensary dispatch radius in miles — the max distance a
+     * driver can be from the pickup and still be a candidate (legacy
+     * targeting) or see the order on the open-pool board. Default 10mi
+     * per spec §8.3, but the Twin Cities metro is far wider than that, so
+     * this is tunable without a code deploy. Read by the dispatch worker
+     * (overrides `DEFAULT_SCORING_PARAMS.maxRadiusMeters`) and the
+     * open-pool `available` query. Used for both the candidate filter and
+     * the distance-score normalisation.
+     */
+    DISPATCH_RADIUS_MILES: z.coerce.number().positive().default(10),
   })
   // `process.env` is necessarily polluted with PATH, HOME, npm_*, RAILWAY_*,
   // VSCODE_*, etc. The validator should care about *required* keys, not

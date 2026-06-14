@@ -67,7 +67,6 @@ import {
   type Database,
   type DocumentHasher,
 } from '@dankdash/db';
-import { DEFAULT_SCORING_PARAMS } from '@dankdash/dispatch';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -250,16 +249,21 @@ const driverDeliveriesReposFor: DriverDeliveriesScopedReposFactory = (
 
 const driverDeliveriesServiceProvider: FactoryProvider<DriverDeliveriesService> = {
   provide: DriverDeliveriesService,
-  inject: [DRIZZLE_DB, OrderTransitionService],
-  useFactory: (db: Database, orderTransitions: OrderTransitionService): DriverDeliveriesService =>
+  inject: [DRIZZLE_DB, OrderTransitionService, ConfigService],
+  useFactory: (
+    db: Database,
+    orderTransitions: OrderTransitionService,
+    config: ConfigService,
+  ): DriverDeliveriesService =>
     new DriverDeliveriesService(
       db,
       orderTransitions,
       driverDeliveriesReposFor,
-      // Same 10mi radius the dispatch scorer uses — single source of
-      // truth so the claimable pool and the legacy targeting agree on
-      // "near the dispensary".
-      DEFAULT_SCORING_PARAMS.maxRadiusMeters,
+      // The open-pool board uses the same configurable radius as the
+      // dispatch scorer (DISPATCH_RADIUS_MILES → meters) so the claimable
+      // pool and the legacy targeting agree on "near the dispensary".
+      // Falls back to the spec-default 10mi when unset.
+      (config.get<number>('DISPATCH_RADIUS_MILES') ?? 10) * 1609.344,
     ),
 };
 
