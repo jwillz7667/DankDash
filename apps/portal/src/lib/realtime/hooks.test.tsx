@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   RealtimeClient,
+  type DriverLocation,
   type OrderStatusChange,
   type OrderSummary,
   type RealtimeEventHandler,
@@ -10,7 +11,12 @@ import {
   type RealtimeStatus,
   type StatusListener,
 } from './client.js';
-import { useRealtimeOrders, type UseRealtimeOrdersOptions } from './hooks.js';
+import {
+  useDriverLocation,
+  useRealtimeOrders,
+  type UseDriverLocationOptions,
+  type UseRealtimeOrdersOptions,
+} from './hooks.js';
 
 class FakeClient extends RealtimeClient {
   public connectCalls = 0;
@@ -18,6 +24,7 @@ class FakeClient extends RealtimeClient {
   private statusListener: StatusListener | null = null;
   private orderCreatedHandler: RealtimeEventHandler<'order:created'> | null = null;
   private orderStatusHandler: RealtimeEventHandler<'order:status_changed'> | null = null;
+  private driverLocationHandler: RealtimeEventHandler<'driver:location'> | null = null;
 
   constructor() {
     // FakeClient bypasses the socket entirely — we never call super.connect(),
@@ -48,6 +55,12 @@ class FakeClient extends RealtimeClient {
         this.orderCreatedHandler = null;
       };
     }
+    if (event === 'driver:location') {
+      this.driverLocationHandler = handler as RealtimeEventHandler<'driver:location'>;
+      return () => {
+        this.driverLocationHandler = null;
+      };
+    }
     this.orderStatusHandler = handler as RealtimeEventHandler<'order:status_changed'>;
     return () => {
       this.orderStatusHandler = null;
@@ -62,6 +75,9 @@ class FakeClient extends RealtimeClient {
   }
   emitStatusChange(p: OrderStatusChange): void {
     this.orderStatusHandler?.(p);
+  }
+  emitLocation(p: DriverLocation): void {
+    this.driverLocationHandler?.(p);
   }
 }
 
@@ -199,5 +215,94 @@ describe('useRealtimeOrders', () => {
 
     rerender(<Harness options={{ url: 'wss://b', token: 'jwt-2', clientFactory: factory }} />);
     expect(factory).toHaveBeenCalledTimes(3);
+  });
+});
+
+function makeLocation(overrides: Partial<DriverLocation> = {}): DriverLocation {
+  return {
+    driverId: 'dr-1',
+    orderId: 'o-1',
+    customerId: 'c-1',
+    dispensaryId: 'd-1',
+    lat: 44.9778,
+    lng: -93.265,
+    accuracyMeters: 8,
+    speedMps: 5,
+    headingDeg: 90,
+    recordedAt: '2026-05-19T12:02:00Z',
+    ...overrides,
+  };
+}
+
+function LocationHarness(props: { readonly options: UseDriverLocationOptions }): ReactNode {
+  const { status, location } = useDriverLocation(props.options);
+  return (
+    <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="lat">{location === null ? 'none' : location.lat.toString()}</span>
+    </div>
+  );
+}
+
+describe('useDriverLocation', () => {
+  it('surfaces only locations matching the order id', () => {
+    const fake = new FakeClient();
+    const factory = vi.fn(() => fake);
+    const { getByTestId } = render(
+      <LocationHarness
+        options={{ url: 'wss://test', token: 'jwt-1', orderId: 'o-1', clientFactory: factory }}
+      />,
+    );
+
+    expect(fake.connectCalls).toBe(1);
+    expect(getByTestId('lat').textContent).toBe('none');
+
+    // A tick for a different order on the same dispensary socket is ignored.
+    act(() => {
+      fake.emitLocation(makeLocation({ orderId: 'o-2', lat: 12.34 }));
+    });
+    expect(getByTestId('lat').textContent).toBe('none');
+
+    // The matching order's tick lands, and a later one supersedes it.
+    act(() => {
+      fake.emitLocation(makeLocation({ orderId: 'o-1', lat: 44.9 }));
+    });
+    expect(getByTestId('lat').textContent).toBe('44.9');
+    act(() => {
+      fake.emitLocation(makeLocation({ orderId: 'o-1', lat: 45.1 }));
+    });
+    expect(getByTestId('lat').textContent).toBe('45.1');
+  });
+
+  it('does not connect when disabled (order not in a live status)', () => {
+    const fake = new FakeClient();
+    const factory = vi.fn(() => fake);
+    const { getByTestId } = render(
+      <LocationHarness
+        options={{
+          url: 'wss://test',
+          token: 'jwt-1',
+          orderId: 'o-1',
+          enabled: false,
+          clientFactory: factory,
+        }}
+      />,
+    );
+    expect(factory).not.toHaveBeenCalled();
+    expect(fake.connectCalls).toBe(0);
+    expect(getByTestId('status').textContent).toBe('idle');
+  });
+
+  it('tears down the socket on unmount', () => {
+    const fake = new FakeClient();
+    const factory = vi.fn(() => fake);
+    const { unmount } = render(
+      <LocationHarness
+        options={{ url: 'wss://test', token: 'jwt-1', orderId: 'o-1', clientFactory: factory }}
+      />,
+    );
+    expect(fake.connectCalls).toBe(1);
+    unmount();
+    expect(fake.disconnectCalls).toBe(1);
   });
 });

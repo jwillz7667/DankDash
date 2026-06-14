@@ -1,6 +1,11 @@
 import type { Socket } from 'socket.io-client';
 import { describe, expect, it, vi } from 'vitest';
-import { RealtimeClient, type OrderStatusChange, type OrderSummary } from './client.js';
+import {
+  RealtimeClient,
+  type DriverLocation,
+  type OrderStatusChange,
+  type OrderSummary,
+} from './client.js';
 
 type AnyListener = (...args: unknown[]) => void;
 
@@ -204,6 +209,36 @@ describe('RealtimeClient', () => {
 
     expect(created).toEqual([orderCreated]);
     expect(status).toEqual([orderStatus]);
+  });
+
+  it('delivers driver:location payloads to handlers', () => {
+    const fake = createFakeSocket();
+    const { factory } = buildFactory(fake);
+    const client = new RealtimeClient({
+      url: 'wss://rt.test',
+      token: 'jwt-1',
+      socketFactory: factory as unknown as RealtimeClient['factory'],
+    });
+    client.connect();
+
+    const locations: DriverLocation[] = [];
+    client.on('driver:location', (p) => locations.push(p));
+
+    const tick: DriverLocation = {
+      driverId: 'dr-1',
+      orderId: 'o-1',
+      customerId: 'c-1',
+      dispensaryId: 'd-1',
+      lat: 44.9778,
+      lng: -93.265,
+      accuracyMeters: 8,
+      speedMps: 5,
+      headingDeg: 90,
+      recordedAt: '2026-05-19T12:02:00Z',
+    };
+    fake.emit('driver:location', tick);
+
+    expect(locations).toEqual([tick]);
   });
 
   it('returns a disposer that detaches the handler', () => {
