@@ -1,9 +1,10 @@
 'use client';
 
 import { useDraggable } from '@dnd-kit/core';
-import { Clock, GripVertical, Package, User } from 'lucide-react';
+import { Clock, GripVertical, Navigation, Package, User } from 'lucide-react';
+import Link from 'next/link';
 import { type CSSProperties, type ReactNode } from 'react';
-import { type VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
+import { type OrderStatus, type VendorQueueOrderSummary } from '../../lib/api/vendor-orders.js';
 import { cn } from '../../lib/cn.js';
 import {
   ageTone,
@@ -62,6 +63,10 @@ export function QueueCard({
   const customerLabel = order.customerName ?? 'Guest customer';
   const itemLabel = order.itemCount === 1 ? '1 item' : `${order.itemCount.toString()} items`;
   const interactive = onSelect !== undefined;
+  // A driver has accepted and is heading to / from the store — surface a
+  // shortcut to the per-order live map. Rendered as a sibling of the card
+  // button (not a child) so it isn't an invalid <a>-inside-<button>.
+  const showTrack = TRACKABLE_STATUSES.has(order.status);
 
   const draggable = useDraggable({
     id: order.id,
@@ -81,42 +86,55 @@ export function QueueCard({
 
   if (interactive) {
     return (
-      <button
-        ref={draggable.setNodeRef}
-        type="button"
-        onClick={(): void => {
-          onSelect(order.id);
-        }}
-        className={cn(
-          'group relative w-full rounded-xl border border-outline bg-surface p-3 text-left shadow-sm',
-          'transition-colors duration-150 hover:border-outline-strong hover:shadow-md',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-muted',
-          isDraggable && 'cursor-grab touch-none active:cursor-grabbing',
-          draggable.isDragging && 'shadow-lg',
-        )}
-        style={dragStyle}
-        data-testid="queue-card"
-        data-order-id={order.id}
-        data-age-tone={tone}
-        data-draggable={isDraggable ? 'true' : 'false'}
-        data-dragging={draggable.isDragging ? 'true' : undefined}
-        {...draggable.listeners}
-        {...draggable.attributes}
-      >
-        {isDraggable && (
-          <GripVertical
-            aria-hidden="true"
-            className="absolute right-2 top-2 h-3.5 w-3.5 text-muted opacity-0 transition-opacity group-hover:opacity-100"
+      <div className="relative">
+        <button
+          ref={draggable.setNodeRef}
+          type="button"
+          onClick={(): void => {
+            onSelect(order.id);
+          }}
+          className={cn(
+            'group relative w-full rounded-xl border border-outline bg-surface p-3 text-left shadow-sm',
+            'transition-colors duration-150 hover:border-outline-strong hover:shadow-md',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-muted',
+            isDraggable && 'cursor-grab touch-none active:cursor-grabbing',
+            draggable.isDragging && 'shadow-lg',
+          )}
+          style={dragStyle}
+          data-testid="queue-card"
+          data-order-id={order.id}
+          data-age-tone={tone}
+          data-draggable={isDraggable ? 'true' : 'false'}
+          data-dragging={draggable.isDragging ? 'true' : undefined}
+          {...draggable.listeners}
+          {...draggable.attributes}
+        >
+          {isDraggable && (
+            <GripVertical
+              aria-hidden="true"
+              className="absolute right-2 top-2 h-3.5 w-3.5 text-muted opacity-0 transition-opacity group-hover:opacity-100"
+            />
+          )}
+          <CardContent
+            order={order}
+            customerLabel={customerLabel}
+            itemLabel={itemLabel}
+            ageLabel={ageLabel}
+            tone={tone}
           />
+        </button>
+        {showTrack && (
+          <Link
+            href={`/orders/${order.id}`}
+            className="absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-md bg-moss-50 px-2 py-1 text-2xs font-semibold text-moss-700 transition-colors hover:bg-moss-100"
+            data-testid="queue-card-track"
+            aria-label={`Track delivery for order ${order.shortCode}`}
+          >
+            <Navigation aria-hidden="true" className="h-3 w-3" />
+            Track
+          </Link>
         )}
-        <CardContent
-          order={order}
-          customerLabel={customerLabel}
-          itemLabel={itemLabel}
-          ageLabel={ageLabel}
-          tone={tone}
-        />
-      </button>
+      </div>
     );
   }
 
@@ -202,3 +220,11 @@ const AGE_TONE_TEXT: Record<AgeTone, string> = {
   warning: 'text-warning',
   danger: 'text-danger',
 };
+
+/**
+ * Statuses for which the card shows a "Track" shortcut to the per-order
+ * live map: a driver has accepted and is en route to the store (the only
+ * delivery statuses that still sit on the vendor board). Once the order
+ * is picked up it leaves the board, so later statuses never render a card.
+ */
+const TRACKABLE_STATUSES = new Set<OrderStatus>(['driver_assigned', 'en_route_pickup']);
