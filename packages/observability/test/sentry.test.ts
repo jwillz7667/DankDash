@@ -42,21 +42,36 @@ describe('initSentry', () => {
   });
 
   it('returns an initialized handle when DSN is set', async () => {
-    // A syntactically-valid DSN that points nowhere. Sentry's init
-    // accepts any well-formed URL; the transport will fail silently
-    // in the background, which is fine for this contract test.
+    // A syntactically-valid DSN that points nowhere. The `transport` test
+    // seam replaces the SDK's default HTTP transport with an in-memory no-op
+    // so this exercises the real `Sentry.init` path WITHOUT any outbound
+    // network call. A real flush is non-deterministic and, behind a
+    // TLS-intercepting egress proxy, rejects with a transport/cert error that
+    // has nothing to do with the code under test. The no-op transport records
+    // that `send` was invoked so the captureException → flush path is still
+    // genuinely exercised.
+    let sent = 0;
     const handle = initSentry({
       dsn: 'https://public@example.com/1',
       serviceName: 'api',
       serviceVersion: '1.2.3',
       environment: 'test',
       tracesSampleRate: 0,
+      transport: () => ({
+        send: () => {
+          sent += 1;
+          return Promise.resolve({ statusCode: 200 });
+        },
+        flush: () => Promise.resolve(true),
+      }),
     });
     expect(handle.initialized).toBe(true);
 
-    // captureException + close must not throw.
+    // captureException + close must not throw, and the queued event must
+    // reach the (no-op) transport rather than vanishing.
     handle.captureException(new Error('test'), { foo: 'bar' });
     const closed = await handle.close(50);
     expect(typeof closed).toBe('boolean');
+    expect(sent).toBeGreaterThan(0);
   });
 });

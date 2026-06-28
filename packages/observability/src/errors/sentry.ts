@@ -25,6 +25,15 @@ export interface SentryInitConfig {
   readonly environment: 'development' | 'test' | 'staging' | 'production';
   /** Defaults to 0.0 — OTel handles traces; Sentry is errors-only. */
   readonly tracesSampleRate?: number;
+  /**
+   * Test seam. When set, overrides the SDK's default HTTP transport so a
+   * unit test can exercise the real `Sentry.init` path without making any
+   * outbound network call (a real flush is non-deterministic and, behind a
+   * TLS-intercepting egress proxy, surfaces a transport rejection that has
+   * nothing to do with the code under test). Production never sets this —
+   * the SDK's default Node HTTP transport is used.
+   */
+  readonly transport?: Sentry.NodeOptions['transport'];
 }
 
 export interface SentryHandle {
@@ -56,6 +65,7 @@ export function initSentry(config: SentryInitConfig): SentryHandle {
     release: `dankdash-${config.serviceName}@${config.serviceVersion}`,
     serverName: `dankdash-${config.serviceName}`,
     tracesSampleRate: config.tracesSampleRate ?? 0,
+    ...(config.transport !== undefined ? { transport: config.transport } : {}),
     beforeSend(event) {
       const ctx = getRequestContext();
       if (ctx === undefined) return event;
