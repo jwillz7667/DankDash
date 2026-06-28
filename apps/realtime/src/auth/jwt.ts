@@ -7,11 +7,15 @@
  * module tree into the realtime pod's bundle just to verify a token.
  *
  * The verification rules are identical to apps/api/src/modules/auth/jwt
- * — RS256 only (algorithm-confusion guard), explicit issuer + audience,
- * 30s clock-skew tolerance. Drift between the two surfaces would be a
- * latent auth bypass, so the constants below mirror the API's defaults
- * and the test asserts that a token issued by the API verifies here.
+ * — a single asymmetric algorithm derived from the provisioned public key
+ * (RS256 for RSA, ES256/384/512 for EC; algorithm-confusion guard, since an
+ * HMAC family is never in the allow-list), explicit issuer + audience, 30s
+ * clock-skew tolerance. Drift between the two surfaces would be a latent
+ * auth bypass, so the constants below mirror the API's defaults, both sides
+ * derive the algorithm the same way from the same key, and the test asserts
+ * that a token issued by the API verifies here.
  */
+import { deriveJwsAlgorithm } from '@dankdash/config';
 import { AuthError, ConfigError } from '@dankdash/types';
 import jwt, { type Algorithm } from 'jsonwebtoken';
 
@@ -34,23 +38,26 @@ export interface RealtimeAccessTokenClaims {
 const DEFAULT_ISSUER = 'dankdash';
 const DEFAULT_AUDIENCE = 'dankdash.app';
 const CLOCK_SKEW_SECONDS = 30;
-const ALGORITHM: Algorithm = 'RS256';
 
 export class RealtimeJwtVerifier {
   private readonly publicKey: string;
   private readonly issuer: string;
   private readonly audience: string;
+  private readonly algorithm: Algorithm;
 
   constructor(config: RealtimeJwtConfig) {
     this.publicKey = config.publicKeyPem;
     this.issuer = config.issuer ?? DEFAULT_ISSUER;
     this.audience = config.audience ?? DEFAULT_AUDIENCE;
+    // Same derivation the API signer uses, applied to the public half — so
+    // an EC-keyed deployment verifies ES256 here exactly as the API signs it.
+    this.algorithm = deriveJwsAlgorithm(this.publicKey);
   }
 
   verify(token: string): RealtimeAccessTokenClaims {
     try {
       const decoded = jwt.verify(token, this.publicKey, {
-        algorithms: [ALGORITHM],
+        algorithms: [this.algorithm],
         issuer: this.issuer,
         audience: this.audience,
         clockTolerance: CLOCK_SKEW_SECONDS,
@@ -100,13 +107,15 @@ export class RealtimeJwtVerifier {
  * Decodes a base64-encoded PEM into the raw PEM string the verifier
  * expects. Errors carry context so a bad env var produces a useful
  * boot failure rather than a cryptic "PEM_read_bio" deep in jsonwebtoken.
+ * Accepts either an SPKI public key (`BEGIN PUBLIC KEY`, the format the API
+ * exports for both RSA and EC) or a legacy PKCS#1 RSA public key.
  */
 export function decodePublicKey(base64Pem: string): string {
   const pem = Buffer.from(base64Pem, 'base64').toString('utf-8');
   if (!pem.includes('BEGIN PUBLIC KEY') && !pem.includes('BEGIN RSA PUBLIC KEY')) {
     throw new ConfigError(
       'CONFIG_INVALID',
-      'JWT_PUBLIC_KEY_BASE64 must decode to a PEM-formatted RSA public key',
+      'JWT_PUBLIC_KEY_BASE64 must decode to a PEM-formatted public key (SPKI or RSA)',
     );
   }
   return pem;
