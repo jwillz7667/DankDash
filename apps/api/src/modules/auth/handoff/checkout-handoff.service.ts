@@ -36,6 +36,7 @@
  * existence-fail (matches the read surfaces in /v1/orders + /v1/addresses).
  */
 import { randomUUID } from 'node:crypto';
+import { deriveJwsAlgorithm } from '@dankdash/config';
 import { type CartsRepository, type Database, type UserAddressesRepository } from '@dankdash/db';
 import { AuthError, NotFoundError } from '@dankdash/types';
 import { Injectable, Logger } from '@nestjs/common';
@@ -75,7 +76,6 @@ export interface CheckoutHandoffClaims {
 const DEFAULT_ISSUER = 'dankdash';
 const DEFAULT_AUDIENCE = 'dankdash.checkout';
 const CLOCK_SKEW_SECONDS = 30;
-const ALGORITHM: Algorithm = 'RS256';
 const REDIS_JTI_PREFIX = 'auth:handoff:jti:';
 
 @Injectable()
@@ -89,6 +89,7 @@ export class CheckoutHandoffService {
   private readonly audience: string;
   private readonly clock: () => Date;
   private readonly jtiFactory: () => string;
+  private readonly algorithm: Algorithm;
 
   constructor(
     private readonly db: Database,
@@ -105,6 +106,9 @@ export class CheckoutHandoffService {
     this.audience = config.audience ?? DEFAULT_AUDIENCE;
     this.clock = config.clock ?? ((): Date => new Date());
     this.jtiFactory = config.jtiFactory ?? ((): string => randomUUID());
+    // Asymmetric algorithm derived from the (RSA or EC) key the deployment
+    // provisioned — the same key material the access-token issuer uses.
+    this.algorithm = deriveJwsAlgorithm(this.privateKey);
   }
 
   async issue(
@@ -131,7 +135,7 @@ export class CheckoutHandoffService {
     const expiresAt = new Date(now.getTime() + this.ttl * 1000);
 
     const options: SignOptions = {
-      algorithm: ALGORITHM,
+      algorithm: this.algorithm,
       expiresIn: this.ttl,
       issuer: this.issuer,
       audience: this.audience,
@@ -198,7 +202,7 @@ export class CheckoutHandoffService {
 
   private verifyToken(token: string): CheckoutHandoffClaims {
     const options: VerifyOptions = {
-      algorithms: [ALGORITHM],
+      algorithms: [this.algorithm],
       issuer: this.issuer,
       audience: this.audience,
       clockTolerance: CLOCK_SKEW_SECONDS,

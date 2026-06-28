@@ -1,12 +1,19 @@
 /**
  * Access-token issuer / verifier.
  *
- * Algorithm: RS256 (asymmetric) so future services (realtime, workers,
- * external partners) can verify tokens with just the public key without
- * being able to mint them. The key pair is held in env as base64 PEM:
+ * Algorithm: asymmetric, derived from the provisioned key type (RS256 for an
+ * RSA keypair, ES256/384/512 for EC, EdDSA for Ed25519 — see
+ * `deriveJwsAlgorithm` in @dankdash/config) so future services (realtime,
+ * workers, external partners) can verify tokens with just the public key
+ * without being able to mint them. The key pair is held in env as base64 PEM:
  *
  *   JWT_PRIVATE_KEY_BASE64  →  signs new tokens (api only)
  *   JWT_PUBLIC_KEY_BASE64   →  verifies tokens (every service)
+ *
+ * The algorithm is resolved once at construction from the key itself rather
+ * than hard-coded, so a deployment provisioned with an EC keypair (a valid,
+ * common JWT choice) works instead of throwing `"alg" parameter for "ec" key
+ * type must be one of: ES256, ...` on every token operation.
  *
  * Claims (matches spec §4.2):
  *   sub  — user id (UUIDv7)
@@ -17,10 +24,13 @@
  *   kid  — key id, prepares for rotation by indexing future keys
  *   iat / exp — standard
  *
- * Verification is strict: explicit `algorithms: ['RS256']` to prevent
- * algorithm-confusion attacks (HS256 forgery using the public key as the
- * HMAC secret is the classic example). Clock skew tolerance is 30s.
+ * Verification is strict: `algorithms` is pinned to the SINGLE asymmetric
+ * algorithm that matches the key, which preserves the algorithm-confusion
+ * defence (an HS256 forgery using the public key as the HMAC secret is never
+ * accepted because no HMAC algorithm is ever in the allow-list). Clock skew
+ * tolerance is 30s.
  */
+import { deriveJwsAlgorithm } from '@dankdash/config';
 import { AuthError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
 import jwt, { type Algorithm, type SignOptions } from 'jsonwebtoken';
@@ -55,7 +65,6 @@ const DEFAULT_ISSUER = 'dankdash';
 const DEFAULT_AUDIENCE = 'dankdash.app';
 const DEFAULT_KEY_ID = 'v1';
 const CLOCK_SKEW_SECONDS = 30;
-const ALGORITHM: Algorithm = 'RS256';
 
 @Injectable()
 export class JwtService {
@@ -65,6 +74,7 @@ export class JwtService {
   private readonly issuer: string;
   private readonly audience: string;
   private readonly keyId: string;
+  private readonly algorithm: Algorithm;
 
   constructor(config: JwtServiceConfig) {
     this.privateKey = config.privateKeyPem;
@@ -73,11 +83,14 @@ export class JwtService {
     this.issuer = config.issuer ?? DEFAULT_ISSUER;
     this.audience = config.audience ?? DEFAULT_AUDIENCE;
     this.keyId = config.keyId ?? DEFAULT_KEY_ID;
+    // Resolve once at construction from the private key. Throws ConfigError
+    // (fail-fast at boot) if the key is malformed or an unsupported type.
+    this.algorithm = deriveJwsAlgorithm(this.privateKey);
   }
 
   signAccessToken(input: IssueAccessTokenInput): string {
     const options: SignOptions = {
-      algorithm: ALGORITHM,
+      algorithm: this.algorithm,
       expiresIn: this.accessTtl,
       issuer: this.issuer,
       audience: this.audience,
@@ -96,7 +109,7 @@ export class JwtService {
   verifyAccessToken(token: string): AccessTokenClaims {
     try {
       const decoded = jwt.verify(token, this.publicKey, {
-        algorithms: [ALGORITHM],
+        algorithms: [this.algorithm],
         issuer: this.issuer,
         audience: this.audience,
         clockTolerance: CLOCK_SKEW_SECONDS,
