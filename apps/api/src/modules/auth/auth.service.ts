@@ -64,6 +64,16 @@ export interface AuthRequestContext {
   readonly deviceId?: string;
 }
 
+/**
+ * The credential a checkout hand-off exchange yields: a bare access token
+ * (no refresh half) plus its lifetime and the role it was minted for.
+ */
+export interface CheckoutSession {
+  readonly accessToken: string;
+  readonly expiresInSeconds: number;
+  readonly role: string;
+}
+
 export type RegisterInput = RegisterRequestDto;
 
 export type LoginInput = LoginRequestDto;
@@ -221,6 +231,44 @@ export class AuthService {
 
   async disableMfa(userId: string, currentCode: string): Promise<void> {
     await this.mfa.disable({ userId, currentCode });
+  }
+
+  /**
+   * Mints a short-lived access-token session for the Apple §10.4 checkout
+   * hand-off. The one-time handoff token has already been verified and
+   * atomically consumed by `CheckoutHandoffService.consume` before this is
+   * called; here we only turn the resolved `userId` into a normal
+   * `dankdash.app` access token so checkout-web can read the cart and place
+   * the order on the user's behalf.
+   *
+   * Unlike login this mints NO refresh token and creates NO refresh-token
+   * family: the checkout surface is a transient browser hop (minutes), not a
+   * long-lived device session, so the single access token is the whole
+   * credential and there is nothing to rotate. The `sid` is a fresh UUIDv7 —
+   * `JwtAuthGuard` verifies the JWT without a DB session lookup, so an
+   * unbacked session id is correct here.
+   */
+  async issueCheckoutSession(userId: string): Promise<CheckoutSession> {
+    const user = await this.users.findById(userId);
+    if (user === null) {
+      throw new AuthError(
+        'TOKEN_INVALID',
+        'checkout hand-off references a user that no longer exists',
+      );
+    }
+    if (user.deletedAt !== null || user.status === 'banned' || user.status === 'suspended') {
+      throw new AuthError('TOKEN_INVALID', 'account is not eligible to check out');
+    }
+    const accessToken = this.jwt.signAccessToken({
+      userId: user.id,
+      sessionId: uuidv7(),
+      role: user.role,
+    });
+    return {
+      accessToken,
+      expiresInSeconds: this.accessTtl,
+      role: user.role,
+    };
   }
 
   private async issueTokens(user: User, ctx: AuthRequestContext): Promise<TokenPair> {

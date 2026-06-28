@@ -574,3 +574,39 @@ describe('AuthService MFA pass-through', () => {
     );
   });
 });
+
+describe('AuthService.issueCheckoutSession', () => {
+  it('mints a verifiable access token for a live user (no refresh half)', async () => {
+    const rig = makeRig();
+    rig.users.rows.set('user_co', makeUser({ id: 'user_co', role: 'customer', status: 'active' }));
+
+    const session = await rig.service.issueCheckoutSession('user_co');
+
+    // A bare session — access token + lifetime + role, no refresh half.
+    expect(Object.keys(session).sort()).toEqual(['accessToken', 'expiresInSeconds', 'role']);
+    expect(session.role).toBe('customer');
+    expect(session.expiresInSeconds).toBe(ACCESS_TTL_SECONDS);
+    // The token verifies through the same JwtService the guard uses, carries
+    // the user's id + role, and a fresh (unbacked) session id.
+    const claims = rig.jwt.verifyAccessToken(session.accessToken);
+    expect(claims.sub).toBe('user_co');
+    expect(claims.role).toBe('customer');
+    expect(claims.sid).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+
+  it('rejects a hand-off that references a missing user', async () => {
+    const rig = makeRig();
+    await expect(rig.service.issueCheckoutSession('nope')).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it('rejects a banned, suspended, or soft-deleted account', async () => {
+    const rig = makeRig();
+    rig.users.rows.set('u_ban', makeUser({ id: 'u_ban', status: 'banned' }));
+    rig.users.rows.set('u_susp', makeUser({ id: 'u_susp', status: 'suspended' }));
+    rig.users.rows.set('u_del', makeUser({ id: 'u_del', deletedAt: new Date() }));
+
+    await expect(rig.service.issueCheckoutSession('u_ban')).rejects.toBeInstanceOf(AuthError);
+    await expect(rig.service.issueCheckoutSession('u_susp')).rejects.toBeInstanceOf(AuthError);
+    await expect(rig.service.issueCheckoutSession('u_del')).rejects.toBeInstanceOf(AuthError);
+  });
+});

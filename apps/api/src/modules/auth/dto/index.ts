@@ -2,7 +2,11 @@ export {
   CheckoutHandoffRequestDto,
   CheckoutHandoffRequestSchema,
   CheckoutHandoffResponseSchema,
+  CheckoutHandoffExchangeRequestDto,
+  CheckoutHandoffExchangeRequestSchema,
+  CheckoutHandoffExchangeResponseSchema,
   type CheckoutHandoffResponse,
+  type CheckoutHandoffExchangeResponse,
 } from './checkout-handoff.dto.js';
 export {
   LoginRequestDto,

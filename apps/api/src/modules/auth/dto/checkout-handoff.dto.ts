@@ -35,3 +35,40 @@ export const CheckoutHandoffResponseSchema = z
   })
   .strict();
 export type CheckoutHandoffResponse = z.infer<typeof CheckoutHandoffResponseSchema>;
+
+/**
+ * POST /v1/auth/checkout-handoff/exchange
+ *
+ *   body     { handoff }   — the single-shot JWT from the iOS hand-off
+ *   response { accessToken, tokenType, expiresInSeconds, cartId,
+ *              deliveryAddressId }
+ *
+ * checkout-web (the Apple §10.4 web surface) calls this server-side the
+ * moment Safari opens `${CHECKOUT_BASE_URL}/checkout?handoff=<jwt>`. The
+ * endpoint is `@Public` because the hand-off token IS the credential; it is
+ * verified + atomically consumed (one-shot via the `jti` Redis claim) by
+ * `CheckoutHandoffService.consume`. The minted `accessToken` is a normal
+ * `aud: dankdash.app` access token — a different audience from the
+ * hand-off's `dankdash.checkout`, so the two surfaces never cross-validate —
+ * which checkout-web then presents to `GET /v1/carts/:id` and
+ * `POST /v1/carts/:id/checkout`.
+ */
+export const CheckoutHandoffExchangeRequestSchema = z
+  .object({
+    handoff: z.string().min(1),
+  })
+  .strict();
+export class CheckoutHandoffExchangeRequestDto extends createZodDto(
+  CheckoutHandoffExchangeRequestSchema,
+) {}
+
+export const CheckoutHandoffExchangeResponseSchema = z
+  .object({
+    accessToken: z.string(),
+    tokenType: z.literal('Bearer'),
+    expiresInSeconds: z.number().int().positive(),
+    cartId: z.string().uuid(),
+    deliveryAddressId: z.string().uuid(),
+  })
+  .strict();
+export type CheckoutHandoffExchangeResponse = z.infer<typeof CheckoutHandoffExchangeResponseSchema>;

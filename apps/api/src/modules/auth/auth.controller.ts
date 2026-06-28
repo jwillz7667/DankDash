@@ -39,6 +39,7 @@ import { AuthService, type AuthRequestContext } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { Roles } from './decorators/roles.decorator.js';
 import {
+  CheckoutHandoffExchangeRequestDto,
   CheckoutHandoffRequestDto,
   LoginRequestDto,
   LogoutRequestDto,
@@ -47,6 +48,7 @@ import {
   MfaVerifyRequestDto,
   RefreshRequestDto,
   RegisterRequestDto,
+  type CheckoutHandoffExchangeResponse,
   type CheckoutHandoffResponse,
   type LoginResponse,
   type MfaSetupResponse,
@@ -162,6 +164,31 @@ export class AuthController {
     @Body() body: CheckoutHandoffRequestDto,
   ): Promise<CheckoutHandoffResponse> {
     return this.checkoutHandoff.issue(user.userId, body.cartId, body.deliveryAddressId);
+  }
+
+  /**
+   * Apple §10.4 checkout-web exchange. `@Public`: the single-shot hand-off
+   * token IS the credential — `consume` verifies + atomically claims its
+   * `jti` (second exchange → 401 TOKEN_REVOKED) before a session is minted.
+   * Rate-limited per-IP because it is unauthenticated; a real flow exchanges
+   * exactly once per checkout.
+   */
+  @Public()
+  @RateLimit({ name: 'auth-handoff-exchange-ip', tracker: 'ip', limit: 30, windowMs: MINUTE_MS })
+  @Post('checkout-handoff/exchange')
+  @HttpCode(HttpStatus.OK)
+  async exchangeCheckoutHandoff(
+    @Body() body: CheckoutHandoffExchangeRequestDto,
+  ): Promise<CheckoutHandoffExchangeResponse> {
+    const claims = await this.checkoutHandoff.consume(body.handoff);
+    const session = await this.auth.issueCheckoutSession(claims.userId);
+    return {
+      accessToken: session.accessToken,
+      tokenType: 'Bearer',
+      expiresInSeconds: session.expiresInSeconds,
+      cartId: claims.cartId,
+      deliveryAddressId: claims.deliveryAddressId,
+    };
   }
 }
 
