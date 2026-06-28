@@ -60,6 +60,7 @@ const config = {
         'eta',
         'metrc',
         'notifications',
+        'observability',
         'config',
         'types',
         'ui',
