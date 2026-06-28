@@ -17,15 +17,28 @@
  *
  * The webhook controller is also in DriversModule for the same reason
  * — see `apps/api/src/modules/drivers/controllers/veriff-webhook.controller.ts`.
+ *
+ * When `ENABLE_VERIFF=false` the factory yields a disabled proxy in place of
+ * the real client so the DI graph is satisfied without requiring the
+ * `VERIFF_*` credentials at module construction (mirroring the Persona
+ * module). Any actual call on the proxy throws `FeatureDisabledError` →
+ * `503 FEATURE_DISABLED`. This does NOT relax the "ID scan at handoff is
+ * mandatory and non-bypassable" rule: with Veriff off, no scan can succeed,
+ * so the `delivered` state stays unreachable — the feature is unavailable,
+ * never bypassed.
  */
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createDisabledFeatureProxy } from '../../common/disabled-feature.proxy.js';
 import { VeriffClient, type VeriffClientConfig } from './veriff.client.js';
 
 const veriffClientProvider: FactoryProvider<VeriffClient> = {
   provide: VeriffClient,
   inject: [ConfigService],
   useFactory: (config: ConfigService): VeriffClient => {
+    if (!config.getOrThrow<boolean>('ENABLE_VERIFF')) {
+      return createDisabledFeatureProxy<VeriffClient>('veriff');
+    }
     // exactOptionalPropertyTypes: build the object then attach apiBaseUrl
     // only when actually present, so we never assign `undefined` to an
     // optional readonly slot.
