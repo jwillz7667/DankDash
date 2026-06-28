@@ -44,11 +44,37 @@ const { privateKey: apnsPrivateKey } = generateKeyPairSync('ec', {
   namedCurve: 'prime256v1',
 });
 
-const DEFAULTS: Record<string, string> = {
-  NODE_ENV: 'test',
-  LOG_LEVEL: 'fatal',
+// DATABASE_URL / REDIS_URL are provided by the testcontainers that
+// `test/global-setup.ts` boots once per run — it force-assigns them BEFORE
+// the workers fork, so the values below are only fallbacks for pure-unit
+// runs that opt out of the containers (VITEST_SKIP_TESTCONTAINER=1). These
+// stay `??=` so a container URL always wins.
+const CONTAINER_PROVIDED: Record<string, string> = {
   DATABASE_URL: 'postgres://test:test@localhost:5432/test',
   REDIS_URL: 'redis://localhost:6379',
+};
+for (const [key, value] of Object.entries(CONTAINER_PROVIDED)) {
+  process.env[key] ??= value;
+}
+
+// Everything else is a deterministic, clearly-fake TEST value that MUST take
+// precedence over anything the host runtime injected into `process.env`.
+//
+// This matters because the remote execution environment seeds real
+// deployment secrets — a real DATABASE_URL / REDIS_URL, an EC JWT keypair,
+// and `ENABLE_*=false` flags — into the process. A plain `??=` would let
+// those leak into the suite and (a) point integration tests at production
+// infra, (b) make the RS-vs-ES signing algorithm depend on the host's key
+// type, and (c) disable the very providers the payment/KYC suites exercise
+// (`ENABLE_AEROPAY=false` → checkout/refund/webhook routes 503
+// `FEATURE_DISABLED`). Force-assigning (`=`, not `??=`) keeps the suite
+// hermetic: the only inputs from the host are the two container URLs above.
+const FORCED: Record<string, string> = {
+  NODE_ENV: 'test',
+  LOG_LEVEL: 'fatal',
+  // Throwaway RSA keypair → the algorithm-aware JwtService derives RS256 and
+  // every JWT surface (signTokenFor, jwt-tamper's direct jwt.sign, the guard)
+  // stays consistent on one algorithm regardless of the host's JWT key type.
   JWT_PRIVATE_KEY_BASE64: Buffer.from(
     privateKey.export({ type: 'pkcs1', format: 'pem' }).toString(),
   ).toString('base64'),
@@ -83,23 +109,26 @@ const DEFAULTS: Record<string, string> = {
   APNS_PRIVATE_KEY_BASE64: Buffer.from(
     apnsPrivateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   ).toString('base64'),
-  // Twilio and Resend default ON in the env schema, so every suite that
-  // boots AppModule would build a real client from these fake creds. The
-  // Twilio SDK validates the account SID in its constructor and throws
-  // "accountSid must start with AC" at boot; Resend would later attempt
-  // live HTTP on dispatch. No test exercises the SMS/email providers
-  // (they are never overridden), so disable both — NotificationsModule
-  // then wires NullNotificationProvider and the DI graph boots clean.
-  // APNs has no flag (always-on by design) and is satisfied above with a
-  // real EC P-256 key; Aeropay stays ON because the payment suites need
-  // the real providers with only AEROPAY_CLIENT faked via an override.
+  // Feature flags pinned to the intended TEST posture (the env schema
+  // defaults AEROPAY/PERSONA/VERIFF on and METRC off; CI inherits those).
+  // Aeropay/Persona/Veriff stay ON because the payment / KYC / driver suites
+  // exercise the real providers (with only the *_CLIENT/_API creds faked
+  // above). Twilio and Resend are forced OFF: the Twilio SDK validates the
+  // account SID in its constructor and throws "accountSid must start with AC"
+  // at boot, and Resend would attempt live HTTP on dispatch — no test
+  // exercises SMS/email, so NotificationsModule wires NullNotificationProvider
+  // and the DI graph boots clean. AEROPAY_LIVE OFF so no real ACH is moved.
+  ENABLE_AEROPAY: 'true',
+  ENABLE_PERSONA: 'true',
+  ENABLE_VERIFF: 'true',
+  ENABLE_METRC: 'false',
   ENABLE_TWILIO: 'false',
   ENABLE_RESEND: 'false',
   AEROPAY_LIVE: 'false',
 };
 
-for (const [key, value] of Object.entries(DEFAULTS)) {
-  process.env[key] ??= value;
+for (const [key, value] of Object.entries(FORCED)) {
+  process.env[key] = value;
 }
 
 // Single-fork safety net: never let one test file's fake clock survive
