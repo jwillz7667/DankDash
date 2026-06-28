@@ -14,6 +14,79 @@ A one-paragraph entry per completed phase. Newest first. Source of truth for
 
 ---
 
+## Integration & Wiring Audit — green-light restoration, JWT key-type fix, checkout-web
+
+_Status: shipped. Branch: `claude/multi-app-architecture-audit-pd5oun` (off `main`)._
+
+An audit-and-wire pass over the whole multi-app architecture: restore a clean
+green build, fix the real cross-service issues an adversarially-verified audit
+surfaced, and close the headline functional gap — the Apple §10.4 consumer
+checkout web. What landed:
+
+- **Algorithm-aware JWT** (`packages/config/src/jwt-algorithm.ts`) — the
+  access-token + checkout-handoff issuers and the realtime verifier hard-coded
+  RS256, so a deployment provisioned with an EC keypair (which this
+  environment's secrets are) threw `"alg" parameter for "ec" key type must be
+one of: ES256, ...` on every token operation — authentication was broken for
+  the configured keys. `deriveJwsAlgorithm` now resolves the single asymmetric
+  algorithm from the key (RS256 for RSA, ES256/384/512 for EC) at
+  construction, applied consistently in `apps/api` (`JwtService`,
+  `CheckoutHandoffService`) and `apps/realtime` (`RealtimeJwtVerifier`); verify
+  pins `algorithms` to that one algorithm, preserving the algorithm-confusion
+  defence.
+- **Hermetic api test harness** — the remote runtime injects real deployment
+  secrets (a production `DATABASE_URL`/`REDIS_URL`, an EC JWT keypair,
+  `ENABLE_*=false` flags) into `process.env`; the integration harness's `??=`
+  let them leak, so the suite hit production Redis (`ENOTFOUND`), failed
+  RS-vs-ES signing, and 503'd the payment routes (`ENABLE_AEROPAY=false`).
+  `test/global-setup.ts` now boots a Redis testcontainer alongside Postgres and
+  force-assigns `REDIS_URL`; `env-setup.ts` force-assigns the deterministic
+  test secrets + feature flags over any injected value. **104 → 0** integration
+  failures; hermetic regardless of host env; CI unaffected.
+- **Sentry test seam** (`packages/observability`) — the DSN-set test made a
+  real network flush on `close()` that rejected under a TLS-intercepting egress
+  proxy. Added an optional `transport` seam so the test exercises the real init
+  path with an in-memory transport (zero egress) and asserts the event lands.
+- **Wiring-audit fixes** — an adversarially-verified audit (8 dimensions, 24
+  false-positives refuted) confirmed the architecture is otherwise correctly
+  wired (webhooks verified, vendor clients gated, order states synchronized,
+  BullMQ producer/consumer queue names matched). Real fixes: `ENABLE_VERIFF`
+  now gates the Veriff client through the disabled-feature proxy (was an
+  unconditional `getOrThrow` that diverged from Persona and would crash a
+  flag-off boot); the `order_status` drift-guard test that
+  `packages/orders/states.ts` referenced but never existed now exists
+  (`apps/api/test/integration/orders/order-status-mirror.test.ts`,
+  cross-checking `ORDER_STATES` / the DB enum / the API DTO); `.env.example` +
+  `.env.production.example` gained the documented-but-missing keys
+  (`DOCUMENT_HASH_PEPPER_BASE64` — strictly required — `PAYMENTS_BYPASS_ENABLED`,
+  `DISPATCH_RADIUS_MILES`, `ENABLE_TWILIO`/`ENABLE_RESEND`).
+- **Checkout hand-off exchange** (`POST /v1/auth/checkout-handoff/exchange`) —
+  the missing leg of the §10.4 flow. Public endpoint that consumes the one-shot
+  hand-off token (verify + atomic `jti` claim) and mints a bare `dankdash.app`
+  access-token session via `AuthService.issueCheckoutSession`, returning it
+  with the validated `{ cartId, deliveryAddressId }`. Unit-tested eligibility
+  branches + an end-to-end integration test (round-trip, one-shot revocation,
+  bad-token rejection).
+- **`apps/checkout-web`** — replaced the stub with the real Next.js 15
+  App Router app the iOS Safari hand-off lands on. `/checkout?handoff=`
+  exchanges the token in a Server Action and stores the session in an httpOnly
+  cookie (never client-side, idempotent on the cookie so a reload can't
+  re-consume the one-shot token); `/checkout/review` server-fetches the cart +
+  server-authoritative compliance preview, renders the order + MN statutory
+  limit bars, collects the mandatory $2-floor driver tip + delivery note, and
+  places the order via `POST /v1/carts/:id/checkout`; `/checkout/confirmation`
+  deep-links back into the app (`dankdash://order/complete?orderId=`);
+  `/checkout/error` covers the typed end states. All API calls are server-side;
+  the access token never reaches the browser. Pure helpers + session
+  (de)serialization + the API client are unit-tested (31 tests); typecheck,
+  lint, and `next build` all pass.
+
+Definition-of-Done verification: `pnpm typecheck` 41/41, `pnpm lint` 24/24,
+`pnpm test` green across all packages (api integration suite hermetic on a
+Postgres + Redis testcontainer; checkout-web 31/31; observability 42/42).
+
+---
+
 ## Phase 23 — Final integration: production env-check CLI, `.env.production.example` template, Phase 20 typecheck sweep-fix
 
 _Status: shipped. Branch: `phase/23-final-integration-env-check` (chained off `phase/22-prelaunch-runbooks-legal-launch-checklist`)._
