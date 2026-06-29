@@ -27,8 +27,9 @@
  */
 import { DispensariesRepository, type Dispensary } from '@dankdash/db';
 import { type DispensaryHours as HoursSchedule } from '@dankdash/dispensaries';
-import { NotFoundError } from '@dankdash/types';
+import { NotFoundError, ValidationError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
+import { isBrandImageKeyOwnedBy } from './brand-image-keys.js';
 import type { PatchVendorSettingsRequest, VendorSettingsResponse } from './dto/index.js';
 import type { VendorContext } from '../../listings/vendor/vendor-context.types.js';
 
@@ -59,6 +60,15 @@ export class VendorSettingsService {
       throw new NotFoundError('Dispensary', ctx.dispensaryId);
     }
 
+    // Re-validate brand image keys server-side. The presigned-upload minter
+    // only ever produces keys under this dispensary's own prefix, but the
+    // PATCH is a separate request — without this check a forged body could
+    // bind the storefront to another tenant's (or the admin catalog's)
+    // object, and the consumer app would render it. `null` clears the asset
+    // and is always allowed.
+    this.assertBrandImageKeyOwned(ctx.dispensaryId, 'heroImageKey', body.heroImageKey);
+    this.assertBrandImageKeyOwned(ctx.dispensaryId, 'logoImageKey', body.logoImageKey);
+
     // Map the patch payload onto the column-name shape `repo.update`
     // expects. `hours` lives in the `hoursJson` column.
     const patch: Parameters<DispensariesRepository['update']>[1] = {};
@@ -75,6 +85,26 @@ export class VendorSettingsService {
     const updated = await repo.update(ctx.dispensaryId, patch);
     if (updated === null) throw new NotFoundError('Dispensary', ctx.dispensaryId);
     return project(updated);
+  }
+
+  /**
+   * Reject a brand image key that is not owned by this dispensary. `undefined`
+   * (field absent from the patch) and `null` (explicit clear) both pass — only
+   * a non-empty key pointing outside the tenant's prefix is a 422.
+   */
+  private assertBrandImageKeyOwned(
+    dispensaryId: string,
+    field: 'heroImageKey' | 'logoImageKey',
+    key: string | null | undefined,
+  ): void {
+    if (key === undefined || key === null) return;
+    if (!isBrandImageKeyOwnedBy(dispensaryId, key)) {
+      throw new ValidationError(`${field} must reference an object uploaded under this dispensary`, {
+        dispensaryId,
+        field,
+        key,
+      });
+    }
   }
 }
 
