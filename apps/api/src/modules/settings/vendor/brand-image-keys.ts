@@ -32,6 +32,21 @@ export function dispensaryAssetRoot(dispensaryId: string): string {
   return `dispensaries/${dispensaryId}/`;
 }
 
+/**
+ * Reject empty, absolute, or traversal-bearing keys before any prefix test.
+ *
+ * A bare `startsWith` prefix check is not enough: `dispensaries/<self>/../<other>/x.jpg`
+ * *does* start with the tenant root, yet a browser (RFC 3986) normalizes the
+ * `..` and fetches `<base>/dispensaries/<other>/x.jpg` — a foreign tenant's
+ * object. So we require every path segment to be non-empty and not a `.`/`..`
+ * relative segment, which makes the subsequent prefix check actually
+ * authoritative.
+ */
+function isSafeRelativeKey(key: string): boolean {
+  if (key === '' || key.startsWith('/')) return false;
+  return key.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
 export function isBrandImageKeyOwnedBy(dispensaryId: string, key: string): boolean {
-  return key.startsWith(dispensaryAssetRoot(dispensaryId));
+  return isSafeRelativeKey(key) && key.startsWith(dispensaryAssetRoot(dispensaryId));
 }

@@ -60,4 +60,23 @@ describe('isBrandImageKeyOwnedBy', () => {
     expect(isBrandImageKeyOwnedBy(DISPENSARY_A, 'products/global/x.jpg')).toBe(false);
     expect(isBrandImageKeyOwnedBy(DISPENSARY_A, '')).toBe(false);
   });
+
+  it('rejects a traversal key that would resolve cross-tenant at the CDN', () => {
+    // Starts with the tenant root, but the `..` normalizes to DISPENSARY_B.
+    const traversal = `${dispensaryAssetRoot(DISPENSARY_A)}../${DISPENSARY_B}/brand/x.jpg`;
+    expect(traversal.startsWith(dispensaryAssetRoot(DISPENSARY_A))).toBe(true);
+    expect(isBrandImageKeyOwnedBy(DISPENSARY_A, traversal)).toBe(false);
+  });
+
+  it('rejects absolute, dot, and double-slash keys', () => {
+    expect(isBrandImageKeyOwnedBy(DISPENSARY_A, `/${dispensaryAssetRoot(DISPENSARY_A)}x.jpg`)).toBe(
+      false,
+    );
+    expect(isBrandImageKeyOwnedBy(DISPENSARY_A, `${dispensaryAssetRoot(DISPENSARY_A)}./x.jpg`)).toBe(
+      false,
+    );
+    expect(isBrandImageKeyOwnedBy(DISPENSARY_A, `${dispensaryAssetRoot(DISPENSARY_A)}/x.jpg`)).toBe(
+      false,
+    );
+  });
 });
