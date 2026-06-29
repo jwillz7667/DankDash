@@ -27,7 +27,6 @@ import {
   type ReactNode,
   type SyntheticEvent,
 } from 'react';
-import { ApiError } from '../../lib/api/client.js';
 import { isUploadableImageType, uploadImageToStorage } from '../../lib/api/image-uploads.js';
 import { listingImageUrl } from '../../lib/listings/images.js';
 import { Button } from '../ui/button.js';
@@ -73,6 +72,13 @@ export function BrandCard({
   const [colorSaved, setColorSaved] = useState(false);
   const colorId = useId();
 
+  // One gate across the whole card: the hero upload, the logo upload, and the
+  // color save each return the *full* settings row, so letting two run at once
+  // would let the second response clobber the first's field in the snapshot.
+  // Serializing them (matching the listing override panel's single `busy`)
+  // keeps the optimistic snapshot consistent without a refetch.
+  const [busy, setBusy] = useState(false);
+
   useEffect(() => {
     setColor(brandColorHex ?? '');
   }, [brandColorHex]);
@@ -91,6 +97,7 @@ export function BrandCard({
         return;
       }
       setSavingColor(true);
+      setBusy(true);
       try {
         const updated = await onPatch({ brandColorHex: colorNorm });
         onPatched(updated);
@@ -99,6 +106,7 @@ export function BrandCard({
         setColorError(extractError(err, "Couldn't save the color. Try again."));
       } finally {
         setSavingColor(false);
+        setBusy(false);
       }
     },
     [colorNorm, onPatch, onPatched],
@@ -129,6 +137,8 @@ export function BrandCard({
           requestImageUpload={requestImageUpload}
           imageBaseUrl={imageBaseUrl}
           uploadToStorage={uploadToStorage}
+          cardBusy={busy}
+          onBusyChange={setBusy}
         />
 
         <BrandImageField
@@ -142,6 +152,8 @@ export function BrandCard({
           requestImageUpload={requestImageUpload}
           imageBaseUrl={imageBaseUrl}
           uploadToStorage={uploadToStorage}
+          cardBusy={busy}
+          onBusyChange={setBusy}
         />
 
         <form
@@ -162,7 +174,7 @@ export function BrandCard({
                   setColor(e.target.value);
                 }}
                 placeholder="#1A4314"
-                disabled={savingColor}
+                disabled={busy}
                 aria-invalid={color !== '' && !swatchValid ? 'true' : undefined}
               />
             </div>
@@ -193,7 +205,7 @@ export function BrandCard({
                 </p>
               ) : null}
             </div>
-            <Button type="submit" disabled={!colorDirty || savingColor}>
+            <Button type="submit" disabled={!colorDirty || busy}>
               {savingColor ? (
                 <>
                   <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
@@ -221,6 +233,10 @@ interface BrandImageFieldProps {
   readonly requestImageUpload: VendorSettingsActions['requestImageUpload'];
   readonly imageBaseUrl?: string;
   readonly uploadToStorage?: typeof uploadImageToStorage;
+  /** True when any sibling control (other image, color) is mid-commit. */
+  readonly cardBusy: boolean;
+  /** Raise/lower the shared card gate around this field's own commit. */
+  readonly onBusyChange: (busy: boolean) => void;
 }
 
 function BrandImageField({
@@ -234,13 +250,17 @@ function BrandImageField({
   requestImageUpload,
   imageBaseUrl,
   uploadToStorage,
+  cardBusy,
+  onBusyChange,
 }: BrandImageFieldProps): ReactNode {
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const busy = uploading || removing;
+  // `cardBusy` disables this field while a sibling commits; `uploading`/
+  // `removing` drive this field's own spinners.
+  const busy = cardBusy || uploading || removing;
   const previewUrl = imageKey === null ? null : listingImageUrl(imageKey, imageBaseUrl);
 
   const patchKey = useCallback(
@@ -264,6 +284,7 @@ function BrandImageField({
         return;
       }
       setUploading(true);
+      onBusyChange(true);
       setError(null);
       try {
         const ticket = await requestImageUpload(file.type);
@@ -275,13 +296,15 @@ function BrandImageField({
         setError(extractError(err, "Couldn't upload that image. Try again."));
       } finally {
         setUploading(false);
+        onBusyChange(false);
       }
     },
-    [onPatched, patchKey, requestImageUpload, uploadToStorage],
+    [onBusyChange, onPatched, patchKey, requestImageUpload, uploadToStorage],
   );
 
   const handleRemove = useCallback(async (): Promise<void> => {
     setRemoving(true);
+    onBusyChange(true);
     setError(null);
     try {
       const updated = await patchKey(null);
@@ -290,8 +313,9 @@ function BrandImageField({
       setError(extractError(err, "Couldn't remove that image. Try again."));
     } finally {
       setRemoving(false);
+      onBusyChange(false);
     }
-  }, [onPatched, patchKey]);
+  }, [onBusyChange, onPatched, patchKey]);
 
   return (
     <section aria-label={label} className="space-y-2.5" data-testid={`brand-image-${field}`}>
@@ -375,13 +399,16 @@ function BrandImageField({
   );
 }
 
+/**
+ * Surface a readable message from a failed brand mutation. Errors arrive here
+ * across the Next.js server-action boundary, which serializes rejections to
+ * plain `Error` (the `ApiError` prototype + status/envelope are lost), so we
+ * key off `message` — the API's typed 422/403 text rides through as the
+ * message — and fall back to a friendly default when it's empty. The only
+ * client-thrown error (the direct-to-R2 `ImageUploadError`) also has a
+ * message, so it takes the same path.
+ */
 function extractError(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) {
-    if (err.status === 422) {
-      return err.envelope?.error.message ?? 'That brand input was rejected.';
-    }
-    if (err.status === 403) return "You don't have permission to update brand assets.";
-  }
   if (err instanceof Error && err.message.trim() !== '') return err.message;
   return fallback;
 }
