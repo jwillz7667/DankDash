@@ -22,11 +22,13 @@ import { buildServerApiClient } from '../api/server-client.js';
 import {
   getVendorSettings,
   patchVendorSettings,
+  requestBrandImageUpload,
   type PatchVendorSettingsInput,
   type VendorSettings,
 } from '../api/vendor-settings.js';
 import { NoDispensaryContextError } from './actions-errors.js';
 import type { ApiClient } from '../api/client.js';
+import type { ImageUploadTicket, UploadableImageType } from '../api/image-uploads.js';
 
 async function authedClient(): Promise<ApiClient> {
   const ctx = await buildServerApiClient();
@@ -44,4 +46,10 @@ export async function patchVendorSettingsAction(
   input: PatchVendorSettingsInput,
 ): Promise<VendorSettings> {
   return patchVendorSettings(await authedClient(), input);
+}
+
+export async function requestBrandImageUploadAction(
+  contentType: UploadableImageType,
+): Promise<ImageUploadTicket> {
+  return requestBrandImageUpload(await authedClient(), contentType);
 }

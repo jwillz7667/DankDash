@@ -20,11 +20,14 @@ import type { VendorSettingsActions } from '../../lib/settings/settings-actions.
 export interface StoreSettingsClientProps {
   readonly initialSettings: VendorSettings;
   readonly actions: VendorSettingsActions;
+  /** Public R2 base for brand-image previews; undefined renders a placeholder. */
+  readonly imageBaseUrl?: string;
 }
 
 export function StoreSettingsClient({
   initialSettings,
   actions,
+  imageBaseUrl,
 }: StoreSettingsClientProps): ReactNode {
   const [settings, setSettings] = useState<VendorSettings>(initialSettings);
 
@@ -52,6 +55,8 @@ export function StoreSettingsClient({
         heroImageKey={settings.heroImageKey}
         onPatch={actions.patch}
         onPatched={handlePatched}
+        requestImageUpload={actions.requestImageUpload}
+        imageBaseUrl={imageBaseUrl}
       />
     </div>
   );

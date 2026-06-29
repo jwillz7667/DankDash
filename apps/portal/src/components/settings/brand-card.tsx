@@ -1,26 +1,35 @@
 'use client';
 
 /**
- * Brand card: hex color + logo/hero R2 object keys. The image keys
- * are edited as raw strings here — Phase 16 will wire a presigned-URL
- * upload flow that mutates these for the operator. For now the
- * authoritative source of new logos is whoever uploads to R2; this
- * surface only records the key so the menu/web can resolve it.
+ * Brand card: storefront hero + logo images and the brand accent color.
  *
- * The hex color preview is a 32px swatch next to the input so the
- * operator can see what they typed before they save.
+ * Images use the presign → direct-to-R2 → persist flow (shared with the
+ * menu's listing uploader): the browser asks the API for a presigned POST,
+ * uploads the file straight to object storage, then PATCHes the returned
+ * object key onto `heroImageKey` / `logoImageKey`. The bytes never traverse
+ * the portal's Node runtime, and the server re-validates that the key sits
+ * under this dispensary's own prefix before persisting — a forged key for
+ * another store is a typed 422.
+ *
+ * Each image commits on upload/remove (no separate "save"), matching the
+ * listing override panel; the parent owns the `VendorSettings` snapshot and
+ * re-renders the field with the new key. The accent color is the one field
+ * that still saves explicitly, since it's free text the operator types.
  */
-import { Loader2, Palette } from 'lucide-react';
+import { ImagePlus, Loader2, Palette, Trash2 } from 'lucide-react';
 import {
   useCallback,
   useEffect,
   useId,
-  useMemo,
+  useRef,
   useState,
+  type ChangeEvent,
   type ReactNode,
   type SyntheticEvent,
 } from 'react';
 import { ApiError } from '../../lib/api/client.js';
+import { isUploadableImageType, uploadImageToStorage } from '../../lib/api/image-uploads.js';
+import { listingImageUrl } from '../../lib/listings/images.js';
 import { Button } from '../ui/button.js';
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from '../ui/card.js';
 import { Input } from '../ui/input.js';
@@ -28,12 +37,22 @@ import { Label } from '../ui/label.js';
 import type { VendorSettings } from '../../lib/api/vendor-settings.js';
 import type { VendorSettingsActions } from '../../lib/settings/settings-actions.js';
 
+/** Mirror the server's 5 MiB presigned-policy ceiling so we fail fast with a clear message. */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const ACCEPT_ATTR = 'image/jpeg,image/png,image/webp';
+
 export interface BrandCardProps {
   readonly brandColorHex: string | null;
   readonly logoImageKey: string | null;
   readonly heroImageKey: string | null;
   readonly onPatch: VendorSettingsActions['patch'];
   readonly onPatched: (settings: VendorSettings) => void;
+  readonly requestImageUpload: VendorSettingsActions['requestImageUpload'];
+  /** Public R2 base for previews; undefined renders a key placeholder. */
+  readonly imageBaseUrl?: string;
+  /** Test seam — the direct-to-storage uploader (defaults to the real one). */
+  readonly uploadToStorage?: typeof uploadImageToStorage;
 }
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/u;
@@ -44,60 +63,45 @@ export function BrandCard({
   heroImageKey,
   onPatch,
   onPatched,
+  requestImageUpload,
+  imageBaseUrl,
+  uploadToStorage,
 }: BrandCardProps): ReactNode {
   const [color, setColor] = useState(brandColorHex ?? '');
-  const [logo, setLogo] = useState(logoImageKey ?? '');
-  const [hero, setHero] = useState(heroImageKey ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [savingColor, setSavingColor] = useState(false);
+  const [colorError, setColorError] = useState<string | null>(null);
+  const [colorSaved, setColorSaved] = useState(false);
   const colorId = useId();
-  const logoId = useId();
-  const heroId = useId();
 
   useEffect(() => {
     setColor(brandColorHex ?? '');
-    setLogo(logoImageKey ?? '');
-    setHero(heroImageKey ?? '');
-  }, [brandColorHex, logoImageKey, heroImageKey]);
+  }, [brandColorHex]);
 
   const swatchValid = HEX_RE.test(color);
+  const colorNorm = color.trim() === '' ? null : color.trim();
+  const colorDirty = colorNorm !== brandColorHex;
 
-  const dirty = useMemo(() => {
-    const cNorm = color.trim() === '' ? null : color.trim();
-    const lNorm = logo.trim() === '' ? null : logo.trim();
-    const hNorm = hero.trim() === '' ? null : hero.trim();
-    return cNorm !== brandColorHex || lNorm !== logoImageKey || hNorm !== heroImageKey;
-  }, [color, logo, hero, brandColorHex, logoImageKey, heroImageKey]);
-
-  const handleSubmit = useCallback(
+  const handleColorSubmit = useCallback(
     async (event: SyntheticEvent<HTMLFormElement>): Promise<void> => {
       event.preventDefault();
-      setError(null);
-      setSuccess(null);
-      const cNorm = color.trim() === '' ? null : color.trim();
-      const lNorm = logo.trim() === '' ? null : logo.trim();
-      const hNorm = hero.trim() === '' ? null : hero.trim();
-      if (cNorm !== null && !HEX_RE.test(cNorm)) {
-        setError('Brand color must be #RRGGBB.');
+      setColorError(null);
+      setColorSaved(false);
+      if (colorNorm !== null && !HEX_RE.test(colorNorm)) {
+        setColorError('Brand color must be #RRGGBB.');
         return;
       }
-      setBusy(true);
+      setSavingColor(true);
       try {
-        const updated = await onPatch({
-          brandColorHex: cNorm,
-          logoImageKey: lNorm,
-          heroImageKey: hNorm,
-        });
+        const updated = await onPatch({ brandColorHex: colorNorm });
         onPatched(updated);
-        setSuccess('Brand saved.');
+        setColorSaved(true);
       } catch (err) {
-        setError(extractError(err));
+        setColorError(extractError(err, "Couldn't save the color. Try again."));
       } finally {
-        setBusy(false);
+        setSavingColor(false);
       }
     },
-    [color, logo, hero, onPatch, onPatched],
+    [colorNorm, onPatch, onPatched],
   );
 
   return (
@@ -109,18 +113,42 @@ export function BrandCard({
           </div>
           <div>
             <CardTitle>Brand</CardTitle>
-            <CardSubtitle>
-              The color and assets the consumer app uses for your storefront.
-            </CardSubtitle>
+            <CardSubtitle>The images and color the consumer app uses for your storefront.</CardSubtitle>
           </div>
         </div>
       </CardHeader>
-      <CardBody>
+      <CardBody className="space-y-7">
+        <BrandImageField
+          field="heroImageKey"
+          label="Storefront hero"
+          description="The wide banner shown at the top of your store page. Landscape (16:9) looks best."
+          imageKey={heroImageKey}
+          aspectClass="aspect-[16/9]"
+          onPatch={onPatch}
+          onPatched={onPatched}
+          requestImageUpload={requestImageUpload}
+          imageBaseUrl={imageBaseUrl}
+          uploadToStorage={uploadToStorage}
+        />
+
+        <BrandImageField
+          field="logoImageKey"
+          label="Logo"
+          description="Your mark, shown next to your store name. A square image works best."
+          imageKey={logoImageKey}
+          aspectClass="aspect-square max-w-[10rem]"
+          onPatch={onPatch}
+          onPatched={onPatched}
+          requestImageUpload={requestImageUpload}
+          imageBaseUrl={imageBaseUrl}
+          uploadToStorage={uploadToStorage}
+        />
+
         <form
           onSubmit={(e) => {
-            void handleSubmit(e);
+            void handleColorSubmit(e);
           }}
-          className="space-y-4"
+          className="space-y-3 border-t border-outline pt-6"
           noValidate
         >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
@@ -134,7 +162,7 @@ export function BrandCard({
                   setColor(e.target.value);
                 }}
                 placeholder="#1A4314"
-                disabled={busy}
+                disabled={savingColor}
                 aria-invalid={color !== '' && !swatchValid ? 'true' : undefined}
               />
             </div>
@@ -153,60 +181,26 @@ export function BrandCard({
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor={logoId}>Logo image key</Label>
-              <Input
-                id={logoId}
-                type="text"
-                value={logo}
-                onChange={(e) => {
-                  setLogo(e.target.value);
-                }}
-                placeholder="dispensaries/<id>/logo.png"
-                disabled={busy}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={heroId}>Hero image key</Label>
-              <Input
-                id={heroId}
-                type="text"
-                value={hero}
-                onChange={(e) => {
-                  setHero(e.target.value);
-                }}
-                placeholder="dispensaries/<id>/hero.jpg"
-                disabled={busy}
-              />
-            </div>
-          </div>
-
-          <p className="text-xs text-muted">
-            Image keys reference the asset's path in our object store. Upload UI ships in Phase 16;
-            until then, paste the key your account manager provides.
-          </p>
-
           <div className="flex items-center justify-between gap-3">
             <div className="min-h-[1.25rem]">
-              {error !== null ? (
+              {colorError !== null ? (
                 <p role="alert" className="text-sm font-medium text-danger">
-                  {error}
+                  {colorError}
                 </p>
-              ) : success !== null ? (
+              ) : colorSaved ? (
                 <p role="status" className="text-sm font-medium text-moss-700">
-                  {success}
+                  Color saved.
                 </p>
               ) : null}
             </div>
-            <Button type="submit" disabled={!dirty || busy}>
-              {busy ? (
+            <Button type="submit" disabled={!colorDirty || savingColor}>
+              {savingColor ? (
                 <>
                   <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
                   Saving…
                 </>
               ) : (
-                'Save brand'
+                'Save color'
               )}
             </Button>
           </div>
@@ -216,12 +210,178 @@ export function BrandCard({
   );
 }
 
-function extractError(err: unknown): string {
+interface BrandImageFieldProps {
+  readonly field: 'heroImageKey' | 'logoImageKey';
+  readonly label: string;
+  readonly description: string;
+  readonly imageKey: string | null;
+  readonly aspectClass: string;
+  readonly onPatch: VendorSettingsActions['patch'];
+  readonly onPatched: (settings: VendorSettings) => void;
+  readonly requestImageUpload: VendorSettingsActions['requestImageUpload'];
+  readonly imageBaseUrl?: string;
+  readonly uploadToStorage?: typeof uploadImageToStorage;
+}
+
+function BrandImageField({
+  field,
+  label,
+  description,
+  imageKey,
+  aspectClass,
+  onPatch,
+  onPatched,
+  requestImageUpload,
+  imageBaseUrl,
+  uploadToStorage,
+}: BrandImageFieldProps): ReactNode {
+  const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const busy = uploading || removing;
+  const previewUrl = imageKey === null ? null : listingImageUrl(imageKey, imageBaseUrl);
+
+  const patchKey = useCallback(
+    (key: string | null): Promise<VendorSettings> =>
+      onPatch(field === 'heroImageKey' ? { heroImageKey: key } : { logoImageKey: key }),
+    [field, onPatch],
+  );
+
+  const handleFileSelected = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+      const file = event.target.files?.[0];
+      // Reset so re-selecting the same file fires `change` again.
+      event.target.value = '';
+      if (file === undefined) return;
+      if (!isUploadableImageType(file.type)) {
+        setError('Use a JPEG, PNG, or WebP image.');
+        return;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        setError('Image must be 5 MB or smaller.');
+        return;
+      }
+      setUploading(true);
+      setError(null);
+      try {
+        const ticket = await requestImageUpload(file.type);
+        const upload = uploadToStorage ?? uploadImageToStorage;
+        const key = await upload(ticket, file);
+        const updated = await patchKey(key);
+        onPatched(updated);
+      } catch (err) {
+        setError(extractError(err, "Couldn't upload that image. Try again."));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [onPatched, patchKey, requestImageUpload, uploadToStorage],
+  );
+
+  const handleRemove = useCallback(async (): Promise<void> => {
+    setRemoving(true);
+    setError(null);
+    try {
+      const updated = await patchKey(null);
+      onPatched(updated);
+    } catch (err) {
+      setError(extractError(err, "Couldn't remove that image. Try again."));
+    } finally {
+      setRemoving(false);
+    }
+  }, [onPatched, patchKey]);
+
+  return (
+    <section aria-label={label} className="space-y-2.5" data-testid={`brand-image-${field}`}>
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">{label}</h3>
+        <p className="text-xs text-muted">{description}</p>
+      </div>
+
+      <div
+        className={`relative w-full overflow-hidden rounded-xl border border-outline bg-surface-subtle ${aspectClass}`}
+      >
+        {previewUrl !== null ? (
+          <img src={previewUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+        ) : imageKey !== null ? (
+          <div className="flex h-full w-full items-center justify-center p-3 text-center text-2xs text-muted">
+            <span className="break-all">{imageKey.split('/').pop() ?? imageKey}</span>
+          </div>
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted">
+            <ImagePlus aria-hidden="true" className="h-6 w-6" />
+            <span className="text-2xs">No image yet</span>
+          </div>
+        )}
+      </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPT_ATTR}
+        className="sr-only"
+        data-testid={`brand-image-input-${field}`}
+        onChange={(e) => {
+          void handleFileSelected(e);
+        }}
+      />
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            fileInputRef.current?.click();
+          }}
+          data-testid={`brand-image-upload-${field}`}
+        >
+          {uploading ? (
+            <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+          ) : (
+            <ImagePlus aria-hidden="true" className="h-4 w-4" />
+          )}
+          {uploading ? 'Uploading…' : imageKey === null ? 'Upload image' : 'Replace'}
+        </Button>
+        {imageKey !== null ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              void handleRemove();
+            }}
+            data-testid={`brand-image-remove-${field}`}
+          >
+            {removing ? (
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+            ) : (
+              <Trash2 aria-hidden="true" className="h-4 w-4" />
+            )}
+            Remove
+          </Button>
+        ) : null}
+      </div>
+
+      {error !== null ? (
+        <p role="alert" className="text-xs text-danger" data-testid={`brand-image-error-${field}`}>
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function extractError(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     if (err.status === 422) {
       return err.envelope?.error.message ?? 'That brand input was rejected.';
     }
     if (err.status === 403) return "You don't have permission to update brand assets.";
   }
-  return "Couldn't save. Try again.";
+  if (err instanceof Error && err.message.trim() !== '') return err.message;
+  return fallback;
 }

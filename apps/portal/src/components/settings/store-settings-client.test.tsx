@@ -61,6 +61,9 @@ function makeActions(overrides: Partial<VendorSettingsActions> = {}): VendorSett
   return {
     get: overrides.get ?? (() => Promise.resolve(BASE)),
     patch: overrides.patch ?? (() => Promise.reject(new Error('patch not stubbed'))),
+    requestImageUpload:
+      overrides.requestImageUpload ??
+      (() => Promise.reject(new Error('requestImageUpload not stubbed'))),
   };
 }
 
@@ -177,27 +180,20 @@ describe('StoreSettingsClient — brand', () => {
     fireEvent.change(screen.getByLabelText(/brand color/i), {
       target: { value: 'forest' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /save brand/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save color/i }));
     await screen.findByText(/must be #RRGGBB/i);
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it('sends a valid hex and image keys', async () => {
+  it('sends a valid hex color through the patch action', async () => {
     const patch = vi.fn(async () => BASE);
     render(<StoreSettingsClient initialSettings={BASE} actions={makeActions({ patch })} />);
     fireEvent.change(screen.getByLabelText(/brand color/i), {
       target: { value: '#2A6D34' },
     });
-    fireEvent.change(screen.getByLabelText(/logo image key/i), {
-      target: { value: 'dispensaries/ns/logo.png' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /save brand/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save color/i }));
     await waitFor(() => {
-      expect(patch).toHaveBeenCalledWith({
-        brandColorHex: '#2A6D34',
-        logoImageKey: 'dispensaries/ns/logo.png',
-        heroImageKey: null,
-      });
+      expect(patch).toHaveBeenCalledWith({ brandColorHex: '#2A6D34' });
     });
   });
 });

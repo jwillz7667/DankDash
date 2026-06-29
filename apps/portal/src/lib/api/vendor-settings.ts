@@ -16,6 +16,7 @@
  * receiving the secret.
  */
 import type { ApiClient } from './client.js';
+import type { ImageUploadTicket, UploadableImageType } from './image-uploads.js';
 
 export type LicenseType =
   | 'retailer'
@@ -120,5 +121,26 @@ export async function patchVendorSettings(
   return client.request<VendorSettings>('/v1/vendor/settings', {
     method: 'PATCH',
     body,
+  });
+}
+
+/**
+ * POST /v1/vendor/settings/image-uploads — mint a presigned R2 upload for a
+ * single brand asset (storefront hero or logo). The dispensary scope comes
+ * from the client's `X-Dispensary-Id` header, so the minted key is always
+ * under the caller's own `brand/` prefix. The returned `objectKey` is then
+ * persisted via {@link patchVendorSettings} ({ heroImageKey } / { logoImageKey }).
+ *
+ * The browser uploads the bytes straight to R2 with
+ * {@link import('./image-uploads.js').uploadImageToStorage}; large image
+ * payloads never traverse the portal's Node runtime.
+ */
+export async function requestBrandImageUpload(
+  client: ApiClient,
+  contentType: UploadableImageType,
+): Promise<ImageUploadTicket> {
+  return client.request<ImageUploadTicket>('/v1/vendor/settings/image-uploads', {
+    method: 'POST',
+    body: { contentType },
   });
 }

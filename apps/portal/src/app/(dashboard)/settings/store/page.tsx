@@ -6,9 +6,11 @@ import { StoreSettingsClient } from '../../../../components/settings/store-setti
 import { Card, CardBody } from '../../../../components/ui/card.js';
 import { buildServerApiClient } from '../../../../lib/api/server-client.js';
 import { getVendorSettings, type VendorSettings } from '../../../../lib/api/vendor-settings.js';
+import { loadPublicEnv } from '../../../../lib/env.js';
 import {
   getVendorSettingsAction,
   patchVendorSettingsAction,
+  requestBrandImageUploadAction,
 } from '../../../../lib/settings/actions.js';
 import type { VendorSettingsActions } from '../../../../lib/settings/settings-actions.js';
 
@@ -45,9 +47,18 @@ export default async function StoreSettingsPage(): Promise<ReactNode> {
   const actions: VendorSettingsActions = {
     get: getVendorSettingsAction,
     patch: patchVendorSettingsAction,
+    requestImageUpload: requestBrandImageUploadAction,
   };
 
-  return <StoreSettingsClient initialSettings={initialSettings} actions={actions} />;
+  const imageBaseUrl = loadPublicEnv().NEXT_PUBLIC_R2_PUBLIC_BASE_URL;
+
+  return (
+    <StoreSettingsClient
+      initialSettings={initialSettings}
+      actions={actions}
+      imageBaseUrl={imageBaseUrl}
+    />
+  );
 }
 
 function NoDispensaryContext(): ReactNode {
