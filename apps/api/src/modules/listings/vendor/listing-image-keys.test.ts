@@ -50,4 +50,11 @@ describe('isImageKeyOwnedBy', () => {
     expect(isImageKeyOwnedBy(DISPENSARY_A, 'products/global/x.jpg')).toBe(false);
     expect(isImageKeyOwnedBy(DISPENSARY_A, '')).toBe(false);
   });
+
+  it('rejects a traversal key that would resolve cross-tenant at the CDN', () => {
+    // Starts with the prefix, but the `..` segments normalize to DISPENSARY_B.
+    const traversal = `${dispensaryListingImagePrefix(DISPENSARY_A)}../../${DISPENSARY_B}/listings/x.jpg`;
+    expect(traversal.startsWith(dispensaryListingImagePrefix(DISPENSARY_A))).toBe(true);
+    expect(isImageKeyOwnedBy(DISPENSARY_A, traversal)).toBe(false);
+  });
 });

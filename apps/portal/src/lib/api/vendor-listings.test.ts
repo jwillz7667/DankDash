@@ -250,7 +250,7 @@ describe('uploadListingImageToStorage', () => {
 
     await expect(
       uploadListingImageToStorage(TICKET, file, fetchImpl as unknown as typeof fetch),
-    ).rejects.toMatchObject({ name: 'ListingImageUploadError', status: 403 });
+    ).rejects.toMatchObject({ name: 'ImageUploadError', status: 403 });
   });
 
   it('wraps a network failure as ListingImageUploadError with a null status', async () => {

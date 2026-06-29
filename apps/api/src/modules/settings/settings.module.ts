@@ -14,6 +14,9 @@ import { Module, type FactoryProvider } from '@nestjs/common';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { ListingsModule } from '../listings/listings.module.js';
+import { StorageModule } from '../storage/storage.module.js';
+import { VendorSettingsUploadsController } from './vendor/vendor-settings-uploads.controller.js';
+import { VendorSettingsUploadsService } from './vendor/vendor-settings-uploads.service.js';
 import { VendorSettingsController } from './vendor/vendor-settings.controller.js';
 import { VendorSettingsService } from './vendor/vendor-settings.service.js';
 
@@ -25,9 +28,9 @@ const vendorSettingsServiceProvider: FactoryProvider<VendorSettingsService> = {
 };
 
 @Module({
-  imports: [AuthModule, ListingsModule],
-  controllers: [VendorSettingsController],
-  providers: [vendorSettingsServiceProvider],
+  imports: [AuthModule, ListingsModule, StorageModule],
+  controllers: [VendorSettingsController, VendorSettingsUploadsController],
+  providers: [vendorSettingsServiceProvider, VendorSettingsUploadsService],
   exports: [VendorSettingsService],
 })
 export class SettingsModule {}

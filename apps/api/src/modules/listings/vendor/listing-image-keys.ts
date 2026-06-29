@@ -20,6 +20,18 @@ export function dispensaryListingImagePrefix(dispensaryId: string): string {
   return `dispensaries/${dispensaryId}/listings/`;
 }
 
+/**
+ * Reject empty, absolute, or traversal-bearing keys before the prefix test.
+ * A bare `startsWith` is not enough: `dispensaries/<self>/listings/../../<other>/x.jpg`
+ * starts with the prefix yet a browser normalizes the `..` and fetches a
+ * foreign tenant's object. Requiring every segment to be non-empty and not
+ * `.`/`..` makes the prefix check authoritative.
+ */
+function isSafeRelativeKey(key: string): boolean {
+  if (key === '' || key.startsWith('/')) return false;
+  return key.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
 export function isImageKeyOwnedBy(dispensaryId: string, key: string): boolean {
-  return key.startsWith(dispensaryListingImagePrefix(dispensaryId));
+  return isSafeRelativeKey(key) && key.startsWith(dispensaryListingImagePrefix(dispensaryId));
 }

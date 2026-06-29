@@ -12,9 +12,10 @@
  *     as NotFoundError (the JWT user could still have a session even
  *     after the platform admin tombstones their store).
  */
-import { NotFoundError } from '@dankdash/types';
+import { NotFoundError, ValidationError } from '@dankdash/types';
 import type { Dispensary } from '@dankdash/db';
 import { describe, expect, it } from 'vitest';
+import { dispensaryBrandImagePrefix } from './brand-image-keys.js';
 import { VendorSettingsService, type SettingsRepoFactory } from './vendor-settings.service.js';
 import type { PatchVendorSettingsRequest } from './dto/index.js';
 import type { VendorContext } from '../../listings/vendor/vendor-context.types.js';
@@ -249,6 +250,45 @@ describe('VendorSettingsService.patch', () => {
 
     await expect(svc.patch(CTX, { isAcceptingOrders: false })).rejects.toBeInstanceOf(
       NotFoundError,
+    );
+    expect(repo.updates).toHaveLength(0);
+  });
+
+  it('accepts a hero/logo key owned by the caller dispensary', async () => {
+    const repo = new FakeDispensariesRepo(makeDispensary());
+    const svc = makeService(repo);
+    const heroImageKey = `${dispensaryBrandImagePrefix(CTX.dispensaryId)}018f-hero.jpg`;
+    const logoImageKey = `${dispensaryBrandImagePrefix(CTX.dispensaryId)}018f-logo.png`;
+
+    await svc.patch(CTX, { heroImageKey, logoImageKey });
+
+    expect(repo.updates[0]?.patch).toEqual({ heroImageKey, logoImageKey });
+  });
+
+  it('allows clearing the hero/logo with explicit null', async () => {
+    const repo = new FakeDispensariesRepo(makeDispensary());
+    const svc = makeService(repo);
+
+    await svc.patch(CTX, { heroImageKey: null, logoImageKey: null });
+
+    expect(repo.updates[0]?.patch).toEqual({ heroImageKey: null, logoImageKey: null });
+  });
+
+  it('rejects a hero key that points at another dispensary (cross-tenant 422)', async () => {
+    const repo = new FakeDispensariesRepo(makeDispensary());
+    const svc = makeService(repo);
+    const foreign = 'dispensaries/01935f3d-0000-7000-8000-0000000000ff/brand/x.jpg';
+
+    await expect(svc.patch(CTX, { heroImageKey: foreign })).rejects.toBeInstanceOf(ValidationError);
+    expect(repo.updates).toHaveLength(0);
+  });
+
+  it('rejects a logo key that points at the admin catalog (cross-tenant 422)', async () => {
+    const repo = new FakeDispensariesRepo(makeDispensary());
+    const svc = makeService(repo);
+
+    await expect(svc.patch(CTX, { logoImageKey: 'products/global/x.png' })).rejects.toBeInstanceOf(
+      ValidationError,
     );
     expect(repo.updates).toHaveLength(0);
   });
