@@ -27,5 +27,7 @@
 	<string>https://dankdashapi-production.up.railway.app</string>
 	<key>DANKDASH_REALTIME_BASE_URL</key>
 	<string>https://dankdashrealtime-production.up.railway.app</string>
+	<key>DANKDASH_CDN_BASE_URL</key>
+	<string>https://pub-19f0759a7ac74696a082726fbacc1552.r2.dev</string>
 </dict>
 </plist>

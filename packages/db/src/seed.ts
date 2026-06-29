@@ -295,6 +295,9 @@ interface SeedDispensary {
   // numeric(3,2) — passed through as a string so Drizzle doesn't lose precision.
   readonly ratingAvg: string;
   readonly ratingCount: number;
+  // R2 object key for the storefront hero shown on the dispensary page.
+  // Resolved by clients against the configured CDN base URL.
+  readonly heroImageKey?: string;
 }
 
 // Keys must be the 3-letter lowercase weekday codes the @dankdash/dispensaries
@@ -367,6 +370,7 @@ const DISPENSARIES: readonly SeedDispensary[] = [
     ratingCount: 89,
     location: { type: 'Point', coordinates: [-93.456, 45.073] },
     deliveryPolygon: TWIN_CITIES_METRO_DELIVERY_POLYGON,
+    heroImageKey: 'dispensaries/mg/hero.jpg',
   },
 ];
 
@@ -1441,6 +1445,7 @@ export async function seed(opts: SeedOptions): Promise<SeedSummary> {
       email: disp.email,
       ratingAvg: disp.ratingAvg,
       ratingCount: disp.ratingCount,
+      heroImageKey: disp.heroImageKey ?? null,
       isAcceptingOrders: true,
       status: 'active',
       createdAt: days(-365),
@@ -1580,6 +1585,18 @@ export async function seed(opts: SeedOptions): Promise<SeedSummary> {
         p.productType === 'infused_preroll',
     ).map((p) => p.key),
   );
+  // The Grove ships its own product photography for a few hero SKUs. These
+  // per-listing R2 keys override the (empty) canonical `products.image_keys`
+  // on the public menu — keyed under the dispensary's own prefix, scoped to
+  // this storefront only. See `dispensary_listings.image_keys`.
+  const mgListingImageKeys: Record<string, readonly string[]> = {
+    'p-flower-bg-1': ['dispensaries/mg/listings/p-flower-bg-1/01.jpg'],
+    'p-flower-bg-2': [
+      'dispensaries/mg/listings/p-flower-bg-2/01.jpg',
+      'dispensaries/mg/listings/p-flower-bg-2/02.jpg',
+    ],
+    'p-preroll-bg-1': ['dispensaries/mg/listings/p-preroll-bg-1/01.jpg'],
+  };
   for (const item of listingsFor('mg', 1.05, mgSkip)) {
     listingRows.push({
       id: stableUuid('listing', `mg-${item.productKey}`),
@@ -1589,6 +1606,7 @@ export async function seed(opts: SeedOptions): Promise<SeedSummary> {
       priceCents: item.priceCents,
       quantityAvailable: item.quantity,
       metrcPackageTag: `1A4060302${item.productKey.length.toString().padStart(8, '0')}`,
+      imageKeys: [...(mgListingImageKeys[item.productKey] ?? [])],
       isActive: true,
       createdAt: days(-60),
       updatedAt: ANCHOR,
