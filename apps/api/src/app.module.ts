@@ -68,6 +68,7 @@ import { AuthModule } from './modules/auth/auth.module.js';
 import { PasswordResetModule } from './modules/auth/password-reset/password-reset.module.js';
 import { CartModule } from './modules/cart/cart.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
+import { VendorCatalogModule } from './modules/catalog/vendor/vendor-catalog.module.js';
 import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module.js';
 import { CheckoutModule } from './modules/checkout/checkout.module.js';
 import { ComplianceModule } from './modules/compliance/compliance.module.js';
@@ -117,6 +118,7 @@ import { StaffModule } from './modules/staff/staff.module.js';
     IdentityVerificationModule,
     DispensariesModule,
     CatalogModule,
+    VendorCatalogModule,
     ListingsModule,
     AnalyticsModule,
     SearchModule,

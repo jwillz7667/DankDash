@@ -102,7 +102,16 @@ export class VendorListingsService {
   async create(ctx: VendorContext, body: CreateListingRequest): Promise<ListingResponse> {
     const result = await this.withScope(ctx, async ({ listings, products }) => {
       const product = await products.findById(body.productId);
-      if (product?.deletedAt !== null || !product.isActive) {
+      // A listing may bind to a GLOBAL catalog product (createdByDispensaryId
+      // === null) or to THIS dispensary's own authored product — never to
+      // another tenant's private product. A foreign-owned product is reported
+      // identically to a missing one, so probing can't reveal another store's
+      // catalog.
+      const ownableByCaller =
+        product !== null &&
+        (product.createdByDispensaryId === null ||
+          product.createdByDispensaryId === ctx.dispensaryId);
+      if (product?.deletedAt !== null || !product.isActive || !ownableByCaller) {
         throw new ValidationError(
           'productId references a product that does not exist or is not active',
           { productId: body.productId },
