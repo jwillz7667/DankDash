@@ -106,6 +106,13 @@
       "when": 1748275200005,
       "tag": "0014_notification_preferences",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1748275200006,
+      "tag": "0015_vendor_owned_products",
+      "breakpoints": true
     }
   ]
 }
