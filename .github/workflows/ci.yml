@@ -13,9 +13,10 @@ env:
   NODE_OPTIONS: "--max-old-space-size=4096"
   TURBO_TELEMETRY_DISABLED: "1"
   HUSKY: "0"
-  # Lets Turbo dedupe pipeline outputs across PRs that touch the same packages.
-  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+  # TURBO_TOKEN (a secret) is scoped to the individual jobs that invoke turbo
+  # — see the `verify` and `compliance-gate` job `env:` blocks. Keeping it out
+  # of this workflow-level block means it is not exposed to every job/step
+  # (SAST rule gha-workflow-env-secret). TURBO_TEAM travels alongside it.
 
 jobs:
   verify:
@@ -62,21 +63,25 @@ jobs:
       DATABASE_URL: postgresql://dankdash:dankdash@localhost:5432/dankdash_test
       DATABASE_URL_TEST: postgresql://dankdash:dankdash@localhost:5432/dankdash_test
       REDIS_URL: redis://localhost:6379
+      # Turbo remote cache — scoped here (job-level) rather than workflow-level
+      # so the secret is not exposed to jobs that never call turbo.
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 2
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9.12.3
           run_install: false
 
       - name: Setup Node ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
@@ -93,7 +98,7 @@ jobs:
           done
 
       - name: Restore Turbo cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .turbo
           key: turbo-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -142,7 +147,7 @@ jobs:
 
       - name: Upload coverage
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
@@ -156,16 +161,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9.12.3
           run_install: false
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: pnpm
@@ -187,7 +192,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # Need the base branch tip so we can scope the scan to the PR
           # diff. `fetch-depth: 0` would also work but is heavier than
@@ -232,16 +237,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9.12.3
           run_install: false
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: pnpm
@@ -273,7 +278,7 @@ jobs:
         # is excluded: the snyk container has no `swift` toolchain, so its
         # Package.swift cannot be resolved and would abort the scan.
         if: ${{ steps.snyk_token.outputs.present == 'true' }}
-        uses: snyk/actions/node@master
+        uses: snyk/actions/node@8e119fbb6c251787721d34ba683ed48eba792766 # master (no tagged releases)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -286,16 +291,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9.12.3
           run_install: false
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: pnpm
@@ -325,7 +330,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Run semgrep
         # Hosted rulesets cover the OWASP Top 10 + TypeScript/Node patterns;
@@ -362,10 +367,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           languages: ${{ matrix.language }}
           # `security-and-quality` is broader than `security-extended` — we want
@@ -374,7 +379,7 @@ jobs:
           queries: security-and-quality
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           category: "/language:${{ matrix.language }}"
 
@@ -384,18 +389,24 @@ jobs:
     needs: verify
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
 
+    env:
+      # Turbo remote cache — job-scoped (not workflow-level) so the secret is
+      # only present in jobs that invoke turbo (SAST rule gha-workflow-env-secret).
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9.12.3
           run_install: false
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: pnpm

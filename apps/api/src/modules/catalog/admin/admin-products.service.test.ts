@@ -65,6 +65,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     thcMgPerServing: null,
     imageKeys: [],
     searchVector: null,
+    createdByDispensaryId: null,
     effectsTags: [],
     flavorTags: [],
     isActive: true,

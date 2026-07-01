@@ -37,6 +37,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     thcMgPerServing: null,
     imageKeys: ['products/sunny-side/sour-tangie/01.jpg'],
     searchVector: null,
+    createdByDispensaryId: null,
     effectsTags: ['uplifting'],
     flavorTags: ['citrus'],
     isActive: true,

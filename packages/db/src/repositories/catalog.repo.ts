@@ -79,6 +79,9 @@ export class ProductsRepository extends BaseRepository {
           eq(products.categoryId, categoryId),
           eq(products.isActive, true),
           isNull(products.deletedAt),
+          // Vendor-authored products are reachable only via their owning
+          // dispensary's menu, never the global category browse.
+          isNull(products.createdByDispensaryId),
         ),
       );
   }
@@ -95,6 +98,8 @@ export class ProductsRepository extends BaseRepository {
         and(
           eq(products.isActive, true),
           isNull(products.deletedAt),
+          // Global search never surfaces a tenant's private catalog.
+          isNull(products.createdByDispensaryId),
           sql`${products.searchVector} @@ websearch_to_tsquery('english', ${query})`,
         ),
       )
@@ -204,6 +209,16 @@ export class ProductsRepository extends BaseRepository {
     readonly dispensaryId?: string | undefined;
   }): readonly SQL[] {
     const filters: SQL[] = [eq(products.isActive, true), isNull(products.deletedAt)];
+    // Ownership scope: the unfiltered/global browse only sees the admin catalog
+    // (created_by_dispensary_id IS NULL); a dispensary-scoped browse also sees
+    // that store's OWN authored products, never another tenant's.
+    if (input.dispensaryId !== undefined) {
+      filters.push(
+        sql`(${products.createdByDispensaryId} IS NULL OR ${products.createdByDispensaryId} = ${input.dispensaryId})`,
+      );
+    } else {
+      filters.push(isNull(products.createdByDispensaryId));
+    }
     if (input.query !== undefined) {
       filters.push(
         sql`${products.searchVector} @@ websearch_to_tsquery('english', ${input.query})`,
@@ -262,6 +277,75 @@ export class ProductsRepository extends BaseRepository {
       .update(products)
       .set({ deletedAt: now, updatedAt: now, isActive: false })
       .where(and(eq(products.id, id), isNull(products.deletedAt)));
+  }
+
+  // ── Vendor-owned products ───────────────────────────────────────────────
+  // Every method below is scoped by `created_by_dispensary_id`, mirroring the
+  // `WHERE dispensary_id = ?` tenant guard on dispensary_listings. A product
+  // owned by another dispensary (or an admin-catalog row, which has a NULL
+  // owner) returns null/false/[]; cross-tenant access can never distinguish
+  // "missing" from "not yours".
+
+  /** A dispensary's own authored products (newest edit first), excluding tombstones. */
+  async listForDispensary(dispensaryId: string): Promise<readonly Product[]> {
+    return this.db
+      .select()
+      .from(products)
+      .where(
+        and(eq(products.createdByDispensaryId, dispensaryId), isNull(products.deletedAt)),
+      )
+      .orderBy(desc(products.updatedAt), desc(products.createdAt));
+  }
+
+  async findByIdForDispensary(id: string, dispensaryId: string): Promise<Product | null> {
+    const [row] = await this.db
+      .select()
+      .from(products)
+      .where(
+        and(
+          eq(products.id, id),
+          eq(products.createdByDispensaryId, dispensaryId),
+          isNull(products.deletedAt),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async updateForDispensary(
+    id: string,
+    dispensaryId: string,
+    patch: Partial<Omit<NewProduct, 'id' | 'createdAt' | 'createdByDispensaryId'>>,
+  ): Promise<Product | null> {
+    const [row] = await this.db
+      .update(products)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(
+        and(
+          eq(products.id, id),
+          eq(products.createdByDispensaryId, dispensaryId),
+          isNull(products.deletedAt),
+        ),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  /** Soft-delete a vendor's own product. Returns true when a row was tombstoned. */
+  async softDeleteForDispensary(id: string, dispensaryId: string): Promise<boolean> {
+    const now = new Date();
+    const rows = await this.db
+      .update(products)
+      .set({ deletedAt: now, updatedAt: now, isActive: false })
+      .where(
+        and(
+          eq(products.id, id),
+          eq(products.createdByDispensaryId, dispensaryId),
+          isNull(products.deletedAt),
+        ),
+      )
+      .returning({ id: products.id });
+    return rows.length > 0;
   }
 }
 

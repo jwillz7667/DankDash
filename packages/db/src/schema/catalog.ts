@@ -59,6 +59,14 @@ export const products = pgTable(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     isActive: boolean('is_active').notNull().default(true),
+    // NULL = the global, admin-curated catalog. Non-NULL = a vendor-authored
+    // product owned by that dispensary: only the owner reads/mutates it through
+    // the vendor surface, and the public catalog browse filters it out. See
+    // migration 0015. ON DELETE RESTRICT — dispensaries are tombstoned, not
+    // dropped, so an authored product can never be orphaned.
+    createdByDispensaryId: uuid('created_by_dispensary_id').references(() => dispensaries.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true, mode: 'date' }),

@@ -21,6 +21,7 @@ describe('visibleFor', () => {
       'dashboard',
       'orders',
       'menu',
+      'products',
       'staff',
       'payouts',
       'analytics',

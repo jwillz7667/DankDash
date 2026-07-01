@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # Pin to the Xcode version that matches IPHONEOS_DEPLOYMENT_TARGET = 26.4
       # in the Xcode project. macos-15 ships multiple Xcode toolchains; we
@@ -48,7 +48,7 @@ jobs:
           swift --version
 
       - name: Cache SwiftPM artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/Library/Developer/Xcode/DerivedData/SourcePackages
@@ -67,7 +67,7 @@ jobs:
     needs: swift-test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Select Xcode
         run: |
@@ -80,7 +80,7 @@ jobs:
           xcodebuild -version
 
       - name: Cache SwiftPM artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/Library/Developer/Xcode/DerivedData/SourcePackages
@@ -116,7 +116,7 @@ jobs:
     needs: swift-test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Select Xcode
         run: |
@@ -129,7 +129,7 @@ jobs:
           xcodebuild -version
 
       - name: Cache SwiftPM artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/Library/Developer/Xcode/DerivedData/SourcePackages
