@@ -10,6 +10,9 @@ describe('visibleFor', () => {
     expect(keys).toContain('orders');
     expect(keys).toContain('menu');
     expect(keys).toContain('analytics');
+    // Products is open to every vendor role — a budtender can author catalog
+    // products (the server still enforces all compliance limits).
+    expect(keys).toContain('products');
     expect(keys).not.toContain('staff');
     expect(keys).not.toContain('payouts');
     expect(keys).not.toContain('settings');

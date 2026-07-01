@@ -28,9 +28,10 @@ export const metadata: Metadata = {
 
 /**
  * Products page — a dispensary authors and manages its OWN catalog products
- * (every field), distinct from the admin-owned global catalog. Manager+ only,
- * matching the settings/brand bar (budtenders are redirected). Stocking a
- * product onto the menu happens from the Menu page.
+ * (every field), distinct from the admin-owned global catalog. Open to every
+ * vendor role (budtender+); the server still enforces all compliance limits
+ * (potency caps, beverage rules, image ownership) regardless of role. Stocking
+ * a product onto the menu happens from the Menu page.
  */
 export const dynamic = 'force-dynamic';
 
@@ -38,9 +39,6 @@ export default async function ProductsPage(): Promise<ReactNode> {
   const session = await auth();
   if (!session) {
     redirect('/login');
-  }
-  if (session.user.role === 'budtender') {
-    redirect('/dashboard');
   }
 
   const ctx = await buildServerApiClient();

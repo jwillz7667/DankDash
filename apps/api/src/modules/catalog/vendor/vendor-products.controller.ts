@@ -9,10 +9,11 @@
  *
  * Guard stack matches the other /v1/vendor surfaces: global JwtAuthGuard
  * authenticates, VendorContextGuard binds the dispensary from the
- * X-Dispensary-Id header against `dispensary_staff`, and RolesGuard gates to
- * manager+ — authoring catalog products (potency, photos, identity) is
- * store-level work, not day-to-day budtender inventory. Ownership is then
- * enforced per-row in the service via `created_by_dispensary_id`.
+ * X-Dispensary-Id header against `dispensary_staff`, and RolesGuard admits
+ * every vendor role (budtender+). Authoring is store-scoped work; the
+ * statutory compliance limits (potency caps, beverage rules) are enforced in
+ * the service regardless of role, and ownership is enforced per-row via
+ * `created_by_dispensary_id`.
  */
 import {
   Body,
@@ -39,14 +40,16 @@ import type { ProductResponse } from '../dto/index.js';
 
 @Controller('vendor/products')
 @UseGuards(VendorContextGuard, RolesGuard)
-@Roles('manager', 'owner', 'admin', 'superadmin')
+@Roles('budtender', 'manager', 'owner', 'admin', 'superadmin')
 export class VendorProductsController {
   constructor(private readonly products: VendorProductsService) {}
 
   @Get()
   @HttpCode(HttpStatus.OK)
   @RateLimit({ name: 'vendor-products-list', tracker: 'user', limit: 120, windowMs: 60_000 })
-  async list(@CurrentDispensary() ctx: VendorContext): Promise<{ products: readonly ProductResponse[] }> {
+  async list(
+    @CurrentDispensary() ctx: VendorContext,
+  ): Promise<{ products: readonly ProductResponse[] }> {
     return { products: await this.products.list(ctx) };
   }
 

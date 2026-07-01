@@ -17,7 +17,7 @@ import type { VendorContext } from '../../listings/vendor/vendor-context.types.j
 
 @Controller('vendor/products')
 @UseGuards(VendorContextGuard, RolesGuard)
-@Roles('manager', 'owner', 'admin', 'superadmin')
+@Roles('budtender', 'manager', 'owner', 'admin', 'superadmin')
 export class VendorProductUploadsController {
   constructor(private readonly uploads: VendorProductUploadsService) {}
 
