@@ -68,8 +68,9 @@ export class VendorSettingsUploadsService {
 
     return {
       uploadUrl: presigned.url,
+      method: presigned.method,
       // Spread to a fresh mutable record — the adapter returns a readonly view.
-      fields: { ...presigned.fields },
+      headers: { ...presigned.headers },
       objectKey,
       expiresAt: presigned.expiresAt.toISOString(),
     };

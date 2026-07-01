@@ -31,18 +31,20 @@ export type ImageUploadRequest = z.infer<typeof ImageUploadRequestSchema>;
 export class ImageUploadRequestDto extends createZodDto(ImageUploadRequestSchema) {}
 
 /**
- * The presigned POST the client submits as multipart/form-data:
- *   - `uploadUrl`  — the R2 bucket URL to POST to
- *   - `fields`     — policy fields that must be sent verbatim, with the file
- *                    appended last under a `file` field
+ * The presigned PUT the client issues to upload directly to R2:
+ *   - `uploadUrl`  — the signed R2 URL to PUT the raw file bytes to
+ *   - `method`     — always `PUT` (R2 does not support presigned POST)
+ *   - `headers`    — headers that must be sent verbatim on the PUT; at minimum
+ *                    `Content-Type`, which is part of the signature
  *   - `objectKey`  — the key to persist in the listing's `imageKeys` once the
- *                    upload succeeds (also embedded in `fields.key`)
- *   - `expiresAt`  — when the policy lapses; the UI re-requests if it stalls
+ *                    upload succeeds
+ *   - `expiresAt`  — when the signed URL lapses; the UI re-requests if it stalls
  */
 export const ImageUploadResponseSchema = z
   .object({
     uploadUrl: z.string().url(),
-    fields: z.record(z.string()),
+    method: z.literal('PUT'),
+    headers: z.record(z.string()),
     objectKey: z.string(),
     expiresAt: z.string().datetime({ offset: true }),
   })

@@ -1,16 +1,20 @@
-import { DeleteObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
+import {
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  PutBucketCorsCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigError, ExternalServiceError, ValidationError } from '@dankdash/types';
 import { mockClient, type AwsClientStub } from 'aws-sdk-client-mock';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { R2Storage, type R2Config } from '../src/r2.js';
 
-// Spy on the local presigner modules so individual tests can inject a
-// one-shot rejection to exercise the catch blocks in `presignUpload` and
-// `presignDownload`. `spy: true` preserves the real implementation, so
-// every other test calls through to the genuine signer.
-vi.mock('@aws-sdk/s3-presigned-post', { spy: true });
+// Spy on the request presigner so individual tests can inject a one-shot
+// rejection to exercise the catch blocks in `presignUpload` and
+// `presignDownload` (both use `getSignedUrl` — R2 does not support presigned
+// POST). `spy: true` preserves the real implementation, so every other test
+// calls through to the genuine signer.
 vi.mock('@aws-sdk/s3-request-presigner', { spy: true });
 
 const baseConfig: R2Config = {
@@ -39,7 +43,7 @@ describe('R2Storage', () => {
   });
 
   describe('presignUpload', () => {
-    it('returns a presigned POST against the bucket endpoint with default 5-minute TTL', async () => {
+    it('returns a presigned PUT against the bucket endpoint with default 5-minute TTL', async () => {
       const storage = new R2Storage(baseConfig);
       const before = Date.now();
       const presigned = await storage.presignUpload({
@@ -48,19 +52,17 @@ describe('R2Storage', () => {
         contentLengthMax: 5 * 1024 * 1024,
       });
 
+      expect(presigned.method).toBe('PUT');
       expect(presigned.url).toMatch(/^https:\/\//);
       expect(presigned.url).toContain(R2_HOST);
       expect(presigned.url).toContain('dankdash-test');
+      expect(presigned.url).toContain('uploads/abc.jpg');
+      // Signed URL — carries the SigV4 query params, not a POST policy.
+      expect(presigned.url).toContain('X-Amz-Signature=');
+      expect(presigned.url).toContain('X-Amz-Expires=300');
 
-      expect(presigned.fields).toMatchObject({
-        key: 'uploads/abc.jpg',
-        'Content-Type': 'image/jpeg',
-      });
-      expect(presigned.fields).toHaveProperty('Policy');
-      expect(presigned.fields).toHaveProperty('X-Amz-Algorithm');
-      expect(presigned.fields).toHaveProperty('X-Amz-Credential');
-      expect(presigned.fields).toHaveProperty('X-Amz-Date');
-      expect(presigned.fields).toHaveProperty('X-Amz-Signature');
+      // The client must echo these headers verbatim on the PUT.
+      expect(presigned.headers).toEqual({ 'Content-Type': 'image/jpeg' });
 
       const ttlMs = presigned.expiresAt.getTime() - before;
       expect(ttlMs).toBeGreaterThan(290_000);
@@ -76,27 +78,23 @@ describe('R2Storage', () => {
         contentLengthMax: 100 * 1024 * 1024,
         expiresInSec: 60,
       });
+      expect(presigned.url).toContain('X-Amz-Expires=60');
       const ttlMs = presigned.expiresAt.getTime() - before;
       expect(ttlMs).toBeGreaterThan(50_000);
       expect(ttlMs).toBeLessThan(70_000);
     });
 
-    it('encodes a content-length-range condition in the policy', async () => {
+    it('signs the declared content-type into the request', async () => {
       const storage = new R2Storage(baseConfig);
       const presigned = await storage.presignUpload({
         key: 'uploads/policy.txt',
         contentType: 'text/plain',
         contentLengthMax: 1234,
       });
-      const policyB64 = presigned.fields['Policy'];
-      expect(policyB64).toBeTypeOf('string');
-      const policy = JSON.parse(Buffer.from(policyB64!, 'base64').toString('utf8')) as {
-        conditions: unknown[];
-      };
-      const hasRange = policy.conditions.some(
-        (c) => Array.isArray(c) && c[0] === 'content-length-range' && c[1] === 1 && c[2] === 1234,
-      );
-      expect(hasRange).toBe(true);
+      // content-type is bound into the signature so the client cannot store a
+      // different type than it declared; it is surfaced as a required header.
+      expect(presigned.headers['Content-Type']).toBe('text/plain');
+      expect(presigned.url).toContain('X-Amz-Signature=');
     });
 
     it('rejects an empty key with ValidationError', async () => {
@@ -136,7 +134,7 @@ describe('R2Storage', () => {
     });
 
     it('wraps presigner failures in ExternalServiceError', async () => {
-      vi.mocked(createPresignedPost).mockRejectedValueOnce(new Error('signer boom'));
+      vi.mocked(getSignedUrl).mockRejectedValueOnce(new Error('signer boom'));
       const storage = new R2Storage(baseConfig);
       try {
         await storage.presignUpload({
@@ -152,6 +150,37 @@ describe('R2Storage', () => {
           key: 'uploads/abc.jpg',
         });
       }
+    });
+  });
+
+  describe('putBucketCors', () => {
+    it('sends a PutBucketCors command allowing PUT/GET/HEAD from the given origins', async () => {
+      s3Mock.on(PutBucketCorsCommand).resolves({});
+      const storage = new R2Storage(baseConfig);
+
+      await storage.putBucketCors(['https://dankdash.business', 'http://localhost:3000']);
+
+      const calls = s3Mock.commandCalls(PutBucketCorsCommand);
+      expect(calls).toHaveLength(1);
+      const input = calls[0]?.args[0]?.input;
+      expect(input?.Bucket).toBe('dankdash-test');
+      const rule = input?.CORSConfiguration?.CORSRules?.[0];
+      expect(rule?.AllowedOrigins).toEqual(['https://dankdash.business', 'http://localhost:3000']);
+      expect(rule?.AllowedMethods).toEqual(['PUT', 'GET', 'HEAD']);
+      expect(rule?.AllowedHeaders).toEqual(['*']);
+    });
+
+    it('rejects an empty origin list with ValidationError', async () => {
+      const storage = new R2Storage(baseConfig);
+      await expect(storage.putBucketCors([])).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('wraps R2 failures in ExternalServiceError', async () => {
+      s3Mock.on(PutBucketCorsCommand).rejects(new Error('r2 boom'));
+      const storage = new R2Storage(baseConfig);
+      await expect(storage.putBucketCors(['https://dankdash.business'])).rejects.toBeInstanceOf(
+        ExternalServiceError,
+      );
     });
   });
 

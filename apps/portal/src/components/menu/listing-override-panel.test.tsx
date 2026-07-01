@@ -57,8 +57,9 @@ function echoingPatch(
 
 function ticketFor(objectKey: string): ListingImageUploadTicket {
   return {
-    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash',
-    fields: { key: objectKey, 'Content-Type': 'image/jpeg' },
+    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash?X-Amz-Signature=abc',
+    method: 'PUT',
+    headers: { 'Content-Type': 'image/jpeg' },
     objectKey,
     expiresAt: '2026-06-07T12:05:00.000Z',
   };

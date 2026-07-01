@@ -11,9 +11,16 @@
  *     swapping providers (or upgrading the SDK) is a one-package change.
  *
  * Two presign variants are exposed:
- *   - `presignUpload` builds a presigned POST policy for browser/mobile direct
- *     uploads. The policy locks content type and length-range so the client
- *     cannot upload arbitrary garbage.
+ *   - `presignUpload` builds a presigned PUT URL for browser/mobile direct
+ *     uploads. The client issues a single `PUT` with the file as the raw body
+ *     and the signed `Content-Type` header. Cloudflare R2 does NOT implement
+ *     S3 presigned POST (it returns `501 NotImplemented` — "Presigned post
+ *     requests are not yet implemented"), so presigned PUT is the only
+ *     browser-direct upload mechanism R2 supports. The content type is baked
+ *     into the signature so the client cannot store a different type than it
+ *     declared; the byte-size ceiling is enforced client-side before the PUT
+ *     (presigned PUT cannot carry a content-length-range policy the way a POST
+ *     policy can).
  *   - `presignDownload` builds a presigned GET URL for restricted assets
  *     (COAs visible only to vendors/admins, ID scans visible only to
  *     compliance officers).
@@ -32,11 +39,11 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
-import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigError, ExternalServiceError, ValidationError } from '@dankdash/types';
 import type { Readable } from 'node:stream';
@@ -60,28 +67,36 @@ export interface R2Config {
 }
 
 /**
- * Result of {@link R2Storage.presignUpload}. The client POSTs a multipart
- * form to `url` with every entry in `fields` populated and the file body
- * in a `file` field appended last.
+ * Result of {@link R2Storage.presignUpload}. The client issues a single
+ * `PUT` to `url` with the file as the raw request body and every entry in
+ * `headers` set verbatim (at minimum `Content-Type`, which is part of the
+ * signature — omitting or changing it yields a 403 SignatureDoesNotMatch).
  *
- * `expiresAt` is the wall-clock time at which the underlying policy stops
- * being accepted by R2; surface it to the client so the UI can re-request
- * a fresh URL before it lapses.
+ * `expiresAt` is the wall-clock time at which the signed URL stops being
+ * accepted by R2; surface it to the client so the UI can re-request a fresh
+ * URL before it lapses.
  */
 export interface PresignedUpload {
   readonly url: string;
-  readonly fields: Readonly<Record<string, string>>;
+  readonly method: 'PUT';
+  readonly headers: Readonly<Record<string, string>>;
   readonly expiresAt: Date;
 }
 
 export interface PresignUploadOptions {
   /** Object key (no leading slash, non-empty). */
   readonly key: string;
-  /** Required Content-Type the upload must declare; locked in the policy. */
+  /** Required Content-Type the upload must declare; signed into the URL. */
   readonly contentType: string;
-  /** Maximum allowed upload size in bytes; enforced server-side by R2. */
+  /**
+   * Maximum allowed upload size in bytes. Enforced by the caller CLIENT-SIDE
+   * before issuing the PUT — a presigned PUT cannot carry the
+   * `content-length-range` policy that a presigned POST could, and R2 does
+   * not support presigned POST. Kept in the options so callers document the
+   * ceiling at the call site and validate against it.
+   */
   readonly contentLengthMax: number;
-  /** Lifetime of the presigned POST policy. Defaults to 300 (5 minutes). */
+  /** Lifetime of the presigned URL. Defaults to 300 (5 minutes). */
   readonly expiresInSec?: number;
 }
 
@@ -122,22 +137,76 @@ export class R2Storage {
     const expiresAt = new Date(Date.now() + expiresInSec * 1000);
 
     try {
-      const post = await createPresignedPost(this.client, {
-        Bucket: this.bucket,
-        Key: opts.key,
-        Conditions: [
-          ['content-length-range', 1, opts.contentLengthMax],
-          { 'Content-Type': opts.contentType },
-        ],
-        Fields: { 'Content-Type': opts.contentType },
-        Expires: expiresInSec,
-      });
-      return { url: post.url, fields: post.fields, expiresAt };
+      // Presigned PUT — the only browser-direct upload R2 supports. Signing
+      // ContentType binds the header into the signature, so the client must
+      // PUT with exactly this Content-Type or R2 rejects with 403.
+      const url = await getSignedUrl(
+        this.client,
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: opts.key,
+          ContentType: opts.contentType,
+        }),
+        { expiresIn: expiresInSec },
+      );
+      return {
+        url,
+        method: 'PUT',
+        headers: { 'Content-Type': opts.contentType },
+        expiresAt,
+      };
     } catch (cause) {
       throw new ExternalServiceError(
         SERVICE_NAME,
         'failed to create presigned upload',
         { key: opts.key },
+        cause,
+      );
+    }
+  }
+
+  /**
+   * Sets the bucket CORS policy so browsers may issue the presigned PUT from
+   * the given web origins. Required for direct-to-R2 uploads: without a
+   * matching CORS rule the browser's preflight is rejected (403, no
+   * `Access-Control-Allow-*`) before the PUT is ever sent — the signature
+   * being valid is irrelevant. This is idempotent: it replaces the bucket's
+   * CORS configuration wholesale each call.
+   *
+   * `allowedOrigins` are exact web origins (scheme + host [+ port]) — R2 does
+   * not honor wildcard-subdomain matching, so list each origin explicitly.
+   */
+  async putBucketCors(allowedOrigins: readonly string[]): Promise<void> {
+    if (allowedOrigins.length === 0) {
+      throw new ValidationError('allowedOrigins must be a non-empty list');
+    }
+    try {
+      await this.client.send(
+        new PutBucketCorsCommand({
+          Bucket: this.bucket,
+          CORSConfiguration: {
+            CORSRules: [
+              {
+                AllowedOrigins: [...allowedOrigins],
+                // PUT for presigned uploads; GET/HEAD so a browser can read
+                // back an object it just uploaded (e.g. a preview fetch).
+                AllowedMethods: ['PUT', 'GET', 'HEAD'],
+                // Content-Type is signed into the PUT and must be allowed
+                // through the preflight; '*' also covers the `x-amz-*` headers
+                // the SDK may attach.
+                AllowedHeaders: ['*'],
+                ExposeHeaders: ['ETag'],
+                MaxAgeSeconds: 3600,
+              },
+            ],
+          },
+        }),
+      );
+    } catch (cause) {
+      throw new ExternalServiceError(
+        SERVICE_NAME,
+        'failed to set bucket CORS configuration',
+        { bucket: this.bucket },
         cause,
       );
     }
