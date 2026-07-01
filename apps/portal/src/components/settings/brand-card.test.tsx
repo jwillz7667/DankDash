@@ -22,7 +22,17 @@ function makeSettings(overrides: Partial<VendorSettings> = {}): VendorSettings {
     region: 'MN',
     postalCode: '55401',
     location: { type: 'Point', coordinates: [-93.27, 44.98] },
-    deliveryPolygon: { type: 'Polygon', coordinates: [[[0, 0], [0, 1], [1, 1], [0, 0]]] },
+    deliveryPolygon: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [0, 0],
+          [0, 1],
+          [1, 1],
+          [0, 0],
+        ],
+      ],
+    },
     hours: { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null },
     phone: null,
     email: null,
@@ -54,8 +64,9 @@ function echoingPatch(
 
 function ticketFor(objectKey: string): ImageUploadTicket {
   return {
-    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash',
-    fields: { key: objectKey, 'Content-Type': 'image/jpeg' },
+    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash?X-Amz-Signature=abc',
+    method: 'PUT',
+    headers: { 'Content-Type': 'image/jpeg' },
     objectKey,
     expiresAt: '2026-06-29T12:05:00.000Z',
   };
@@ -232,7 +243,9 @@ describe('BrandCard — color', () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText('Brand color (hex)'), { target: { value: 'not-a-hex' } });
+    fireEvent.change(screen.getByLabelText('Brand color (hex)'), {
+      target: { value: 'not-a-hex' },
+    });
     fireEvent.click(screen.getByRole('button', { name: /save color/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/#RRGGBB/i);

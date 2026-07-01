@@ -185,11 +185,9 @@ describe('isUploadableListingImageType', () => {
 describe('requestListingImageUpload', () => {
   it('POSTs the content type to /v1/vendor/listings/image-uploads and returns the ticket', async () => {
     const ticket: ListingImageUploadTicket = {
-      uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash',
-      fields: {
-        key: `dispensaries/${DISPENSARY_ID}/listings/abc.jpg`,
-        'Content-Type': 'image/jpeg',
-      },
+      uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash?X-Amz-Signature=abc',
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
       objectKey: `dispensaries/${DISPENSARY_ID}/listings/abc.jpg`,
       expiresAt: '2026-06-07T12:05:00.000Z',
     };
@@ -199,6 +197,8 @@ describe('requestListingImageUpload', () => {
 
     expect(result).toEqual(ticket);
     const req = captured[0];
+    // The presign REQUEST to our API is still a POST; the returned ticket
+    // then drives a PUT straight to R2.
     expect(req?.method).toBe('POST');
     expect(req?.url).toBe('https://api.test/v1/vendor/listings/image-uploads');
     expect(req?.headers['X-Dispensary-Id']).toBe(DISPENSARY_ID);
@@ -210,22 +210,20 @@ describe('requestListingImageUpload', () => {
 
 describe('uploadListingImageToStorage', () => {
   const TICKET: ListingImageUploadTicket = {
-    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash',
-    fields: {
-      key: `dispensaries/${DISPENSARY_ID}/listings/abc.webp`,
-      'Content-Type': 'image/webp',
-      Policy: 'eyJ...',
-      'X-Amz-Signature': 'deadbeef',
-    },
+    uploadUrl: 'https://account.r2.cloudflarestorage.com/dankdash?X-Amz-Signature=deadbeef',
+    method: 'PUT',
+    headers: { 'Content-Type': 'image/webp' },
     objectKey: `dispensaries/${DISPENSARY_ID}/listings/abc.webp`,
     expiresAt: '2026-06-07T12:05:00.000Z',
   };
 
-  it('submits every policy field then the file last, and returns the object key', async () => {
-    let captured: FormData | null = null;
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      captured = init?.body as FormData;
-      return new Response(null, { status: 204 });
+  it('PUTs the raw file with the signed headers and returns the object key', async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: RequestInfo | URL | undefined;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(null, { status: 200 });
     });
     const file = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' });
 
@@ -237,23 +235,44 @@ describe('uploadListingImageToStorage', () => {
 
     expect(key).toBe(TICKET.objectKey);
     expect(fetchImpl).toHaveBeenCalledOnce();
-    const form = captured as unknown as FormData;
-    const entries = [...form.keys()];
-    expect(entries).toEqual(['key', 'Content-Type', 'Policy', 'X-Amz-Signature', 'file']);
-    expect(entries.at(-1)).toBe('file');
-    expect(form.get('key')).toBe(TICKET.fields.key);
+    expect(capturedUrl).toBe(TICKET.uploadUrl);
+    expect(capturedInit?.method).toBe('PUT');
+    expect(capturedInit?.headers).toEqual({ 'Content-Type': 'image/webp' });
+    expect(capturedInit?.body).toBe(file);
   });
 
-  it('throws ListingImageUploadError with the HTTP status when storage rejects the policy', async () => {
+  it('fails fast (no retry) when storage rejects with a deterministic 403', async () => {
     const fetchImpl = vi.fn(async () => new Response('AccessDenied', { status: 403 }));
     const file = new Blob([new Uint8Array([1])], { type: 'image/webp' });
 
     await expect(
       uploadListingImageToStorage(TICKET, file, fetchImpl as unknown as typeof fetch),
     ).rejects.toMatchObject({ name: 'ImageUploadError', status: 403 });
+    // 403 is deterministic — retrying would only repeat the rejection.
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
-  it('wraps a network failure as ListingImageUploadError with a null status', async () => {
+  it('retries transient 5xx failures then succeeds', async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      return calls < 3
+        ? new Response('slow down', { status: 503 })
+        : new Response(null, { status: 200 });
+    });
+    const file = new Blob([new Uint8Array([1])], { type: 'image/webp' });
+
+    const key = await uploadListingImageToStorage(
+      TICKET,
+      file,
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    expect(key).toBe(TICKET.objectKey);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries a network failure then surfaces a null status after exhausting attempts', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new TypeError('Failed to fetch');
     });
@@ -267,5 +286,6 @@ describe('uploadListingImageToStorage', () => {
 
     expect(error).toBeInstanceOf(ListingImageUploadError);
     expect((error as ListingImageUploadError).status).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 });

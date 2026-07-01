@@ -36,14 +36,17 @@ function makeProduct(overrides: Partial<VendorProduct> = {}): VendorProduct {
   };
 }
 
-function makeActions(create = vi.fn(async (i: CreateVendorProductInput) => makeProduct(i as Partial<VendorProduct>))) {
+function makeActions(
+  create = vi.fn(async (i: CreateVendorProductInput) => makeProduct(i as Partial<VendorProduct>)),
+) {
   return {
     create,
     patch: vi.fn(async () => makeProduct()),
     requestImageUpload: vi.fn(
       async (): Promise<ImageUploadTicket> => ({
         uploadUrl: 'https://r2',
-        fields: {},
+        method: 'PUT',
+        headers: { 'Content-Type': 'image/jpeg' },
         objectKey: 'k',
         expiresAt: '2026-06-29T00:00:00.000Z',
       }),
@@ -103,7 +106,9 @@ describe('ProductEditor — create', () => {
     fireEvent.change(screen.getByLabelText('THC (mg/unit)'), { target: { value: '10' } });
     fireEvent.click(screen.getByTestId('product-editor-save'));
 
-    expect(await screen.findByTestId('product-editor-error')).toHaveTextContent(/Brand is required/i);
+    expect(await screen.findByTestId('product-editor-error')).toHaveTextContent(
+      /Brand is required/i,
+    );
     expect(actions.create).not.toHaveBeenCalled();
   });
 
@@ -125,7 +130,9 @@ describe('ProductEditor — create', () => {
     fireEvent.change(screen.getByLabelText('THC (mg/serving)'), { target: { value: '25' } });
     fireEvent.click(screen.getByTestId('product-editor-save'));
 
-    expect(await screen.findByTestId('product-editor-error')).toHaveTextContent(/10mg THC per serving/i);
+    expect(await screen.findByTestId('product-editor-error')).toHaveTextContent(
+      /10mg THC per serving/i,
+    );
     expect(actions.create).not.toHaveBeenCalled();
   });
 });
@@ -148,7 +155,10 @@ describe('ProductEditor — edit', () => {
     fireEvent.click(screen.getByTestId('product-editor-save'));
 
     await waitFor(() => {
-      expect(actions.patch).toHaveBeenCalledWith(product.id, expect.objectContaining({ name: 'House Blend v2' }));
+      expect(actions.patch).toHaveBeenCalledWith(
+        product.id,
+        expect.objectContaining({ name: 'House Blend v2' }),
+      );
     });
   });
 });

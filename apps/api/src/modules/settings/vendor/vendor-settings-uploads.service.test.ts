@@ -9,7 +9,7 @@
  *   - the file extension is derived from the locked content type so the stored
  *     object is servable with a correct type;
  *   - the storage policy locks the content type and a 5 MiB size ceiling;
- *   - the response surfaces a fresh mutable `fields` map (the adapter returns a
+ *   - the response surfaces a fresh mutable `headers` map (the adapter returns a
  *     readonly view) and an ISO-8601 `expiresAt`.
  *
  * R2Storage is faked — these are pure unit tests with no network.
@@ -40,7 +40,8 @@ class FakeR2Storage {
     this.calls.push(opts);
     return Promise.resolve({
       url: 'https://account.r2.cloudflarestorage.com/dankdash',
-      fields: Object.freeze({ key: opts.key, 'Content-Type': opts.contentType, Policy: 'p' }),
+      method: 'PUT' as const,
+      headers: Object.freeze({ 'Content-Type': opts.contentType }),
       expiresAt: EXPIRES_AT,
     });
   }
@@ -86,16 +87,18 @@ describe('VendorSettingsUploadsService.createUpload', () => {
     expect(opts?.key).toMatch(/\.png$/u);
   });
 
-  it('returns a fresh mutable fields map and an ISO-8601 expiry', async () => {
+  it('returns a PUT method, a fresh mutable headers map, and an ISO-8601 expiry', async () => {
     const { service } = makeService();
 
     const res = await service.createUpload(CTX, { contentType: 'image/webp' });
 
     expect(res.uploadUrl).toContain('r2.cloudflarestorage.com');
+    expect(res.method).toBe('PUT');
+    expect(res.headers['Content-Type']).toBe('image/webp');
     expect(res.expiresAt).toBe(EXPIRES_AT.toISOString());
     // Must not be the frozen adapter view — a later mutation must not throw.
     expect(() => {
-      res.fields.extra = 'x';
+      res.headers.extra = 'x';
     }).not.toThrow();
   });
 

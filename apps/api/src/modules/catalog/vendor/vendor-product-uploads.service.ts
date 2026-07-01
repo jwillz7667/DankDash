@@ -1,7 +1,7 @@
 /**
  * Mints presigned R2 uploads for vendor-authored product images.
  *
- * Identical contract to the listing/brand uploaders: mint a presigned POST
+ * Identical contract to the listing/brand uploaders: mint a presigned PUT
  * under the dispensary's own `products/` prefix, the browser uploads straight
  * to R2, then the returned `objectKey` is persisted on the product's
  * `imageKeys` via PATCH /v1/vendor/products/:id — where VendorProductsService
@@ -50,7 +50,8 @@ export class VendorProductUploadsService {
 
     return {
       uploadUrl: presigned.url,
-      fields: { ...presigned.fields },
+      method: presigned.method,
+      headers: { ...presigned.headers },
       objectKey,
       expiresAt: presigned.expiresAt.toISOString(),
     };
