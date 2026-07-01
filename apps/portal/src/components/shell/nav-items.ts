@@ -48,7 +48,7 @@ export const PRIMARY_NAV: ReadonlyArray<NavItem> = [
   },
   { key: 'orders', label: 'Orders', href: '/orders', icon: ListChecks, roles: VENDOR_ROLES },
   { key: 'menu', label: 'Menu', href: '/menu', icon: ShoppingBag, roles: VENDOR_ROLES },
-  { key: 'products', label: 'Products', href: '/products', icon: Package, roles: MANAGER_PLUS },
+  { key: 'products', label: 'Products', href: '/products', icon: Package, roles: VENDOR_ROLES },
   { key: 'staff', label: 'Staff', href: '/staff', icon: Users, roles: MANAGER_PLUS },
   { key: 'payouts', label: 'Payouts', href: '/payouts', icon: Banknote, roles: MANAGER_PLUS },
   {
