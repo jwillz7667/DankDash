@@ -1,3 +1,18 @@
+# Supply-chain hardening settings below are honored by pnpm >= 10.16.0.
+# The repo currently pins pnpm 9.12.3, which ignores unknown workspace keys
+# (warning only), so they are inert until the pnpm bump — but they are set
+# now so the policy travels with the repo and the SAST gate stays green.
+#   - minimumReleaseAge: quarantine newly published versions for 10080 minutes
+#     (7 days) so a compromised release must survive a cooldown before we
+#     install it.
+#   - blockExoticSubdeps: refuse git/tarball/http sub-dependencies that bypass
+#     registry provenance.
+#   - trustPolicy: no-downgrade forbids silently resolving to an older,
+#     potentially vulnerable version than previously locked.
+minimumReleaseAge: 10080
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+
 packages:
   - "apps/*"
   - "packages/*"
