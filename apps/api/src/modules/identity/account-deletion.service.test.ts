@@ -28,6 +28,7 @@ import {
 } from './account-deletion.service.js';
 import type {
   Database,
+  FavoritesRepository,
   OrdersRepository,
   PasswordResetTokensRepository,
   PaymentMethodsRepository,
@@ -140,6 +141,16 @@ class FakePaymentMethodsRepo {
   };
 }
 
+class FakeFavoritesRepo {
+  public deleteCalls: string[] = [];
+  constructor(private readonly rec: Recorder) {}
+  deleteAllForUser = (userId: string): Promise<number> => {
+    this.rec.log.push('favorites.deleteAllForUser');
+    this.deleteCalls.push(userId);
+    return Promise.resolve(3);
+  };
+}
+
 interface Rig {
   readonly service: AccountDeletionService;
   readonly rec: Recorder;
@@ -149,6 +160,7 @@ interface Rig {
   readonly resetTokens: FakeResetTokensRepo;
   readonly addresses: FakeAddressesRepo;
   readonly paymentMethods: FakePaymentMethodsRepo;
+  readonly favorites: FakeFavoritesRepo;
 }
 
 function makeRig(): Rig {
@@ -159,6 +171,7 @@ function makeRig(): Rig {
   const resetTokens = new FakeResetTokensRepo(rec);
   const addresses = new FakeAddressesRepo(rec);
   const paymentMethods = new FakePaymentMethodsRepo(rec);
+  const favorites = new FakeFavoritesRepo(rec);
 
   const fakeDb = {
     transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
@@ -172,6 +185,7 @@ function makeRig(): Rig {
       userAddresses: addresses as unknown as UserAddressesRepository,
       paymentMethods: paymentMethods as unknown as PaymentMethodsRepository,
       orders: orders as unknown as OrdersRepository,
+      favorites: favorites as unknown as FavoritesRepository,
     }) satisfies AccountDeletionScopedRepos;
 
   return {
@@ -183,6 +197,7 @@ function makeRig(): Rig {
     resetTokens,
     addresses,
     paymentMethods,
+    favorites,
   };
 }
 
@@ -201,6 +216,7 @@ describe('AccountDeletionService.deleteAccount', () => {
     expect(rig.resetTokens.invalidateCalls).toEqual([USER_ID]);
     expect(rig.addresses.softDeleteCalls).toEqual([USER_ID]);
     expect(rig.paymentMethods.softDeleteCalls).toEqual([USER_ID]);
+    expect(rig.favorites.deleteCalls).toEqual([USER_ID]);
     expect(rig.users.anonymizeCalls).toEqual([USER_ID]);
   });
 

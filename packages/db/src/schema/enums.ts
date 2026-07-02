@@ -47,6 +47,13 @@ export const posProvider = pgEnum('pos_provider', [
 
 export const staffRole = pgEnum('staff_role', ['budtender', 'manager', 'owner']);
 
+/**
+ * The kinds of entity a consumer can save to their favorites. Drives the
+ * `user_favorites.favoritable_type` discriminator; the exclusive-arc CHECK on
+ * that table ties each value to exactly one populated FK column.
+ */
+export const favoritableType = pgEnum('favoritable_type', ['dispensary', 'product']);
+
 export const productType = pgEnum('product_type', [
   'flower',
   'preroll',

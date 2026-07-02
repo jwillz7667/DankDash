@@ -21,6 +21,7 @@ import {
   DriverLocationHistoryRepository,
   DriverShiftsRepository,
   DriversRepository,
+  FavoritesRepository,
   LedgerEntriesRepository,
   MetrcTransactionsRepository,
   NotificationPreferencesRepository,
@@ -1790,6 +1791,79 @@ describe('repository coverage', () => {
 
       expect(await repo.findByEventId(oldEventId)).toBeNull();
       expect(await repo.findByEventId(futureEventId)).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Favorites
+  // -------------------------------------------------------------------------
+
+  describe('FavoritesRepository', () => {
+    const PRODUCT = stableUuid('product', 'p-flower-bg-1');
+
+    it('idempotent save/unsave of a dispensary + product, scoped per user', async () => {
+      const repo = new FavoritesRepository(getPool().db);
+      await repo.deleteAllForUser(DEREK);
+
+      expect(await repo.addDispensary(DEREK, MPLS)).toBe(true);
+      // Second save is a no-op via ON CONFLICT DO NOTHING.
+      expect(await repo.addDispensary(DEREK, MPLS)).toBe(false);
+      expect(await repo.addProduct(DEREK, PRODUCT)).toBe(true);
+
+      const page = await repo.listForUser(DEREK, { limit: 24, offset: 0 });
+      expect(page.total).toBe(2);
+      // Newest-saved first: the product (saved last) precedes the dispensary.
+      expect(page.rows[0]?.productId).toBe(PRODUCT);
+      expect(page.rows[1]?.dispensaryId).toBe(MPLS);
+
+      expect(await repo.removeDispensary(DEREK, MPLS)).toBe(true);
+      // Removing an unsaved target is a no-op, not an error.
+      expect(await repo.removeDispensary(DEREK, MPLS)).toBe(false);
+
+      const after = await repo.listForUser(DEREK, { limit: 24, offset: 0 });
+      expect(after.total).toBe(1);
+      expect(after.rows[0]?.productId).toBe(PRODUCT);
+    });
+
+    it('the exclusive-arc CHECK rejects a row targeting both a dispensary and a product', async () => {
+      const pool = getPool();
+      await expect(
+        pool.sql`
+          INSERT INTO user_favorites (id, user_id, favoritable_type, dispensary_id, product_id)
+          VALUES (${newId()}, ${DEREK}, 'dispensary', ${MPLS}, ${PRODUCT})
+        `,
+      ).rejects.toThrow();
+    });
+
+    it('the partial unique index rejects a duplicate (user, dispensary) at the DB tier', async () => {
+      const pool = getPool();
+      const repo = new FavoritesRepository(pool.db);
+      await repo.deleteAllForUser(BEN);
+      await repo.addDispensary(BEN, STP);
+
+      await expect(
+        pool.sql`
+          INSERT INTO user_favorites (id, user_id, favoritable_type, dispensary_id)
+          VALUES (${newId()}, ${BEN}, 'dispensary', ${STP})
+        `,
+      ).rejects.toThrow();
+
+      await repo.deleteAllForUser(BEN);
+    });
+
+    it('deleteAllForUser purges only the target user', async () => {
+      const repo = new FavoritesRepository(getPool().db);
+      await repo.deleteAllForUser(ALICE);
+      await repo.deleteAllForUser(DEREK);
+      await repo.addDispensary(ALICE, MPLS);
+      await repo.addProduct(DEREK, PRODUCT);
+
+      const removed = await repo.deleteAllForUser(ALICE);
+      expect(removed).toBe(1);
+      expect((await repo.listForUser(ALICE, { limit: 24, offset: 0 })).total).toBe(0);
+      expect((await repo.listForUser(DEREK, { limit: 24, offset: 0 })).total).toBe(1);
+
+      await repo.deleteAllForUser(DEREK);
     });
   });
 });

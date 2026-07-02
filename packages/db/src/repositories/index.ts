@@ -22,6 +22,11 @@ export {
   MetrcTransactionsRepository,
 } from './compliance.repo.js';
 export {
+  FavoritesRepository,
+  type FavoritesPage,
+  type FavoritesPageInput,
+} from './favorites.repo.js';
+export {
   type AvailableDeliveryRow,
   type DispatchCandidateRow,
   type ExpiredOffer,
