@@ -180,6 +180,10 @@ public struct DriverShiftFeature: Sendable {
     case presentedOffer(DispatchOfferFeature.Action)
     case offerSheetDismissed
 
+    // Realtime `/driver` dispatch-board events (offer:new / offer:expired /
+    // delivery:claimed) — the push complement to the offer + deliveries polls.
+    case dispatchEventReceived(DriverDispatchEvent)
+
     // Open delivery pool
     case deliveriesTick
     case availableDeliveriesLoaded(Result<[AvailableDelivery], ShiftErrorBox>)
@@ -215,6 +219,8 @@ public struct DriverShiftFeature: Sendable {
     case deliveriesTimer
     case deliveryRoute
     case claim
+    case dispatchEvents
+    case offerFetch
   }
 
   @Dependency(\.backgroundLocationClient) var locationClient
@@ -361,6 +367,8 @@ public struct DriverShiftFeature: Sendable {
             .cancel(id: CancelID.heatmapTimer),
             .cancel(id: CancelID.heartbeatTimer),
             .cancel(id: CancelID.offerStream),
+            .cancel(id: CancelID.dispatchEvents),
+            .cancel(id: CancelID.offerFetch),
             .cancel(id: CancelID.deliveriesTimer),
             .cancel(id: CancelID.deliveryRoute),
             .run { [shiftAPI, locationClient, driverRealtime, sessionStore] send in
@@ -686,6 +694,49 @@ public struct DriverShiftFeature: Sendable {
         // here except acknowledge the terminal yield.
         return .none
 
+      case .dispatchEventReceived(let event):
+        switch event {
+        case .offerNew:
+          // Don't trust the pushed summary (ids only) — fetch the
+          // authoritative pending list and mount via the same path the
+          // 10s poll uses. Gate exactly like `.deliveriesTick` /
+          // `.offerReceived`: accepting work, free, and not already
+          // showing a sheet (refuse-to-stack lives in `.offerReceived`
+          // too, but skipping the fetch avoids a pointless round-trip).
+          guard state.isAcceptingWork,
+                state.driver?.isOnActiveDelivery != true,
+                state.presentedOffer == nil else { return .none }
+          return .run { [offerSubscription] send in
+            guard let offers = try? await offerSubscription.fetchPending() else { return }
+            for offer in offers {
+              await send(.offerReceived(offer))
+            }
+          }
+          .cancellable(id: CancelID.offerFetch, cancelInFlight: true)
+
+        case .offerExpired(let offerId):
+          // Dismiss the sheet if it's the offer that just expired. The
+          // child's own countdown would dismiss it within a second anyway;
+          // this makes a server-side supersede/timeout snappy.
+          if state.presentedOffer?.offer.id == offerId {
+            state.presentedOffer = nil
+          }
+          return .none
+
+        case .deliveryClaimed(let orderId):
+          // Someone won the open-pool race (or the order left
+          // awaiting_driver for any reason) — drop the pin now instead of
+          // waiting for the 15s deliveries tick.
+          state.availableDeliveries.removeAll { $0.orderId == orderId }
+          if state.selectedDelivery?.orderId == orderId {
+            state.selectedDelivery = nil
+            state.selectedDeliveryRoute = nil
+            state.deliveryDetailError = nil
+            return .cancel(id: CancelID.deliveryRoute)
+          }
+          return .none
+        }
+
       case .presentedOffer(.delegate(.accepted(let offer))):
         state.presentedOffer = nil
         return .send(.delegate(.acceptedOffer(orderId: offer.orderId)))
@@ -932,8 +983,18 @@ public struct DriverShiftFeature: Sendable {
       startHeatmapTimer(seededCoordinate: currentCoordinate),
       startHeartbeatTimer(),
       observeOfferStream(),
+      observeDispatchEvents(),
       startDeliveriesTimer()
     )
+  }
+
+  private func observeDispatchEvents() -> Effect<Action> {
+    .run { [driverRealtime] send in
+      for await event in await driverRealtime.dispatchEvents() {
+        await send(.dispatchEventReceived(event))
+      }
+    }
+    .cancellable(id: CancelID.dispatchEvents, cancelInFlight: true)
   }
 
   private func startDeliveriesTimer() -> Effect<Action> {

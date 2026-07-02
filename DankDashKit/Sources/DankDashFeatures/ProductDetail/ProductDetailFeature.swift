@@ -28,6 +28,10 @@ public struct ProductDetailFeature: Sendable {
     /// renders immediately.
     public let productName: String
     public let brand: String
+    /// The store this detail's listing belongs to, for the "Sold by"
+    /// label. `nil` when the parent didn't resolve a store name (older
+    /// call paths); the view simply omits the label.
+    public let dispensaryName: String?
 
     public var product: Product?
     public var relatedProducts: [SearchProductResult]
@@ -47,6 +51,7 @@ public struct ProductDetailFeature: Sendable {
       maxAvailable: Int,
       productName: String,
       brand: String,
+      dispensaryName: String? = nil,
       product: Product? = nil,
       relatedProducts: [SearchProductResult] = [],
       isLoading: Bool = false,
@@ -63,6 +68,7 @@ public struct ProductDetailFeature: Sendable {
       self.maxAvailable = maxAvailable
       self.productName = productName
       self.brand = brand
+      self.dispensaryName = dispensaryName
       self.product = product
       self.relatedProducts = relatedProducts
       self.isLoading = isLoading

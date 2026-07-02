@@ -53,7 +53,7 @@ import {
   createUndiciDispatcher as createMetrcDispatcher,
 } from '@dankdash/metrc';
 import { configureRegistry } from '@dankdash/observability';
-import { publishRealtimeEvent } from '@dankdash/realtime-events';
+import { publishRealtimeEvent, type PublishRealtimeEventInput } from '@dankdash/realtime-events';
 import { R2Storage } from '@dankdash/storage';
 import { Redis } from 'ioredis';
 import { uuidv7 } from 'uuidv7';
@@ -144,20 +144,12 @@ async function main(): Promise<void> {
     http: metrcHttp,
   });
 
-  const payoutTask = schedulePayoutJob(
-    { dispensaries, drivers, ledger, payouts, aeropay, logger },
-    { cronMetrics },
-  );
-  const webhookCleanupTask = scheduleWebhookEventsCleanupJob(
-    { webhookEvents, logger },
-    { cronMetrics },
-  );
-  // Shared realtime publish connection (XADD to dankdash:realtime). Kept
-  // off the location-ingest connection because ioredis serialises commands
-  // per connection and the ingest connection spends most of its time
-  // BLOCKed on XREADGROUP. Reused by the dispatch offer push and the ETA
-  // observer below. `family: 0` is required for Railway private networking
-  // — see apps/api/src/infrastructure/redis.module.ts.
+  // Single publish connection for every worker-side realtime producer
+  // (dispatch offer:new, offer-expiry offer:expired, eta customer:eta_updated).
+  // Kept off the BLOCKing location-ingest connection because ioredis
+  // serialises commands per connection — an XADD must never queue behind the
+  // ingest XREADGROUP. `family: 0` is required for Railway private networking
+  // (see apps/api/src/infrastructure/redis.module.ts).
   const realtimePublishRedis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
@@ -169,7 +161,17 @@ async function main(): Promise<void> {
       'workers: redis client error',
     );
   });
+  const publishRealtime = (input: PublishRealtimeEventInput): Promise<string> =>
+    publishRealtimeEvent(realtimePublishRedis, input);
 
+  const payoutTask = schedulePayoutJob(
+    { dispensaries, drivers, ledger, payouts, aeropay, logger },
+    { cronMetrics },
+  );
+  const webhookCleanupTask = scheduleWebhookEventsCleanupJob(
+    { webhookEvents, logger },
+    { cronMetrics },
+  );
   const dispatchTask = scheduleDispatchJob({
     orders,
     drivers,
@@ -184,11 +186,16 @@ async function main(): Promise<void> {
       maxRadiusMeters: env.DISPATCH_RADIUS_MILES * 1609.344,
     },
     offerPublisher: {
-      publish: (input) => publishRealtimeEvent(realtimePublishRedis, input),
+      publish: publishRealtime,
       idGen: uuidv7,
     },
   });
-  const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+  const offerExpiryTask = scheduleOfferExpiryJob({
+    dispatchOffers,
+    logger,
+    publish: publishRealtime,
+    idGen: uuidv7,
+  });
 
   // Archive bucket shares the same R2 account as the rest of the storage
   // layer. We construct a dedicated client here rather than reuse one
@@ -253,11 +260,11 @@ async function main(): Promise<void> {
       })
     : null;
 
-  // Dedicated Redis connection for the ETA cache (GET/SETEX on the
-  // eta:v1:* keyspace, sub-second timeouts). Kept off the location-ingest
-  // connection because ioredis serialises commands per connection and the
-  // ingest connection spends most of its time BLOCKed on XREADGROUP; any
-  // GET queued behind it would wait up to `blockMs` for no reason.
+  // Dedicated cache connection for the ETA path (GET/SETEX on the eta:v1:*
+  // keyspace, sub-second timeouts). Kept off both the BLOCKing
+  // location-ingest connection and the shared realtime-publish connection so
+  // a slow cache round-trip never stalls an XADD or vice versa. The XADD
+  // side rides `realtimePublishRedis` (created above).
   // `family: 0` is required for Railway private networking — see the
   // commentary on apps/api/src/infrastructure/redis.module.ts. The XADD
   // publish path reuses `realtimePublishRedis` created above.
@@ -279,7 +286,7 @@ async function main(): Promise<void> {
   const etaObserver = createEtaObserver({
     orders,
     eta: etaService,
-    publish: (input) => publishRealtimeEvent(realtimePublishRedis, input),
+    publish: publishRealtime,
     logger,
     idGen: uuidv7,
   });
