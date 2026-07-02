@@ -72,6 +72,21 @@ struct AccountTabView: View {
           NotificationPreferencesView(store: notificationsStore)
         }
       }
+      .navigationDestination(
+        isPresented: Binding(
+          get: { store.account.favorites != nil },
+          set: { isPresented in
+            if !isPresented { store.send(.account(.favoritesDismissed)) }
+          }
+        )
+      ) {
+        if let favoritesStore = store.scope(
+          state: \.account.favorites,
+          action: \.account.favorites
+        ) {
+          FavoritesView(store: favoritesStore)
+        }
+      }
     }
   }
 }
@@ -98,6 +113,12 @@ struct AccountHubView: View {
             subtitle: "Update the name shown on your orders.",
             isEnabled: store.user != nil,
             action: { store.send(.editProfileTapped) }
+          )
+          AccountRow(
+            icon: "heart",
+            title: "Favorites",
+            subtitle: "Your saved dispensaries and products.",
+            action: { store.send(.favoritesTapped) }
           )
           AccountRow(
             icon: "mappin.and.ellipse",

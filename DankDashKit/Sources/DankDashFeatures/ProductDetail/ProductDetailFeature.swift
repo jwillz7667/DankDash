@@ -43,6 +43,10 @@ public struct ProductDetailFeature: Sendable {
     public var coaFileURL: URL?
     public var coaError: String?
 
+    /// Whether this product is saved. Seeded best-effort on `.task` from the
+    /// favorites list and flipped optimistically by the heart toggle.
+    public var isFavorite: Bool
+
     public init(
       productId: UUID,
       listingId: UUID,
@@ -59,7 +63,8 @@ public struct ProductDetailFeature: Sendable {
       error: String? = nil,
       isCoaDownloading: Bool = false,
       coaFileURL: URL? = nil,
-      coaError: String? = nil
+      coaError: String? = nil,
+      isFavorite: Bool = false
     ) {
       self.productId = productId
       self.listingId = listingId
@@ -77,6 +82,7 @@ public struct ProductDetailFeature: Sendable {
       self.isCoaDownloading = isCoaDownloading
       self.coaFileURL = coaFileURL
       self.coaError = coaError
+      self.isFavorite = isFavorite
     }
 
     /// Convenience for the view: the newest lab result, if any.
@@ -101,6 +107,12 @@ public struct ProductDetailFeature: Sendable {
     case coaDismissed
     case coaErrorDismissed
     case relatedTapped(productId: UUID)
+    /// Best-effort favorite status resolved from the favorites list on `.task`.
+    case favoriteStatusLoaded(Bool)
+    /// Heart tapped. Flips `isFavorite` optimistically, then saves/unsaves.
+    case favoriteToggled
+    /// Save/unsave settled. On failure the optimistic flip is reverted.
+    case favoriteToggleResponse(wasFavoriting: Bool, didSucceed: Bool)
     case delegate(Delegate)
 
     @CasePathable
@@ -132,6 +144,11 @@ public struct ProductDetailFeature: Sendable {
   @Dependency(\.catalogCacheClient) var cache
   @Dependency(\.documentDownloadClient) var downloader
   @Dependency(\.cdnBaseURL) var cdnBaseURL
+  @Dependency(\.favoritesAPIClient) var favoritesClient
+
+  /// Favorite status is resolved from the first favorites page — a shopper
+  /// never saves enough products for the flag to depend on page 2.
+  static let favoritesPageSize = 50
 
   public init() {}
 
@@ -144,6 +161,14 @@ public struct ProductDetailFeature: Sendable {
           let cached = await cache.readProduct(productId)
           await send(.cacheLoaded(cached))
           await send(.fetchRequested)
+          // Best-effort — a favorites failure must not block the detail screen.
+          if let page = try? await favoritesClient.list(Self.favoritesPageSize, 0) {
+            let isFavorite = page.items.contains { item in
+              if case let .product(_, product) = item { return product.id == productId }
+              return false
+            }
+            await send(.favoriteStatusLoaded(isFavorite))
+          }
         }
 
       case .cacheLoaded(let product):
@@ -275,6 +300,34 @@ public struct ProductDetailFeature: Sendable {
 
       case .relatedTapped(let productId):
         return .send(.delegate(.openRelatedProduct(productId: productId)))
+
+      case .favoriteStatusLoaded(let isFavorite):
+        state.isFavorite = isFavorite
+        return .none
+
+      case .favoriteToggled:
+        let wasFavoriting = !state.isFavorite
+        state.isFavorite = wasFavoriting
+        let productId = state.productId
+        return .run { send in
+          do {
+            if wasFavoriting {
+              try await favoritesClient.addProduct(productId)
+            } else {
+              try await favoritesClient.removeProduct(productId)
+            }
+            await send(.favoriteToggleResponse(wasFavoriting: wasFavoriting, didSucceed: true))
+          } catch {
+            await send(.favoriteToggleResponse(wasFavoriting: wasFavoriting, didSucceed: false))
+          }
+        }
+
+      case let .favoriteToggleResponse(wasFavoriting, didSucceed):
+        // Success needs no work. On failure revert to the pre-tap value.
+        if !didSucceed {
+          state.isFavorite = !wasFavoriting
+        }
+        return .none
 
       case .delegate:
         return .none

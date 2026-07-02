@@ -79,6 +79,8 @@ struct DispensaryFeedView: View {
                 DispensaryCard(
                   dispensary: dispensary,
                   cdnBaseURL: cdnBaseURL,
+                  isFavorite: store.favoritedDispensaryIDs.contains(dispensary.id),
+                  favoriteAction: { store.send(.favoriteToggled(id: dispensary.id)) },
                   action: { store.send(.dispensaryTapped(dispensary.id)) }
                 )
                 .padding(.horizontal, DankSpacing.md)
