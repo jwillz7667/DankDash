@@ -28,6 +28,7 @@
  */
 import {
   DispensariesRepository,
+  DispensaryStaffRepository,
   DriversRepository,
   NotificationPreferencesRepository,
   NotificationsRepository,
@@ -66,6 +67,7 @@ import { NullNotificationProvider } from './null-notification.provider.js';
 import { OrderNotificationsListener } from './order-notifications.listener.js';
 import { PushTokensController } from './push-tokens.controller.js';
 import { PushTokensService } from './push-tokens.service.js';
+import { VendorOrderNotificationsListener } from './vendor-order-notifications.listener.js';
 
 const PUSH_PROVIDER = Symbol.for('NOTIFICATIONS_PUSH_PROVIDER');
 const SMS_PROVIDER = Symbol.for('NOTIFICATIONS_SMS_PROVIDER');
@@ -103,6 +105,12 @@ const dispensariesRepoProvider: FactoryProvider<DispensariesRepository> = {
   provide: DispensariesRepository,
   inject: [DRIZZLE_DB],
   useFactory: (db: Database): DispensariesRepository => new DispensariesRepository(db),
+};
+
+const dispensaryStaffRepoProvider: FactoryProvider<DispensaryStaffRepository> = {
+  provide: DispensaryStaffRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DispensaryStaffRepository => new DispensaryStaffRepository(db),
 };
 
 const driversRepoProvider: FactoryProvider<DriversRepository> = {
@@ -265,12 +273,24 @@ const orderListenerProvider: FactoryProvider<OrderNotificationsListener> = {
     new OrderNotificationsListener({ dispatcher, orders, dispensaries, drivers, users }),
 };
 
+const vendorOrderListenerProvider: FactoryProvider<VendorOrderNotificationsListener> = {
+  provide: VendorOrderNotificationsListener,
+  inject: [NotificationDispatcher, DispensariesRepository, DispensaryStaffRepository],
+  useFactory: (
+    dispatcher: NotificationDispatcher,
+    dispensaries: DispensariesRepository,
+    staff: DispensaryStaffRepository,
+  ): VendorOrderNotificationsListener =>
+    new VendorOrderNotificationsListener({ dispatcher, dispensaries, staff }),
+};
+
 const providers: Provider[] = [
   pushTokensRepoProvider,
   notificationsRepoProvider,
   notificationPreferencesRepoProvider,
   usersRepoProvider,
   dispensariesRepoProvider,
+  dispensaryStaffRepoProvider,
   driversRepoProvider,
   ordersRepoProvider,
   pushTokensServiceProvider,
@@ -281,6 +301,7 @@ const providers: Provider[] = [
   emailProviderFactory,
   dispatcherProvider,
   orderListenerProvider,
+  vendorOrderListenerProvider,
 ];
 
 @Module({
