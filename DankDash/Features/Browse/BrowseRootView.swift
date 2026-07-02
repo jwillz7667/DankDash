@@ -110,9 +110,28 @@ struct BrowseRootView: View {
             try? await Task.sleep(for: .seconds(2.5))
             store.send(.toastDismissed)
           }
+      } else if let error = store.productResolveError {
+        ToastView(message: error)
+          .padding(.top, DankSpacing.md)
+          .transition(.move(edge: .top).combined(with: .opacity))
+          .task(id: error) {
+            try? await Task.sleep(for: .seconds(2.5))
+            store.send(.productResolveErrorDismissed)
+          }
+      }
+    }
+    .overlay {
+      if store.isResolvingProduct {
+        ProgressView()
+          .controlSize(.large)
+          .padding(DankSpacing.lg)
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DankRadius.md))
+          .accessibilityLabel("Loading product")
       }
     }
     .animation(.easeInOut(duration: 0.2), value: store.addedToCartToast)
+    .animation(.easeInOut(duration: 0.2), value: store.productResolveError)
+    .animation(.easeInOut(duration: 0.2), value: store.isResolvingProduct)
     .sheet(
       isPresented: Binding(
         get: { store.checkoutHandoff != nil },
