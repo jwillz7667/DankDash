@@ -122,6 +122,18 @@ export class OrderNotificationsListener {
         });
         return;
       }
+      case 'driver_assigned': {
+        const driverFirstName = await this.resolveDriverFirstName(order.driverId);
+        if (driverFirstName === null) return;
+        await this.deps.dispatcher.dispatch({
+          userId: order.userId,
+          templateKey: 'order.driver_assigned',
+          payload: { orderId: order.id, driverFirstName },
+          appVariant: 'consumer',
+          idempotencyKey,
+        });
+        return;
+      }
       case 'picked_up': {
         const driverFirstName = await this.resolveDriverFirstName(order.driverId);
         if (driverFirstName === null) return;
@@ -170,11 +182,37 @@ export class OrderNotificationsListener {
         });
         return;
       }
+      case 'canceled': {
+        await this.deps.dispatcher.dispatch({
+          userId: order.userId,
+          templateKey: 'order.canceled',
+          payload: {
+            orderId: order.id,
+            reason: order.cancelReason ?? 'Your order was canceled.',
+          },
+          appVariant: 'consumer',
+          idempotencyKey,
+        });
+        return;
+      }
+      case 'rejected': {
+        await this.deps.dispatcher.dispatch({
+          userId: order.userId,
+          templateKey: 'order.rejected',
+          payload: {
+            orderId: order.id,
+            dispensaryName,
+            reason: event.reason ?? 'The dispensary was unable to accept your order.',
+          },
+          appVariant: 'consumer',
+          idempotencyKey,
+        });
+        return;
+      }
       default:
         // No notification for this transition (e.g. `awaiting_driver`,
-        // `driver_assigned`, `en_route_pickup/dropoff`, terminal
-        // canceled/rejected/returned/disputed — those have their own
-        // surfaces or are intentionally silent).
+        // `en_route_pickup/dropoff`, `returned_to_store`, `disputed` —
+        // those have their own surfaces or are intentionally silent).
         return;
     }
   }

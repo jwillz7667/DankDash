@@ -21,6 +21,15 @@ export interface OrderTransitionedEventPayload {
   readonly event: OrderEventType;
   readonly actor: OrderTransitionActor;
   readonly occurredAt: Date;
+  /**
+   * Optional human-readable reason carried from the transition request
+   * (`order_status_history.reason`). Populated for actor-supplied
+   * transitions like VENDOR_REJECT / *_CANCEL so downstream subscribers
+   * (notifications) can surface it without re-reading the history table.
+   * Never contains PII — it's the operator/customer-facing cancellation
+   * or rejection note.
+   */
+  readonly reason?: string;
 }
 
 export class OrderTransitionedEvent implements OrderTransitionedEventPayload {
@@ -30,6 +39,7 @@ export class OrderTransitionedEvent implements OrderTransitionedEventPayload {
   public readonly event: OrderEventType;
   public readonly actor: OrderTransitionActor;
   public readonly occurredAt: Date;
+  public readonly reason?: string;
 
   constructor(payload: OrderTransitionedEventPayload) {
     this.orderId = payload.orderId;
@@ -38,5 +48,8 @@ export class OrderTransitionedEvent implements OrderTransitionedEventPayload {
     this.event = payload.event;
     this.actor = payload.actor;
     this.occurredAt = payload.occurredAt;
+    if (payload.reason !== undefined) {
+      this.reason = payload.reason;
+    }
   }
 }
