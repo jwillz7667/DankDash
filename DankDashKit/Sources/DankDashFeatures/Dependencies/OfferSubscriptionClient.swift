@@ -28,8 +28,21 @@ import DankDashNetwork
 public struct OfferSubscriptionClient: Sendable {
   public var stream: @Sendable () -> AsyncStream<DispatchOffer>
 
-  public init(stream: @Sendable @escaping () -> AsyncStream<DispatchOffer>) {
+  /// One-shot authoritative read of the driver's currently-pending offers.
+  /// Driven by the `/driver` socket's `offer:new` push: the pushed envelope
+  /// carries only ids, so the shift home fetches the full offer list here
+  /// and mounts it via the same path the 10s poll uses. Returns only
+  /// `offered`, non-expired offers (same filter as ``stream``).
+  public var fetchPending: @Sendable () async throws -> [DispatchOffer]
+
+  public init(
+    stream: @Sendable @escaping () -> AsyncStream<DispatchOffer>,
+    // Defaulted so existing call sites (tests that synthesize a stream
+    // directly) compile unchanged.
+    fetchPending: @Sendable @escaping () async throws -> [DispatchOffer] = { [] }
+  ) {
     self.stream = stream
+    self.fetchPending = fetchPending
   }
 }
 
@@ -72,6 +85,10 @@ public extension OfferSubscriptionClient {
           }
           continuation.onTermination = { _ in task.cancel() }
         }
+      },
+      fetchPending: {
+        let dto = try await apiClient.send(DriverOffersEndpoints.pendingOffers())
+        return dto.toDomain().filter { $0.status == .offered && !$0.isExpired() }
       }
     )
   }

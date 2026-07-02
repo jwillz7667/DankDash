@@ -1486,6 +1486,153 @@ final class DriverShiftFeatureTests: XCTestCase {
     XCTAssertEqual(store.state.availableDeliveries, [delivery])
   }
 
+  // MARK: - Realtime dispatch-board events
+
+  func test_dispatchEvent_offerNew_whileOnlineAndFree_fetchesAndPresentsOffer() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      // The push carries ids only; the reducer fetches the authoritative
+      // pending list and mounts it via `.offerReceived`.
+      $0.offerSubscriptionClient = OfferSubscriptionClient(
+        stream: { AsyncStream { $0.finish() } },
+        fetchPending: { [offer] }
+      )
+    }
+
+    await store.send(.dispatchEventReceived(.offerNew(offerId: offer.id)))
+    await store.receive(\.offerReceived) {
+      $0.presentedOffer = DispatchOfferFeature.State(offer: offer)
+    }
+  }
+
+  func test_dispatchEvent_offerNew_whileSheetPresented_doesNotFetch() async {
+    let presented = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: presented)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      // fetchPending is left as `.unimplemented` returning []; if the
+      // reducer wrongly fetched, the refuse-to-stack guard still holds, but
+      // the point is it must NOT run the effect at all — no `.offerReceived`
+      // is received (the TestStore fails on an unexpected received action).
+    }
+
+    await store.send(.dispatchEventReceived(.offerNew(offerId: UUID())))
+    XCTAssertEqual(store.state.presentedOffer?.offer.id, presented.id)
+  }
+
+  func test_dispatchEvent_offerNew_whileOffline_isNoOp() async {
+    let store = TestStore(initialState: DriverShiftFeature.State()) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.dispatchEventReceived(.offerNew(offerId: UUID())))
+    XCTAssertNil(store.state.presentedOffer)
+  }
+
+  func test_dispatchEvent_offerExpired_matchingSheet_dismissesIt() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: offer)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.dispatchEventReceived(.offerExpired(offerId: offer.id))) {
+      $0.presentedOffer = nil
+    }
+  }
+
+  func test_dispatchEvent_offerExpired_nonMatchingSheet_isNoOp() async {
+    let offer = Self.offer(expiresAt: Date(timeIntervalSince1970: 1_700_000_030))
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        presentedOffer: DispatchOfferFeature.State(offer: offer)
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.dispatchEventReceived(.offerExpired(offerId: UUID())))
+    XCTAssertEqual(store.state.presentedOffer?.offer.id, offer.id)
+  }
+
+  func test_dispatchEvent_deliveryClaimed_removesPinFromBoard() async {
+    let claimed = Self.availableDelivery(
+      orderId: UUID(uuidString: "00000000-0000-0000-0000-0000000000aa")!
+    )
+    let kept = Self.availableDelivery(
+      orderId: UUID(uuidString: "00000000-0000-0000-0000-0000000000ab")!,
+      shortCode: "CD34"
+    )
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [claimed, kept]
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.dispatchEventReceived(.deliveryClaimed(orderId: claimed.orderId))) {
+      $0.availableDeliveries = [kept]
+    }
+  }
+
+  func test_dispatchEvent_deliveryClaimed_forSelectedPin_clearsSheetAndRoute() async {
+    let claimed = Self.availableDelivery()
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        availableDeliveries: [claimed],
+        selectedDelivery: claimed,
+        selectedDeliveryRoute: [claimed.pickup, claimed.dropoff],
+        deliveryDetailError: "stale"
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.dispatchEventReceived(.deliveryClaimed(orderId: claimed.orderId))) {
+      $0.availableDeliveries = []
+      $0.selectedDelivery = nil
+      $0.selectedDeliveryRoute = nil
+      $0.deliveryDetailError = nil
+    }
+  }
+
   // MARK: - State helpers
 
   func test_isOnline_requiresShiftAndOnShiftStatus() {
