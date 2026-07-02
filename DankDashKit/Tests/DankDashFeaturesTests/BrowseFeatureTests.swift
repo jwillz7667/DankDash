@@ -139,10 +139,145 @@ final class BrowseFeatureTests: XCTestCase {
     XCTAssertNil(store.state.productDetail)
   }
 
-  // MARK: - search → product detail (no listing pin)
+  // MARK: - search → product detail (listing resolution)
 
-  func test_searchDelegateOpenProduct_pushesDetailWithDisabledCart() async {
+  func test_searchDelegateOpenProduct_resolvesListingAndEnablesCart() async {
     let productId = UUID()
+    let listingId = UUID()
+    let dispensaryId = UUID()
+    let hit = Self.makeSearchHit(id: productId, name: "Blue Dream 3.5g", brand: "Sunny Side")
+    let listings = [
+      Self.makeListing(
+        listingId: listingId,
+        dispensaryId: dispensaryId,
+        dispensaryName: "The Grove",
+        priceCents: 4200,
+        quantityAvailable: 9
+      )
+    ]
+    let store = TestStore(
+      initialState: BrowseFeature.State(search: SearchFeature.State(results: [hit]))
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.catalogAPIClient.getProductListings = { @Sendable _ in listings }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.search(.delegate(.openProduct(productId: productId))))
+    XCTAssertTrue(store.state.isResolvingProduct, "Spinner shows during the resolve round-trip.")
+
+    await store.receive(\.productListingsResolved)
+    XCTAssertFalse(store.state.isResolvingProduct)
+    let detail = store.state.productDetail
+    XCTAssertEqual(detail?.productId, productId)
+    XCTAssertEqual(detail?.listingId, listingId)
+    XCTAssertEqual(detail?.dispensaryId, dispensaryId)
+    XCTAssertEqual(detail?.priceCents, 4200)
+    XCTAssertEqual(detail?.maxAvailable, 9)
+    XCTAssertEqual(detail?.productName, "Blue Dream 3.5g")
+    XCTAssertEqual(detail?.brand, "Sunny Side")
+    XCTAssertEqual(detail?.dispensaryName, "The Grove")
+    XCTAssertTrue(detail?.canAddToCart ?? false, "A resolved listing makes add-to-cart live from search.")
+  }
+
+  func test_searchDelegateOpenProduct_prefersCartDispensaryOverCheapest() async {
+    let productId = UUID()
+    let cartDispensaryId = UUID()
+    let cheaperListingId = UUID()
+    let cartListingId = UUID()
+    let hit = Self.makeSearchHit(id: productId, name: "OG Kush", brand: "Rove")
+    // Cheapest is at a different store; the store the cart already belongs to
+    // is pricier — the picker must still choose the cart's store so the
+    // single-dispensary draft isn't cleared.
+    let listings = [
+      Self.makeListing(
+        listingId: cheaperListingId,
+        dispensaryId: UUID(),
+        dispensaryName: "Capitol Cannabis",
+        priceCents: 3800,
+        quantityAvailable: 4
+      ),
+      Self.makeListing(
+        listingId: cartListingId,
+        dispensaryId: cartDispensaryId,
+        dispensaryName: "North Loop Cannabis",
+        priceCents: 4500,
+        quantityAvailable: 6
+      ),
+    ]
+    var initial = BrowseFeature.State(search: SearchFeature.State(results: [hit]))
+    initial.cart.dispensaryId = cartDispensaryId
+    let store = TestStore(initialState: initial) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.catalogAPIClient.getProductListings = { @Sendable _ in listings }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.search(.delegate(.openProduct(productId: productId))))
+    await store.receive(\.productListingsResolved)
+
+    XCTAssertEqual(store.state.productDetail?.listingId, cartListingId)
+    XCTAssertEqual(store.state.productDetail?.dispensaryId, cartDispensaryId)
+  }
+
+  func test_searchDelegateOpenProduct_noInStockListing_setsUnavailableError() async {
+    let productId = UUID()
+    let hit = Self.makeSearchHit(id: productId, name: "Sold Out Strain", brand: "Rare")
+    // A listing exists but is out of stock — not buyable.
+    let listings = [
+      Self.makeListing(
+        listingId: UUID(),
+        dispensaryId: UUID(),
+        dispensaryName: "The Grove",
+        priceCents: 5000,
+        quantityAvailable: 0
+      )
+    ]
+    let store = TestStore(
+      initialState: BrowseFeature.State(search: SearchFeature.State(results: [hit]))
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.catalogAPIClient.getProductListings = { @Sendable _ in listings }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.search(.delegate(.openProduct(productId: productId))))
+    await store.receive(\.productListingsResolved)
+
+    XCTAssertNil(store.state.productDetail, "No buyable listing → no detail pushed.")
+    XCTAssertEqual(store.state.productResolveError, "Sold Out Strain is unavailable right now.")
+    XCTAssertFalse(store.state.isResolvingProduct)
+  }
+
+  func test_searchDelegateOpenProduct_transportFailure_setsError() async {
+    let productId = UUID()
+    let hit = Self.makeSearchHit(id: productId, name: "Anything", brand: "Brand")
+    struct Boom: Error {}
+    let store = TestStore(
+      initialState: BrowseFeature.State(search: SearchFeature.State(results: [hit]))
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.catalogAPIClient.getProductListings = { @Sendable _ in throw Boom() }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.search(.delegate(.openProduct(productId: productId))))
+    await store.receive(\.productListingsResolved)
+
+    XCTAssertNil(store.state.productDetail)
+    XCTAssertEqual(store.state.productResolveError, "We couldn't reach DankDash. Try again.")
+    XCTAssertFalse(store.state.isResolvingProduct)
+  }
+
+  func test_searchDelegateOpenProduct_unknownHit_isNoop() async {
     let store = TestStore(initialState: BrowseFeature.State()) {
       BrowseFeature()
     } withDependencies: {
@@ -150,10 +285,66 @@ final class BrowseFeatureTests: XCTestCase {
     }
     store.exhaustivity = .off
 
+    // No matching hit in search.results → nothing to resolve, no network call.
+    await store.send(.search(.delegate(.openProduct(productId: UUID()))))
+    XCTAssertNil(store.state.productDetail)
+    XCTAssertFalse(store.state.isResolvingProduct)
+  }
+
+  func test_productResolveErrorDismissed_clearsError() async {
+    let store = TestStore(
+      initialState: BrowseFeature.State(productResolveError: "Something went wrong")
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.productResolveErrorDismissed)
+    XCTAssertNil(store.state.productResolveError)
+  }
+
+  func test_searchResolvedThenAddToCart_appendsLine() async {
+    let productId = UUID()
+    let listingId = UUID()
+    let dispensaryId = UUID()
+    let hit = Self.makeSearchHit(id: productId, name: "Gelato 3.5g", brand: "Cresco")
+    let listings = [
+      Self.makeListing(
+        listingId: listingId,
+        dispensaryId: dispensaryId,
+        dispensaryName: "The Grove",
+        priceCents: 5500,
+        quantityAvailable: 3
+      )
+    ]
+    let store = TestStore(
+      initialState: BrowseFeature.State(search: SearchFeature.State(results: [hit]))
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.catalogAPIClient.getProductListings = { @Sendable _ in listings }
+    }
+    store.exhaustivity = .off
+
     await store.send(.search(.delegate(.openProduct(productId: productId))))
-    XCTAssertEqual(store.state.productDetail?.productId, productId)
-    XCTAssertEqual(store.state.productDetail?.maxAvailable, 0, "Search drill-down has no listing pin → cart disabled.")
-    XCTAssertFalse(store.state.productDetail?.canAddToCart ?? true)
+    await store.receive(\.productListingsResolved)
+
+    // Add-to-cart works end-to-end from a search-resolved detail.
+    await store.send(.productDetail(.delegate(.addedToCart(
+      listingId: listingId,
+      productId: productId,
+      productName: "Gelato 3.5g",
+      brand: "Cresco",
+      priceCents: 5500,
+      maxAvailable: 3
+    ))))
+    XCTAssertEqual(store.state.cart.draft.lines.count, 1)
+    XCTAssertEqual(store.state.cart.draft.lines.first?.listingId, listingId)
+    XCTAssertEqual(store.state.cart.dispensaryId, dispensaryId)
+    XCTAssertEqual(store.state.addedToCartToast, "Gelato 3.5g added to cart")
   }
 
   // MARK: - product detail → cart
@@ -606,33 +797,50 @@ final class BrowseFeatureTests: XCTestCase {
     }
   }
 
-  func test_productDetailOpenRelatedProduct_swapsDetailWithDisabledCart() async {
+  func test_productDetailOpenRelatedProduct_resolvesListingAndSwapsDetail() async {
     let originalProductId = UUID()
-    let listingId = UUID()
+    let originalListingId = UUID()
     let dispensaryId = UUID()
     let relatedId = UUID()
+    let relatedListingId = UUID()
+    let relatedHit = Self.makeSearchHit(id: relatedId, name: "Related Strain", brand: "Brand")
+    let listings = [
+      Self.makeListing(
+        listingId: relatedListingId,
+        dispensaryId: UUID(),
+        dispensaryName: "The Grove",
+        priceCents: 3900,
+        quantityAvailable: 8
+      )
+    ]
     let store = TestStore(
       initialState: BrowseFeature.State(
         productDetail: ProductDetailFeature.State(
           productId: originalProductId,
-          listingId: listingId,
+          listingId: originalListingId,
           dispensaryId: dispensaryId,
           priceCents: 3000,
           maxAvailable: 5,
           productName: "Original",
-          brand: "Brand"
+          brand: "Brand",
+          relatedProducts: [relatedHit]
         )
       )
     ) {
       BrowseFeature()
     } withDependencies: {
       $0.continuousClock = ImmediateClock()
+      $0.catalogAPIClient.getProductListings = { @Sendable _ in listings }
     }
     store.exhaustivity = .off
 
     await store.send(.productDetail(.delegate(.openRelatedProduct(productId: relatedId))))
+    await store.receive(\.productListingsResolved)
+
     XCTAssertEqual(store.state.productDetail?.productId, relatedId)
-    XCTAssertEqual(store.state.productDetail?.maxAvailable, 0, "Related products drilled into from a non-storefront detail have no listing pin.")
+    XCTAssertEqual(store.state.productDetail?.listingId, relatedListingId)
+    XCTAssertEqual(store.state.productDetail?.maxAvailable, 8, "Related drill-down resolves a real listing so the cart is enabled.")
+    XCTAssertTrue(store.state.productDetail?.canAddToCart ?? false)
   }
 
   // MARK: - account tab routing
@@ -659,5 +867,44 @@ final class BrowseFeatureTests: XCTestCase {
 
     await store.send(.account(.delegate(.showOrders)))
     XCTAssertEqual(store.state.selectedTab, .orders)
+  }
+
+  // MARK: - fixtures
+
+  static func makeSearchHit(id: UUID, name: String, brand: String) -> SearchProductResult {
+    SearchProductResult(
+      id: id,
+      categoryId: UUID(),
+      brand: brand,
+      name: name,
+      productType: .flower,
+      strainType: .hybrid,
+      thcMgPerUnit: 100,
+      cbdMgPerUnit: 0,
+      weightGramsPerUnit: 3.5,
+      servingCount: nil,
+      thcMgPerServing: nil,
+      imageKeys: [],
+      effectsTags: [],
+      flavorTags: []
+    )
+  }
+
+  static func makeListing(
+    listingId: UUID,
+    dispensaryId: UUID,
+    dispensaryName: String,
+    priceCents: Int,
+    quantityAvailable: Int
+  ) -> ProductListing {
+    ProductListing(
+      listingId: listingId,
+      dispensaryId: dispensaryId,
+      dispensaryName: dispensaryName,
+      sku: "SKU-\(listingId.uuidString.prefix(8))",
+      priceCents: priceCents,
+      compareAtPriceCents: nil,
+      quantityAvailable: quantityAvailable
+    )
   }
 }

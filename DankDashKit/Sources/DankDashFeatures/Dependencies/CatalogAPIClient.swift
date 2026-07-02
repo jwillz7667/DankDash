@@ -12,6 +12,10 @@ public struct CatalogAPIClient: Sendable {
   public var getDispensary: @Sendable (UUID) async throws -> Dispensary
   public var getMenu: @Sendable (UUID) async throws -> (dispensaryId: UUID, items: [MenuItem])
   public var getProduct: @Sendable (UUID) async throws -> Product
+  /// The stores actively carrying a product, in-stock, price-ascending.
+  /// Resolves the listing context a search hit lacks so it can be added to
+  /// the cart.
+  public var getProductListings: @Sendable (UUID) async throws -> [ProductListing]
   public var listCategories: @Sendable () async throws -> [DankDashDomain.Category]
   public var searchProducts: @Sendable (SearchProductsQuery) async throws -> SearchProductsResult
 
@@ -20,6 +24,7 @@ public struct CatalogAPIClient: Sendable {
     getDispensary: @Sendable @escaping (UUID) async throws -> Dispensary,
     getMenu: @Sendable @escaping (UUID) async throws -> (dispensaryId: UUID, items: [MenuItem]),
     getProduct: @Sendable @escaping (UUID) async throws -> Product,
+    getProductListings: @Sendable @escaping (UUID) async throws -> [ProductListing],
     listCategories: @Sendable @escaping () async throws -> [DankDashDomain.Category],
     searchProducts: @Sendable @escaping (SearchProductsQuery) async throws -> SearchProductsResult
   ) {
@@ -27,6 +32,7 @@ public struct CatalogAPIClient: Sendable {
     self.getDispensary = getDispensary
     self.getMenu = getMenu
     self.getProduct = getProduct
+    self.getProductListings = getProductListings
     self.listCategories = listCategories
     self.searchProducts = searchProducts
   }
@@ -81,6 +87,10 @@ public extension CatalogAPIClient {
         guard let product = dto.toDomain() else { throw CatalogAPIError.malformedPayload("Product") }
         return product
       },
+      getProductListings: { id in
+        let dto = try await apiClient.send(ProductsEndpoints.getProductListings(id: id))
+        return dto.toDomain()
+      },
       listCategories: {
         let dto = try await apiClient.send(CategoriesEndpoints.listCategories())
         return dto.toDomain()
@@ -105,6 +115,7 @@ public extension CatalogAPIClient {
     getDispensary: { _ in throw CatalogAPIError.unimplemented("getDispensary") },
     getMenu: { _ in throw CatalogAPIError.unimplemented("getMenu") },
     getProduct: { _ in throw CatalogAPIError.unimplemented("getProduct") },
+    getProductListings: { _ in throw CatalogAPIError.unimplemented("getProductListings") },
     listCategories: { throw CatalogAPIError.unimplemented("listCategories") },
     searchProducts: { _ in throw CatalogAPIError.unimplemented("searchProducts") }
   )

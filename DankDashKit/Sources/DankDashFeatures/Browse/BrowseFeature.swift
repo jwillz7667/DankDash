@@ -1,6 +1,7 @@
 import Foundation
 import ComposableArchitecture
 import DankDashDomain
+import DankDashNetwork
 
 /// Parent reducer for the five browse tabs (Feed / Search / Cart /
 /// Orders / Account) plus the drill-down stack (Storefront →
@@ -41,6 +42,15 @@ public struct BrowseFeature: Sendable {
     /// addToCart. Set when the cart accepts a line; the view
     /// auto-dismisses after a few seconds via `toastDismissed`.
     public var addedToCartToast: String?
+    /// True while a product opened from search (or a related-product tile)
+    /// is resolving its listing context — the view shows a spinner so the
+    /// tap feels responsive during the one round-trip.
+    public var isResolvingProduct: Bool
+    /// User-facing message when a search drill-down can't resolve a
+    /// buyable listing (no store carries it in stock, or the fetch failed).
+    /// The view surfaces it as a transient toast and clears it via
+    /// `productResolveErrorDismissed`.
+    public var productResolveError: String?
 
     public init(
       selectedTab: Tab = .feed,
@@ -53,7 +63,9 @@ public struct BrowseFeature: Sendable {
       productDetail: ProductDetailFeature.State? = nil,
       orderDetail: OrderDetailFeature.State? = nil,
       checkoutHandoff: CheckoutHandoffFeature.State? = nil,
-      addedToCartToast: String? = nil
+      addedToCartToast: String? = nil,
+      isResolvingProduct: Bool = false,
+      productResolveError: String? = nil
     ) {
       self.selectedTab = selectedTab
       self.feed = feed
@@ -66,6 +78,8 @@ public struct BrowseFeature: Sendable {
       self.orderDetail = orderDetail
       self.checkoutHandoff = checkoutHandoff
       self.addedToCartToast = addedToCartToast
+      self.isResolvingProduct = isResolvingProduct
+      self.productResolveError = productResolveError
     }
   }
 
@@ -76,6 +90,18 @@ public struct BrowseFeature: Sendable {
     case orderDetailDismissed
     case checkoutHandoffDismissed
     case toastDismissed
+
+    /// Result of resolving a product's listings after it was opened from
+    /// search or a related-product tile. On success the reducer picks a
+    /// listing (cart's current dispensary if it carries it, else cheapest)
+    /// and pushes a fully-buyable ProductDetail.
+    case productListingsResolved(
+      productId: UUID,
+      productName: String,
+      brand: String,
+      Result<[ProductListing], ProductResolveError>
+    )
+    case productResolveErrorDismissed
 
     /// External entry point for deep-link / hand-off completion: jumps
     /// to the Orders tab and pushes the detail screen for the given
@@ -106,6 +132,23 @@ public struct BrowseFeature: Sendable {
       /// down (clear tokens, reset to signed-out) just like sign-out.
       case accountDeletionCompleted
     }
+  }
+
+  /// Failure modes when resolving a search hit's listings. The "no store
+  /// carries this in stock" case is not an error here — the fetch succeeded
+  /// with zero buyable rows, handled on the `.success` branch with a
+  /// product-specific "unavailable" message.
+  public enum ProductResolveError: Error, Sendable, Equatable {
+    case transport
+    case malformedPayload
+    case unknown
+  }
+
+  @Dependency(\.catalogAPIClient) var catalogAPIClient
+
+  /// Cancels an in-flight listing resolution when a new drill-down starts.
+  private enum CancelID: Hashable, Sendable {
+    case resolveProduct
   }
 
   public init() {}
@@ -188,7 +231,8 @@ public struct BrowseFeature: Sendable {
             priceCents: item.priceCents,
             maxAvailable: item.quantityAvailable,
             productName: item.product.name,
-            brand: item.product.brand
+            brand: item.product.brand,
+            dispensaryName: state.storefront?.dispensary?.displayName
           )
         }
         return .none
@@ -197,22 +241,54 @@ public struct BrowseFeature: Sendable {
         return .none
 
       case .search(.delegate(.openProduct(let productId))):
-        // The search hit doesn't carry listing-level fields — without a
-        // listing pin the cart can't accept the row, so the ProductDetail
-        // surface launched from search renders with maxAvailable=0 and
-        // the Add-to-cart button stays disabled.
+        // A search hit carries no listing (search is dispensary-agnostic).
+        // Resolve the product's in-stock listings, then open a fully-buyable
+        // ProductDetail against the chosen store. The hit already in the
+        // search results supplies the name/brand for the title + toast.
+        guard let hit = state.search.results.first(where: { $0.id == productId }) else {
+          return .none
+        }
+        return resolveProductEffect(
+          productId: productId,
+          productName: hit.name,
+          brand: hit.brand,
+          state: &state
+        )
+
+      case .search:
+        return .none
+
+      case .productListingsResolved(let productId, let productName, let brand, .success(let listings)):
+        state.isResolvingProduct = false
+        // Prefer a listing at the cart's current dispensary so adding from
+        // search doesn't needlessly clear an in-progress single-dispensary
+        // draft; otherwise take the cheapest in-stock listing.
+        guard let chosen = Self.chooseListing(
+          listings,
+          preferredDispensaryId: state.cart.dispensaryId
+        ) else {
+          state.productResolveError = "\(productName) is unavailable right now."
+          return .none
+        }
         state.productDetail = ProductDetailFeature.State(
           productId: productId,
-          listingId: UUID(),
-          dispensaryId: UUID(),
-          priceCents: 0,
-          maxAvailable: 0,
-          productName: "Product",
-          brand: ""
+          listingId: chosen.listingId,
+          dispensaryId: chosen.dispensaryId,
+          priceCents: chosen.priceCents,
+          maxAvailable: chosen.quantityAvailable,
+          productName: productName,
+          brand: brand,
+          dispensaryName: chosen.dispensaryName
         )
         return .none
 
-      case .search:
+      case .productListingsResolved(_, _, _, .failure(let error)):
+        state.isResolvingProduct = false
+        state.productResolveError = Self.resolveErrorMessage(for: error)
+        return .none
+
+      case .productResolveErrorDismissed:
+        state.productResolveError = nil
         return .none
 
       // MARK: ProductDetail → Cart
@@ -265,18 +341,19 @@ public struct BrowseFeature: Sendable {
         return .none
 
       case .productDetail(.delegate(.openRelatedProduct(let productId))):
-        if let current = state.productDetail {
-          state.productDetail = ProductDetailFeature.State(
-            productId: productId,
-            listingId: current.listingId,
-            dispensaryId: current.dispensaryId,
-            priceCents: 0,
-            maxAvailable: 0,
-            productName: "Product",
-            brand: ""
-          )
+        // Related tiles are search hits too (no listing pin), so resolve
+        // their listings the same way a search drill-down does rather than
+        // opening an unbuyable detail. Name/brand come from the carousel row.
+        guard let related = state.productDetail?.relatedProducts.first(where: { $0.id == productId })
+        else {
+          return .none
         }
-        return .none
+        return resolveProductEffect(
+          productId: productId,
+          productName: related.name,
+          brand: related.brand,
+          state: &state
+        )
 
       case .productDetail:
         return .none
@@ -410,6 +487,78 @@ public struct BrowseFeature: Sendable {
     }
     .ifLet(\.checkoutHandoff, action: \.checkoutHandoff) {
       CheckoutHandoffFeature()
+    }
+  }
+
+  /// Flags the resolving state and fires the listings fetch. Shared by the
+  /// search drill-down and the related-product tile — both open a product
+  /// that carries no listing context and must resolve one before the
+  /// ProductDetail can accept an add-to-cart.
+  private func resolveProductEffect(
+    productId: UUID,
+    productName: String,
+    brand: String,
+    state: inout State
+  ) -> Effect<Action> {
+    state.isResolvingProduct = true
+    state.productResolveError = nil
+    return .run { send in
+      do {
+        let listings = try await catalogAPIClient.getProductListings(productId)
+        await send(.productListingsResolved(
+          productId: productId,
+          productName: productName,
+          brand: brand,
+          .success(listings)
+        ))
+      } catch let error as CatalogAPIError {
+        let mapped: ProductResolveError
+        switch error {
+        case .malformedPayload: mapped = .malformedPayload
+        case .unimplemented: mapped = .unknown
+        }
+        await send(.productListingsResolved(
+          productId: productId,
+          productName: productName,
+          brand: brand,
+          .failure(mapped)
+        ))
+      } catch {
+        await send(.productListingsResolved(
+          productId: productId,
+          productName: productName,
+          brand: brand,
+          .failure(.transport)
+        ))
+      }
+    }
+    .cancellable(id: CancelID.resolveProduct, cancelInFlight: true)
+  }
+
+  /// Deterministically picks the listing to open a search hit against. A
+  /// listing at the cart's current dispensary wins so add-to-cart doesn't
+  /// clear the single-dispensary draft; otherwise the cheapest in-stock
+  /// listing, tie-broken by id so the choice is stable across fetches.
+  static func chooseListing(
+    _ listings: [ProductListing],
+    preferredDispensaryId: UUID?
+  ) -> ProductListing? {
+    let available = listings.filter { $0.quantityAvailable > 0 }
+    if let preferredDispensaryId,
+       let match = available.first(where: { $0.dispensaryId == preferredDispensaryId }) {
+      return match
+    }
+    return available.min { lhs, rhs in
+      if lhs.priceCents != rhs.priceCents { return lhs.priceCents < rhs.priceCents }
+      return lhs.listingId.uuidString < rhs.listingId.uuidString
+    }
+  }
+
+  static func resolveErrorMessage(for error: ProductResolveError) -> String {
+    switch error {
+    case .transport: "We couldn't reach DankDash. Try again."
+    case .malformedPayload: "Something didn't look right loading this product."
+    case .unknown: "Something went wrong opening this product."
     }
   }
 }
