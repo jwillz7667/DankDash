@@ -1,6 +1,11 @@
 import SwiftUI
 import DankDashDesignSystem
 
+// Debug-only surface. Gating the whole file (not just the Account-tab entry
+// point) keeps the gallery and its full component inventory out of the Release
+// binary entirely — the only call site (AccountHubView) is likewise `#if DEBUG`.
+#if DEBUG
+
 /// Debug-only inventory of every brand component variant. Per Phase 16
 /// DoD: "Design system documented in a sample gallery view." Renders the
 /// full token surface (color/typography/spacing/radius) plus every
@@ -295,3 +300,5 @@ private struct FlowingBadges: View {
   DesignGalleryView()
     .preferredColorScheme(.dark)
 }
+
+#endif
