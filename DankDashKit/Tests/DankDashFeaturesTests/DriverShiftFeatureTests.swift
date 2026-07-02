@@ -374,6 +374,217 @@ final class DriverShiftFeatureTests: XCTestCase {
     }
   }
 
+  // MARK: - Online-idle location publishing
+
+  func test_locationReceived_online_publishesIdleLocationAndRecordsThrottle() async {
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let coord = Coordinate(latitude: 44.98, longitude: -93.27)
+    let published = Locker<[Coordinate]>(value: [])
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(published: published)
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+
+    await store.send(.locationReceived(coord)) {
+      $0.currentCoordinate = coord
+      $0.lastPublishedIdleLocation = coord
+      $0.lastIdlePublishAt = base
+    }
+    await store.finish()
+    let publishedCoords = await published.value
+    XCTAssertEqual(publishedCoords, [coord], "first idle fix of the shift publishes immediately")
+  }
+
+  func test_locationReceived_online_withinThrottleWindow_doesNotPublish() async {
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let lastCoord = Coordinate(latitude: 44.98, longitude: -93.27)
+    // ~33m north-east of the last published point — under the 150m gate.
+    let nearCoord = Coordinate(latitude: 44.9803, longitude: -93.2698)
+    let published = Locker<[Coordinate]>(value: [])
+    var initial = DriverShiftFeature.State(
+      driver: Self.passedDriver(currentStatus: .online),
+      activeShift: Self.openShift()
+    )
+    initial.lastPublishedIdleLocation = lastCoord
+    initial.lastIdlePublishAt = base.addingTimeInterval(-5) // 5s ago — inside 30s
+    let store = TestStore(initialState: initial) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(published: published)
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+
+    await store.send(.locationReceived(nearCoord)) {
+      $0.currentCoordinate = nearCoord
+    }
+    await store.finish()
+    let publishedCoords = await published.value
+    XCTAssertEqual(publishedCoords, [], "a near fix inside the 30s window must not publish")
+  }
+
+  func test_locationReceived_online_movedBeyondDistanceGate_publishes() async {
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let lastCoord = Coordinate(latitude: 44.98, longitude: -93.27)
+    // ~222m north — clears the 150m gate even inside the 30s window.
+    let farCoord = Coordinate(latitude: 44.982, longitude: -93.27)
+    let published = Locker<[Coordinate]>(value: [])
+    var initial = DriverShiftFeature.State(
+      driver: Self.passedDriver(currentStatus: .online),
+      activeShift: Self.openShift()
+    )
+    initial.lastPublishedIdleLocation = lastCoord
+    initial.lastIdlePublishAt = base.addingTimeInterval(-5)
+    let store = TestStore(initialState: initial) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(published: published)
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+
+    await store.send(.locationReceived(farCoord)) {
+      $0.currentCoordinate = farCoord
+      $0.lastPublishedIdleLocation = farCoord
+      $0.lastIdlePublishAt = base
+    }
+    await store.finish()
+    let publishedCoords = await published.value
+    XCTAssertEqual(publishedCoords, [farCoord], "≥150m of movement publishes despite the time window")
+  }
+
+  func test_locationReceived_online_intervalElapsed_publishesEvenIfStationary() async {
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let lastCoord = Coordinate(latitude: 44.98, longitude: -93.27)
+    // Same neighborhood (~33m) but 40s later — the interval gate fires.
+    let nearCoord = Coordinate(latitude: 44.9803, longitude: -93.2698)
+    let published = Locker<[Coordinate]>(value: [])
+    var initial = DriverShiftFeature.State(
+      driver: Self.passedDriver(currentStatus: .online),
+      activeShift: Self.openShift()
+    )
+    initial.lastPublishedIdleLocation = lastCoord
+    initial.lastIdlePublishAt = base.addingTimeInterval(-40) // 40s ago — past 30s
+    let store = TestStore(initialState: initial) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(published: published)
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+
+    await store.send(.locationReceived(nearCoord)) {
+      $0.currentCoordinate = nearCoord
+      $0.lastPublishedIdleLocation = nearCoord
+      $0.lastIdlePublishAt = base
+    }
+    await store.finish()
+    let publishedCoords = await published.value
+    XCTAssertEqual(publishedCoords, [nearCoord], "≥30s since last publish fires even when stationary")
+  }
+
+  func test_locationReceived_duringActiveDelivery_doesNotPublish() async {
+    // ActiveRouteFeature owns the ≤1Hz publish while a delivery is live —
+    // the shift home must stay silent to avoid double-streaming the socket.
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let orderId = UUID(uuidString: "00000000-0000-0000-0000-0000000000e9")!
+    let coord = Coordinate(latitude: 44.98, longitude: -93.27)
+    let published = Locker<[Coordinate]>(value: [])
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .enRoutePickup, currentOrderId: orderId),
+        activeShift: Self.openShift()
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(published: published)
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+
+    await store.send(.locationReceived(coord)) {
+      $0.currentCoordinate = coord
+    }
+    await store.finish()
+    let publishedCoords = await published.value
+    XCTAssertEqual(publishedCoords, [], "no idle publish while on an active delivery")
+  }
+
+  func test_locationReceived_offline_doesNotPublish() async {
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    let coord = Coordinate(latitude: 44.98, longitude: -93.27)
+    let published = Locker<[Coordinate]>(value: [])
+    let store = TestStore(initialState: DriverShiftFeature.State()) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(published: published)
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+
+    await store.send(.locationReceived(coord)) {
+      $0.currentCoordinate = coord
+    }
+    await store.finish()
+    let publishedCoords = await published.value
+    XCTAssertEqual(publishedCoords, [], "an off-shift fix never leaves the device")
+  }
+
+  func test_toggleOffline_disconnectsRealtimeSocket() async {
+    let base = Date(timeIntervalSince1970: 1_700_003_600)
+    let disconnects = Locker<Int>(value: 0)
+    let store = TestStore(
+      initialState: DriverShiftFeature.State(
+        driver: Self.passedDriver(currentStatus: .online),
+        activeShift: Self.openShift(),
+        currentCoordinate: Coordinate(latitude: 44.97, longitude: -93.26),
+        locationAuth: .authorizedAlways
+      )
+    ) {
+      DriverShiftFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverRealtimeClient = Self.capturingRealtime(disconnects: disconnects)
+      $0.backgroundLocationClient = BackgroundLocationClient(
+        authorizationStatus: { .authorizedAlways },
+        requestAlwaysAuthorization: { .authorizedAlways },
+        beginUpdates: { _ in },
+        endUpdates: { },
+        setUpdateMode: { _ in },
+        locationUpdates: { AsyncStream { $0.finish() } }
+      )
+      $0.driverShiftAPIClient = DriverShiftAPIClient(
+        startShift: { _ in throw DriverAPIError.unimplemented("startShift") },
+        endShift: { _ in Self.openShift() },
+        updateStatus: { _ in throw DriverAPIError.unimplemented("updateStatus") }
+      )
+      $0.driverSessionStoreClient = Self.noopSessionStore()
+      $0.date = .constant(base)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.toggleOnlineTapped)
+    await store.skipReceivedActions()
+
+    let disconnectCount = await disconnects.value
+    XCTAssertEqual(disconnectCount, 1, "ending a shift tears down the /driver socket")
+  }
+
   // MARK: - Battery-aware mode switch
 
   func test_batterySnapshot_lowLevel_flipsToSignificantChange() async {
@@ -1364,6 +1575,29 @@ final class DriverShiftFeatureTests: XCTestCase {
     )
   }
 
+  /// A `DriverRealtimeClient` that records every published coordinate and
+  /// counts `disconnect()` calls, so idle-publish tests can assert exactly
+  /// what left the device without a live socket.
+  nonisolated private static func capturingRealtime(
+    published: Locker<[Coordinate]>? = nil,
+    disconnects: Locker<Int>? = nil
+  ) -> DriverRealtimeClient {
+    DriverRealtimeClient(
+      publishLocation: { coord in await published?.append(coord) },
+      events: { AsyncStream { $0.finish() } },
+      disconnect: { await disconnects?.increment() }
+    )
+  }
+
+  nonisolated private static func noopSessionStore() -> DriverSessionStoreClient {
+    DriverSessionStoreClient(
+      read: { nil },
+      write: { _ in },
+      updateHeartbeat: { _, _, _ in },
+      clear: {}
+    )
+  }
+
   nonisolated private static func todayEarnings() -> DriverEarnings {
     DriverEarnings(
       period: .today,
@@ -1430,6 +1664,7 @@ final class DriverShiftFeatureTests: XCTestCase {
   static func disableDependencies(_ values: inout DependencyValues) {
     values.backgroundLocationClient = .unimplemented
     values.batteryMonitorClient = .unimplemented
+    values.driverRealtimeClient = .unimplemented
     values.driverShiftAPIClient = .unimplemented
     values.driverAppAPIClient = .unimplemented
     values.driverHeatmapAPIClient = .unimplemented
@@ -1475,4 +1710,12 @@ private extension Locker where T == [SelfSettableDriverStatus] {
 
 private extension Locker where T == [HeartbeatRecord] {
   func append(_ record: HeartbeatRecord) { value.append(record) }
+}
+
+private extension Locker where T == [Coordinate] {
+  func append(_ coord: Coordinate) { value.append(coord) }
+}
+
+private extension Locker where T == Int {
+  func increment() { value += 1 }
 }
