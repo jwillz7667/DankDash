@@ -165,6 +165,23 @@ export const notificationChannel = pgEnum('notification_channel', [
   'in_app',
 ]);
 
+export const promoCodeType = pgEnum('promo_code_type', [
+  'percent',
+  'fixed_amount',
+  'free_delivery',
+]);
+
+export const promoCodeScope = pgEnum('promo_code_scope', ['platform', 'dispensary']);
+
+/**
+ * Who absorbs a promo discount at settlement. A promo's scope IS its funder:
+ * a platform-scoped code reduces the platform's revenue leg, a
+ * dispensary-scoped code reduces that dispensary's payout leg. Stored on the
+ * order as a snapshot so the settlement path never has to join back to the
+ * promo to route the money.
+ */
+export const discountFundedBy = pgEnum('discount_funded_by', ['platform', 'dispensary']);
+
 /**
  * Mirror of every enum's string-literal union for use in app code
  * (eg. `OrderStatus = 'placed' | 'accepted' | ...`). Drizzle's `.enumValues`
@@ -194,3 +211,6 @@ export type ComplianceCheckType = (typeof complianceCheckType.enumValues)[number
 export type MetrcStatus = (typeof metrcStatus.enumValues)[number];
 export type VerificationContext = (typeof verificationContext.enumValues)[number];
 export type NotificationChannel = (typeof notificationChannel.enumValues)[number];
+export type PromoCodeType = (typeof promoCodeType.enumValues)[number];
+export type PromoCodeScope = (typeof promoCodeScope.enumValues)[number];
+export type DiscountFundedBy = (typeof discountFundedBy.enumValues)[number];

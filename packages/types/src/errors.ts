@@ -137,6 +137,36 @@ export class InventoryError extends DomainError {
   }
 }
 
+/**
+ * Raised when a promo code cannot be applied — invalid/unknown code, outside
+ * its active window, wrong dispensary, cart under the minimum, or a redemption
+ * cap hit. 422 (client-correctable, same class as ValidationError /
+ * ComplianceError). The `code` carries the precise reason so the client can
+ * render a specific message near the promo field.
+ */
+export class PromoError extends DomainError {
+  public readonly code: string;
+  public readonly statusCode = 422;
+
+  constructor(
+    code:
+      | 'PROMO_NOT_FOUND'
+      | 'PROMO_INACTIVE'
+      | 'PROMO_NOT_STARTED'
+      | 'PROMO_EXPIRED'
+      | 'PROMO_WRONG_DISPENSARY'
+      | 'PROMO_MIN_SUBTOTAL'
+      | 'PROMO_EXHAUSTED'
+      | 'PROMO_ALREADY_USED',
+    message: string,
+    details: ErrorDetails = {},
+    cause?: unknown,
+  ) {
+    super(message, details, cause);
+    this.code = code;
+  }
+}
+
 export class PaymentError extends DomainError {
   public readonly code: string;
   public readonly statusCode: number;

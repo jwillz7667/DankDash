@@ -3,6 +3,7 @@ import { check, index, integer, pgTable, timestamp, unique, uuid } from 'drizzle
 import { dispensaryListings } from './catalog.js';
 import { dispensaries } from './dispensaries.js';
 import { users } from './identity.js';
+import { promoCodes } from './promotions.js';
 
 export const carts = pgTable(
   'carts',
@@ -14,6 +15,10 @@ export const carts = pgTable(
     dispensaryId: uuid('dispensary_id')
       .notNull()
       .references(() => dispensaries.id, { onDelete: 'cascade' }),
+    // Applied promo, if any. `SET NULL` on delete so deactivating/removing a
+    // promo never blocks on live carts — checkout re-validates authoritatively
+    // regardless of what is attached here.
+    promoCodeId: uuid('promo_code_id').references(() => promoCodes.id, { onDelete: 'set null' }),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' })
       .notNull()
       .default(sql`(NOW() + interval '4 hours')`),

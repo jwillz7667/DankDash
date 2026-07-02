@@ -49,6 +49,7 @@ const config = {
         'search',
         'storage',
         'pricing',
+        'promotions',
         'utils',
         'cart',
         'checkout',
