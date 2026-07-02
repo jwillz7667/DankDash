@@ -73,6 +73,7 @@ import {
   ParquetPartitionArchiver,
   schedulePartitionManagementJob,
 } from './jobs/partition-management/index.js';
+import { schedulePayoutReconciliationJob } from './jobs/payout-reconciliation/index.js';
 import { schedulePayoutJob } from './jobs/payouts/index.js';
 import { scheduleWebhookEventsCleanupJob } from './jobs/webhook-events/index.js';
 /* eslint-enable import/order */
@@ -165,7 +166,15 @@ async function main(): Promise<void> {
     publishRealtimeEvent(realtimePublishRedis, input);
 
   const payoutTask = schedulePayoutJob(
-    { dispensaries, ledger, payouts, aeropay, logger },
+    { dispensaries, drivers, ledger, payouts, aeropay, logger },
+    { cronMetrics },
+  );
+  // Settlement reconciliation pairs with the payout dispatch job: dispatch
+  // flips rows to `processing`; this cron completes/fails any that a
+  // webhook never resolved. Same Aeropay client + payouts repo, distinct
+  // 30-minute cadence (see scheduler).
+  const payoutReconciliationTask = schedulePayoutReconciliationJob(
+    { payouts, aeropay, logger },
     { cronMetrics },
   );
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob(
@@ -326,6 +335,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     logger.info({ signal }, 'workers shutting down');
     payoutTask.stop();
+    payoutReconciliationTask.stop();
     webhookCleanupTask.stop();
     dispatchTask.stop();
     offerExpiryTask.stop();

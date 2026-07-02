@@ -1004,6 +1004,56 @@ describe('repository coverage', () => {
       expect(completed?.status).toBe('completed');
       expect(completed?.completedAt?.toISOString()).toBe('2026-05-07T12:00:00.000Z');
     });
+
+    it('listStuckProcessing returns only processing rows initiated before the cutoff', async () => {
+      const pool = getPool();
+      const payouts = new PayoutsRepository(pool.db);
+
+      const stuck = await payouts.create({
+        recipientType: 'dispensary',
+        recipientId: MPLS,
+        periodStart: '2026-06-01',
+        periodEnd: '2026-06-02',
+        grossCents: 10_000,
+        netCents: 10_000,
+        scheduledFor: '2026-06-02',
+        status: 'processing',
+        aeropayPayoutRef: 'po_stuck_1',
+        initiatedAt: new Date('2026-06-02T00:00:00Z'),
+      });
+      // Processing but initiated after the cutoff — excluded.
+      const fresh = await payouts.create({
+        recipientType: 'dispensary',
+        recipientId: MPLS,
+        periodStart: '2026-06-03',
+        periodEnd: '2026-06-04',
+        grossCents: 10_000,
+        netCents: 10_000,
+        scheduledFor: '2026-06-04',
+        status: 'processing',
+        aeropayPayoutRef: 'po_fresh_1',
+        initiatedAt: new Date('2026-06-05T00:00:00Z'),
+      });
+      // Completed — never returned regardless of age.
+      const done = await payouts.create({
+        recipientType: 'dispensary',
+        recipientId: MPLS,
+        periodStart: '2026-06-05',
+        periodEnd: '2026-06-06',
+        grossCents: 10_000,
+        netCents: 10_000,
+        scheduledFor: '2026-06-06',
+        status: 'completed',
+        aeropayPayoutRef: 'po_done_1',
+        initiatedAt: new Date('2026-06-01T00:00:00Z'),
+      });
+
+      const rows = await payouts.listStuckProcessing(new Date('2026-06-03T00:00:00Z'));
+      const ids = rows.map((r) => r.id);
+      expect(ids).toContain(stuck.id);
+      expect(ids).not.toContain(fresh.id);
+      expect(ids).not.toContain(done.id);
+    });
   });
 
   describe('RefundsRepository', () => {

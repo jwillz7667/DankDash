@@ -67,12 +67,20 @@ import {
   type DispensaryListingsRepository,
   type Product,
   type ProductsRepository,
+  type PromoCodesRepository,
+  type PromoRedemptionsRepository,
   type UserAddressesRepository,
   type UsersRepository,
 } from '@dankdash/db';
-import { NotFoundError, RepositoryError, ValidationError } from '@dankdash/types';
+import {
+  evaluatePromo,
+  normalizePromoCode,
+  type PromoEvaluationContext,
+} from '@dankdash/promotions';
+import { NotFoundError, PromoError, RepositoryError, ValidationError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
 import { Decimal } from 'decimal.js';
+import { promoErrorForReason, promoRowToDefinition } from '../promotions/promo.mapper.js';
 import type {
   AddCartItemRequest,
   CartItemResponse,
@@ -91,7 +99,17 @@ export interface CartScopedRepos {
   readonly users: UsersRepository;
   readonly userAddresses: UserAddressesRepository;
   readonly products: ProductsRepository;
+  readonly promoCodes: PromoCodesRepository;
+  readonly promoRedemptions: PromoRedemptionsRepository;
 }
+
+/**
+ * Carts carry no delivery fee — the fee is determined at dispatch and is
+ * structurally 0 through checkout today. A `free_delivery` promo therefore
+ * previews as a 0 discount here; the value exists so the constant is explicit
+ * and moves in one place when delivery fees land.
+ */
+const CART_DELIVERY_FEE_CENTS = 0;
 
 export type CartScopedReposFactory = (db: Database) => CartScopedRepos;
 
@@ -126,7 +144,7 @@ export class CartService {
         );
       }
       const items = await scoped.items.listForCart(touched.id);
-      return projectCart(touched, items);
+      return this.buildCartResponse(scoped, touched, items);
     });
   }
 
@@ -150,7 +168,7 @@ export class CartService {
         throw new NotFoundError('Cart', cartId);
       }
       const items = await scoped.items.listForCart(touched.id);
-      return projectCart(touched, items);
+      return this.buildCartResponse(scoped, touched, items);
     });
   }
 
@@ -202,7 +220,7 @@ export class CartService {
       const touched = await scoped.carts.touch(cartId);
       if (touched === null) throw new NotFoundError('Cart', cartId);
       const items = await scoped.items.listForCart(cartId);
-      return projectCart(touched, items);
+      return this.buildCartResponse(scoped, touched, items);
     });
   }
 
@@ -230,7 +248,7 @@ export class CartService {
       const touched = await scoped.carts.touch(cart.id);
       if (touched === null) throw new NotFoundError('Cart', cartId);
       const items = await scoped.items.listForCart(cart.id);
-      return projectCart(touched, items);
+      return this.buildCartResponse(scoped, touched, items);
     });
   }
 
@@ -253,7 +271,7 @@ export class CartService {
       const touched = await scoped.carts.touch(cart.id);
       if (touched === null) throw new NotFoundError('Cart', cartId);
       const items = await scoped.items.listForCart(cart.id);
-      return projectCart(touched, items);
+      return this.buildCartResponse(scoped, touched, items);
     });
   }
 
@@ -276,6 +294,116 @@ export class CartService {
         throw new NotFoundError('Cart', cartId);
       }
     });
+  }
+
+  /**
+   * POST /v1/carts/:id/promo. Applies a promo code to the cart and returns the
+   * cart with the live discount preview.
+   *
+   * This is the AUTHORITATIVE apply gate: it runs the full evaluation
+   * including the global and per-user redemption caps (counted from
+   * `promo_redemptions`), so `PROMO_EXHAUSTED` / `PROMO_ALREADY_USED` surface
+   * here. Only a fully valid promo is persisted onto the cart. Checkout
+   * re-runs the identical evaluation inside the order transaction (the promo
+   * row is re-locked and counts re-read under the lock) — the cart attachment
+   * is a convenience, never the source of truth.
+   *
+   * An unknown code is `PROMO_NOT_FOUND`; every other rejection maps 1:1 from
+   * the pure evaluator's reason. Cross-user carts 404 as everywhere else.
+   */
+  async applyPromo(userId: string, cartId: string, rawCode: string): Promise<CartResponse> {
+    return this.db.transaction(async (tx) => {
+      const scoped = this.reposFor(tx);
+      const cart = await this.requireCart(scoped, cartId, userId);
+      const items = await scoped.items.listForCart(cart.id);
+      const subtotalCents = sumSubtotalCents(items);
+
+      const code = normalizePromoCode(rawCode);
+      const promo = await scoped.promoCodes.findByCode(code);
+      if (promo === null) {
+        throw new PromoError('PROMO_NOT_FOUND', 'This promo code is not valid', { code });
+      }
+
+      const [globalRedemptionCount, userRedemptionCount] = await Promise.all([
+        scoped.promoRedemptions.countForPromo(promo.id),
+        scoped.promoRedemptions.countForPromoAndUser(promo.id, userId),
+      ]);
+      const evaluation = evaluatePromo(promoRowToDefinition(promo), {
+        subtotalCents,
+        deliveryFeeCents: CART_DELIVERY_FEE_CENTS,
+        cartDispensaryId: cart.dispensaryId,
+        now: new Date(),
+        globalRedemptionCount,
+        userRedemptionCount,
+      });
+      if (!evaluation.ok) {
+        throw promoErrorForReason(evaluation.reason, { code });
+      }
+
+      const updated = await scoped.carts.setPromoCode(cart.id, promo.id);
+      if (updated === null) throw new NotFoundError('Cart', cartId);
+      return this.buildCartResponse(scoped, updated, items);
+    });
+  }
+
+  /**
+   * DELETE /v1/carts/:id/promo. Removes any applied promo. Idempotent — a cart
+   * with no promo returns cleanly with `promoCode: null`. Cross-user 404.
+   */
+  async removePromo(userId: string, cartId: string): Promise<CartResponse> {
+    return this.db.transaction(async (tx) => {
+      const scoped = this.reposFor(tx);
+      const cart = await this.requireCart(scoped, cartId, userId);
+      const updated = await scoped.carts.setPromoCode(cart.id, null);
+      if (updated === null) throw new NotFoundError('Cart', cartId);
+      const items = await scoped.items.listForCart(cart.id);
+      return this.buildCartResponse(scoped, updated, items);
+    });
+  }
+
+  /**
+   * Projects a cart + items to the wire shape, computing the promo discount
+   * preview when a promo is attached.
+   *
+   * The preview is OPTIMISTIC about redemption caps: it applies the active
+   * window, scope, and min-subtotal gates and computes the discount, but does
+   * NOT re-count redemptions (that would add two aggregate queries to every
+   * cart read/mutation). The apply endpoint already enforced the caps when the
+   * promo was attached, and checkout enforces them authoritatively; a preview
+   * that optimistically shows the discount is the right UX. If the attached
+   * promo has since gone inactive/expired, fallen out of window, or the cart
+   * dropped below its minimum, the discount previews as 0 while the code stays
+   * attached — checkout will reject it and the client can prompt the user.
+   */
+  private async buildCartResponse(
+    scoped: CartScopedRepos,
+    cart: Cart,
+    items: readonly CartItem[],
+  ): Promise<CartResponse> {
+    const projectedItems = projectItems(items);
+    const subtotalCents = projectedItems.reduce((sum, row) => sum + row.lineSubtotalCents, 0);
+
+    let promoCode: string | null = null;
+    let discountCents = 0;
+    if (cart.promoCodeId !== null) {
+      const promo = await scoped.promoCodes.findById(cart.promoCodeId);
+      if (promo !== null) {
+        promoCode = promo.code;
+        const ctx: PromoEvaluationContext = {
+          subtotalCents,
+          deliveryFeeCents: CART_DELIVERY_FEE_CENTS,
+          cartDispensaryId: cart.dispensaryId,
+          now: new Date(),
+          // Preview skips the redemption caps — see method doc.
+          globalRedemptionCount: 0,
+          userRedemptionCount: 0,
+        };
+        const evaluation = evaluatePromo(promoRowToDefinition(promo), ctx);
+        discountCents = evaluation.ok ? evaluation.discountCents : 0;
+      }
+    }
+
+    return projectCart(cart, projectedItems, subtotalCents, promoCode, discountCents);
   }
 
   /**
@@ -459,19 +587,8 @@ export class CartService {
   }
 }
 
-/**
- * Snapshots the cart row + its items into the response shape. The
- * subtotal is a plain `sum(unit_price_cents * quantity)` — no tax, no
- * fees, no compliance. Those belong on the validate/checkout responses
- * which carry the full pricing engine output.
- *
- * Touched cart's `expiresAt` is `updated_at + CART_TTL_MS` modulo a
- * <1ms write skew — we project the row's persisted `expires_at` rather
- * than recomputing in JS so the customer's countdown UI matches what
- * the cleanup job will use as the deletion predicate.
- */
-function projectCart(cart: Cart, items: readonly CartItem[]): CartResponse {
-  const projectedItems: CartItemResponse[] = items.map((row) => ({
+function projectItems(items: readonly CartItem[]): CartItemResponse[] {
+  return items.map((row) => ({
     id: row.id,
     listingId: row.listingId,
     quantity: row.quantity,
@@ -480,13 +597,40 @@ function projectCart(cart: Cart, items: readonly CartItem[]): CartResponse {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }));
-  const subtotalCents = projectedItems.reduce((sum, row) => sum + row.lineSubtotalCents, 0);
+}
+
+function sumSubtotalCents(items: readonly CartItem[]): number {
+  return items.reduce((sum, row) => sum + row.unitPriceCents * row.quantity, 0);
+}
+
+/**
+ * Snapshots the cart row + its items into the response shape. The subtotal is
+ * a plain `sum(unit_price_cents * quantity)` — no tax, no fees, no compliance.
+ * Those belong on the validate/checkout responses which carry the full pricing
+ * engine output. `promoCode`/`discountCents` are the applied-promo preview
+ * (see {@link CartService.buildCartResponse}); both are absent (null / 0) when
+ * no promo is attached.
+ *
+ * Touched cart's `expiresAt` is `updated_at + CART_TTL_MS` modulo a <1ms write
+ * skew — we project the row's persisted `expires_at` rather than recomputing
+ * in JS so the customer's countdown UI matches what the cleanup job will use
+ * as the deletion predicate.
+ */
+function projectCart(
+  cart: Cart,
+  items: readonly CartItemResponse[],
+  subtotalCents: number,
+  promoCode: string | null,
+  discountCents: number,
+): CartResponse {
   return {
     id: cart.id,
     userId: cart.userId,
     dispensaryId: cart.dispensaryId,
-    items: projectedItems,
+    items: [...items],
     subtotalCents,
+    promoCode,
+    discountCents,
     expiresAt: cart.expiresAt.toISOString(),
     createdAt: cart.createdAt.toISOString(),
     updatedAt: cart.updatedAt.toISOString(),

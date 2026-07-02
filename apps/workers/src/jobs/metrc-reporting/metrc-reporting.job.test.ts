@@ -57,6 +57,8 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     deliveryFeeCents: 500,
     driverTipCents: 0,
     discountCents: 0,
+    promoCodeId: null,
+    discountFundedBy: null,
     totalCents: 12_325,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},

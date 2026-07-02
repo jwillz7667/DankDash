@@ -69,6 +69,7 @@ import type {
   NewOrderEvent,
   NewOrderItem,
   NewPaymentTransaction,
+  NewPromoRedemption,
   Order,
   OrderEvent,
   OrderEventsRepository,
@@ -81,6 +82,10 @@ import type {
   PaymentTransactionsRepository,
   Product,
   ProductsRepository,
+  PromoCode,
+  PromoCodesRepository,
+  PromoRedemption,
+  PromoRedemptionsRepository,
   User,
   UserAddress,
   UserAddressesRepository,
@@ -134,6 +139,7 @@ function makeCart(overrides: Partial<Cart> = {}): Cart {
     id: CART_ID,
     userId: USER_ID,
     dispensaryId: DISPENSARY_ID,
+    promoCodeId: null,
     expiresAt: FUTURE_EXPIRY,
     createdAt,
     updatedAt: createdAt,
@@ -342,6 +348,50 @@ class FakeCartItemsRepo implements Pick<CartItemsRepository, 'listForCart'> {
   }
 }
 
+class FakePromoCodesRepo implements Pick<PromoCodesRepository, 'findByIdForUpdate'> {
+  public rows = new Map<string, PromoCode>();
+
+  seed(promo: PromoCode): void {
+    this.rows.set(promo.id, promo);
+  }
+
+  findByIdForUpdate(id: string): Promise<PromoCode | null> {
+    return Promise.resolve(this.rows.get(id) ?? null);
+  }
+}
+
+class FakePromoRedemptionsRepo implements Pick<
+  PromoRedemptionsRepository,
+  'create' | 'countForPromo' | 'countForPromoAndUser'
+> {
+  public created: NewPromoRedemption[] = [];
+  public global = new Map<string, number>();
+  public perUser = new Map<string, number>();
+
+  create(
+    input: Omit<NewPromoRedemption, 'id'> & { readonly id?: string },
+  ): Promise<PromoRedemption> {
+    const row: PromoRedemption = {
+      id: input.id ?? 'redemption-1',
+      promoId: input.promoId,
+      userId: input.userId,
+      orderId: input.orderId,
+      amountAppliedCents: input.amountAppliedCents,
+      createdAt: input.createdAt ?? new Date(PINNED_NOW),
+    };
+    this.created.push(row);
+    return Promise.resolve(row);
+  }
+
+  countForPromo(promoId: string): Promise<number> {
+    return Promise.resolve(this.global.get(promoId) ?? 0);
+  }
+
+  countForPromoAndUser(promoId: string, userId: string): Promise<number> {
+    return Promise.resolve(this.perUser.get(`${promoId}:${userId}`) ?? 0);
+  }
+}
+
 class FakeListingsRepo implements Pick<
   DispensaryListingsRepository,
   'findManyByIdsForUpdate' | 'decrementInventory'
@@ -455,6 +505,8 @@ class FakeOrdersRepo implements Pick<OrdersRepository, 'create' | 'shortCodeExis
       driverTipCents: input.driverTipCents ?? 0,
       discountCents: input.discountCents ?? 0,
       totalCents: input.totalCents,
+      promoCodeId: input.promoCodeId ?? null,
+      discountFundedBy: input.discountFundedBy ?? null,
       complianceCheckPayload: input.complianceCheckPayload,
       deliveryAddressSnapshot: input.deliveryAddressSnapshot,
       placedAt: input.placedAt ?? created,
@@ -711,6 +763,8 @@ interface Rig {
   readonly paymentMethods: FakePaymentMethodsRepo;
   readonly paymentTransactions: FakePaymentTransactionsRepo;
   readonly ledgerEntries: FakeLedgerEntriesRepo;
+  readonly promoCodes: FakePromoCodesRepo;
+  readonly promoRedemptions: FakePromoRedemptionsRepo;
   readonly aeropay: FakeAeropayClient;
 }
 
@@ -728,6 +782,8 @@ function makeRig(options: { readonly paymentsBypassEnabled?: boolean } = {}): Ri
   const paymentMethods = new FakePaymentMethodsRepo();
   const paymentTransactions = new FakePaymentTransactionsRepo();
   const ledgerEntries = new FakeLedgerEntriesRepo();
+  const promoCodes = new FakePromoCodesRepo();
+  const promoRedemptions = new FakePromoRedemptionsRepo();
   const aeropay = new FakeAeropayClient();
   const fakeDb = {
     transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
@@ -747,6 +803,8 @@ function makeRig(options: { readonly paymentsBypassEnabled?: boolean } = {}): Ri
       paymentMethods,
       paymentTransactions,
       ledgerEntries,
+      promoCodes,
+      promoRedemptions,
     }) as unknown as CheckoutScopedRepos;
   const eventEmitter = { emit: vi.fn() } as unknown as EventEmitter2;
   return {
@@ -771,6 +829,8 @@ function makeRig(options: { readonly paymentsBypassEnabled?: boolean } = {}): Ri
     paymentMethods,
     paymentTransactions,
     ledgerEntries,
+    promoCodes,
+    promoRedemptions,
     aeropay,
   };
 }
@@ -1703,5 +1763,112 @@ describe('CheckoutService.checkout — RepositoryError invariants', () => {
     await expect(
       rig.service.checkout(USER_ID, CART_ID, { deliveryAddressId: ADDRESS_ID, driverTipCents: 0 }),
     ).rejects.toBeInstanceOf(RepositoryError);
+  });
+});
+
+const CHECKOUT_PROMO_ID = '01935f3d-0000-7000-8000-0000000000f0';
+
+function makeCheckoutPromo(overrides: Partial<PromoCode> = {}): PromoCode {
+  const at = new Date('2026-05-01T00:00:00.000Z');
+  return {
+    id: CHECKOUT_PROMO_ID,
+    code: 'SAVE10',
+    type: 'percent',
+    value: 10,
+    scope: 'platform',
+    dispensaryId: null,
+    minSubtotalCents: 0,
+    maxDiscountCents: null,
+    startsAt: at,
+    endsAt: new Date('2027-01-01T00:00:00.000Z'),
+    maxRedemptions: null,
+    maxRedemptionsPerUser: 1,
+    active: true,
+    createdBy: null,
+    createdAt: at,
+    updatedAt: at,
+    ...overrides,
+  };
+}
+
+describe('CheckoutService.checkout — promo codes', () => {
+  let rig: Rig;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(PINNED_NOW);
+    rig = makeRig();
+    seedHappyPath(rig);
+    rig.carts.seed(makeCart({ promoCodeId: CHECKOUT_PROMO_ID }));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('applies a valid platform promo: discount on the order, funder + redemption recorded', async () => {
+    rig.promoCodes.seed(makeCheckoutPromo({ value: 10 }));
+
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    // 10% of the $90 subtotal.
+    expect(res.order.discountCents).toBe(900);
+    const orderRow = rig.orders.rows.get(res.order.id);
+    expect(orderRow?.promoCodeId).toBe(CHECKOUT_PROMO_ID);
+    expect(orderRow?.discountFundedBy).toBe('platform');
+    expect(rig.promoRedemptions.created).toHaveLength(1);
+    expect(rig.promoRedemptions.created[0]).toMatchObject({
+      promoId: CHECKOUT_PROMO_ID,
+      userId: USER_ID,
+      orderId: res.order.id,
+      amountAppliedCents: 900,
+    });
+    // total reconciles with the discount applied.
+    expect(res.order.totalCents).toBe(
+      res.order.subtotalCents +
+        res.order.cannabisTaxCents +
+        res.order.salesTaxCents +
+        res.order.deliveryFeeCents +
+        res.order.driverTipCents -
+        res.order.discountCents,
+    );
+  });
+
+  it('records a dispensary-funded promo with the dispensary funder', async () => {
+    rig.promoCodes.seed(
+      makeCheckoutPromo({ scope: 'dispensary', dispensaryId: DISPENSARY_ID, value: 5 }),
+    );
+
+    const res = await rig.service.checkout(USER_ID, CART_ID, {
+      deliveryAddressId: ADDRESS_ID,
+      driverTipCents: 0,
+    });
+
+    expect(res.order.discountCents).toBe(450);
+    expect(rig.orders.rows.get(res.order.id)?.discountFundedBy).toBe('dispensary');
+  });
+
+  it('rolls back with PROMO_EXPIRED when the applied promo lapsed before checkout', async () => {
+    rig.promoCodes.seed(makeCheckoutPromo({ endsAt: new Date('2026-05-01T00:00:00.000Z') }));
+
+    await expect(
+      rig.service.checkout(USER_ID, CART_ID, { deliveryAddressId: ADDRESS_ID, driverTipCents: 0 }),
+    ).rejects.toMatchObject({ code: 'PROMO_EXPIRED', statusCode: 422 });
+
+    // No order, no redemption — the whole transaction rolled back.
+    expect(rig.orders.rows.size).toBe(0);
+    expect(rig.promoRedemptions.created).toHaveLength(0);
+  });
+
+  it('rolls back with PROMO_EXHAUSTED when the global cap is already reached', async () => {
+    rig.promoCodes.seed(makeCheckoutPromo({ maxRedemptions: 5 }));
+    rig.promoRedemptions.global.set(CHECKOUT_PROMO_ID, 5);
+
+    await expect(
+      rig.service.checkout(USER_ID, CART_ID, { deliveryAddressId: ADDRESS_ID, driverTipCents: 0 }),
+    ).rejects.toMatchObject({ code: 'PROMO_EXHAUSTED' });
+    expect(rig.orders.rows.size).toBe(0);
   });
 });

@@ -5,6 +5,7 @@ export * from './identity.js';
 export * from './dispensaries.js';
 export * from './catalog.js';
 export * from './favorites.js';
+export * from './promotions.js';
 export * from './cart.js';
 export * from './orders.js';
 export * from './payments.js';

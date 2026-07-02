@@ -46,6 +46,7 @@ import {
 } from './payment-methods.service.js';
 import type { AeropayClientLike } from './tokens.js';
 import type { DispensaryBankLinkService } from './dispensary-bank-link.service.js';
+import type { DriverBankLinkService } from './driver-bank-link.service.js';
 import type { PayoutWebhookService } from './payout-webhook.service.js';
 import type {
   OrderTransitionService,
@@ -72,6 +73,7 @@ const OTHER_USER_ID = '01935f3d-0000-7000-8000-000000000002';
 const ORDER_ID = '01935f3d-0000-7000-8000-0000000000d1';
 const DISPENSARY_ID = '01935f3d-0000-7000-8000-0000000000a1';
 const DRIVER_ID = '01935f3d-0000-7000-8000-0000000000c1';
+const PROMO_ID = '01935f3d-0000-7000-8000-0000000000e1';
 const DELIVERY_ADDRESS_ID = '01935f3d-0000-7000-8000-0000000000b1';
 const PAYMENT_TX_ID = '01935f3d-0000-7000-8000-0000000000e1';
 const AEROPAY_PAYMENT_ID = 'pay_aeropay_abc123';
@@ -118,6 +120,8 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     driverTipCents: SAMPLE_ORDER_DRIVER_TIP_CENTS,
     discountCents: SAMPLE_ORDER_DISCOUNT_CENTS,
     totalCents: SAMPLE_ORDER_TOTAL_CENTS,
+    promoCodeId: null,
+    discountFundedBy: null,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},
     placedAt: new Date('2026-05-01T00:00:00.000Z'),
@@ -460,6 +464,9 @@ class FakeLedgerEntriesRepo {
     this.rows.push(...materialized);
     return Promise.resolve(materialized);
   };
+
+  listForOrder = (orderId: string): Promise<readonly LedgerEntry[]> =>
+    Promise.resolve(this.rows.filter((r) => r.orderId === orderId));
 }
 
 /**
@@ -479,6 +486,20 @@ class FakeDispensaryBankLinkService {
 
   applyBankFailed = (dispensaryId: string): void => {
     this.failedCalls.push(dispensaryId);
+  };
+}
+
+class FakeDriverBankLinkService {
+  linkedCalls: Array<{ driverUserId: string; bankAccountId: string }> = [];
+  failedCalls: string[] = [];
+
+  applyBankLinked = (driverUserId: string, bankAccountId: string): Promise<void> => {
+    this.linkedCalls.push({ driverUserId, bankAccountId });
+    return Promise.resolve();
+  };
+
+  applyBankFailed = (driverUserId: string): void => {
+    this.failedCalls.push(driverUserId);
   };
 }
 
@@ -506,6 +527,7 @@ function build(): {
   ledgerRepo: FakeLedgerEntriesRepo;
   aeropay: FakeAeropayClient;
   dispensaryBankLink: FakeDispensaryBankLinkService;
+  driverBankLink: FakeDriverBankLinkService;
   payoutWebhooks: FakePayoutWebhookService;
 } {
   const repo = new FakePaymentMethodsRepo();
@@ -515,6 +537,7 @@ function build(): {
   const ledgerRepo = new FakeLedgerEntriesRepo();
   const aeropay = new FakeAeropayClient();
   const dispensaryBankLink = new FakeDispensaryBankLinkService();
+  const driverBankLink = new FakeDriverBankLinkService();
   const payoutWebhooks = new FakePayoutWebhookService();
   // The settlement path opens a single transaction. The fake just hands the
   // service back the same singleton repos via the factory closure — there is
@@ -537,6 +560,7 @@ function build(): {
     settlementReposFor,
     aeropay,
     dispensaryBankLink as unknown as DispensaryBankLinkService,
+    driverBankLink as unknown as DriverBankLinkService,
     payoutWebhooks as unknown as PayoutWebhookService,
   );
   return {
@@ -548,6 +572,7 @@ function build(): {
     ledgerRepo,
     aeropay,
     dispensaryBankLink,
+    driverBankLink,
     payoutWebhooks,
   };
 }
@@ -970,8 +995,8 @@ describe('PaymentMethodsService.applyWebhook', () => {
     expect(repo.updateBankAccountDetailsCalls).toHaveLength(0);
   });
 
-  it('noops on payment.refunded (handled by the refunds service in 6.5)', async () => {
-    const { service, repo, txRepo, orderTransitions, aeropay } = build();
+  it('noops on payment.refunded when no local payment transaction matches', async () => {
+    const { service, repo, txRepo, orderTransitions, ledgerRepo, aeropay } = build();
 
     await service.applyWebhook({
       type: 'payment.refunded',
@@ -983,8 +1008,12 @@ describe('PaymentMethodsService.applyWebhook', () => {
 
     expect(aeropay.getBankAccountCalls).toHaveLength(0);
     expect(repo.updateStatusCalls).toHaveLength(0);
-    expect(txRepo.findByProviderRefCalls).toHaveLength(0);
+    // The handler resolves the payment first, then no-ops when absent.
+    expect(txRepo.findByProviderRefCalls).toEqual([
+      { provider: 'aeropay', providerRef: 'pay_test_refunded' },
+    ]);
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
     expect(orderTransitions.calls).toHaveLength(0);
   });
 
@@ -1061,6 +1090,50 @@ describe('PaymentMethodsService.applyWebhook', () => {
     });
 
     expect(dispensaryBankLink.failedCalls).toEqual([DISPENSARY_ID]);
+    expect(repo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('routes a driver-namespaced bank_account.linked to the driver bank-link service', async () => {
+    const { service, repo, driverBankLink, dispensaryBankLink, aeropay } = build();
+    aeropay.bankAccountsById.set(
+      'ba_real_account_123',
+      bankAccount({ customerRef: `driver:${DRIVER_ID}` }),
+    );
+
+    await service.applyWebhook({
+      type: 'bank_account.linked',
+      eventId: 'evt_test_driver_1',
+      objectId: 'ba_real_account_123',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+
+    expect(driverBankLink.linkedCalls).toEqual([
+      { driverUserId: DRIVER_ID, bankAccountId: 'ba_real_account_123' },
+    ]);
+    // Neither the dispensary path nor the consumer payment_methods path runs.
+    expect(dispensaryBankLink.linkedCalls).toHaveLength(0);
+    expect(repo.updateBankAccountDetailsCalls).toHaveLength(0);
+    expect(aeropay.getBankAccountCalls).toEqual(['ba_real_account_123']);
+  });
+
+  it('routes a driver-namespaced bank_account.failed to the driver bank-link service', async () => {
+    const { service, repo, driverBankLink, dispensaryBankLink, aeropay } = build();
+    aeropay.bankAccountsById.set(
+      'ba_real_account_123',
+      bankAccount({ customerRef: `driver:${DRIVER_ID}`, status: 'failed' }),
+    );
+
+    await service.applyWebhook({
+      type: 'bank_account.failed',
+      eventId: 'evt_test_driver_2',
+      objectId: 'ba_real_account_123',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+
+    expect(driverBankLink.failedCalls).toEqual([DRIVER_ID]);
+    expect(dispensaryBankLink.failedCalls).toHaveLength(0);
     expect(repo.updateStatusCalls).toHaveLength(0);
   });
 });
@@ -1392,6 +1465,127 @@ describe('PaymentMethodsService.applyWebhook — payment.settled distribution', 
     // Total ledger movement still balances at 2 * (discounted) total.
     const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
     expect(debits).toBe(2 * discountedTotal);
+  });
+
+  it('routes a dispensary-funded promo to the dispensary share, platform fee intact', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - 500;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: 500,
+        totalCents: discountedTotal,
+        promoCodeId: PROMO_ID,
+        discountFundedBy: 'dispensary',
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_disp_promo',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    expect(entries.find((e) => e.accountType === 'dispensary')?.creditCents).toBe(8_000);
+    // Platform still collects its full 15% fee — the store funded the promo.
+    expect(entries.find((e) => e.accountType === 'platform_revenue')?.creditCents).toBe(
+      SAMPLE_ORDER_PLATFORM_FEE_CENTS,
+    );
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(2 * discountedTotal);
+    expect(credits).toBe(2 * discountedTotal);
+  });
+
+  it('routes a platform-funded promo to platform revenue, dispensary share whole', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - 500;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: 500,
+        totalCents: discountedTotal,
+        promoCodeId: PROMO_ID,
+        discountFundedBy: 'platform',
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_plat_promo',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    // Dispensary is paid in full (10_000 - 1_500) — the platform ate the promo.
+    expect(entries.find((e) => e.accountType === 'dispensary')?.creditCents).toBe(
+      SAMPLE_ORDER_DISPENSARY_SHARE_CENTS,
+    );
+    // Platform revenue = fee (1_500) - platform-funded discount (500) = 1_000.
+    const platformLeg = entries.find((e) => e.accountType === 'platform_revenue');
+    expect(platformLeg?.creditCents).toBe(1_000);
+    expect(platformLeg?.debitCents).toBe(0);
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(2 * discountedTotal);
+    expect(credits).toBe(2 * discountedTotal);
+  });
+
+  it('emits a platform_revenue DEBIT when a platform-funded promo exceeds the fee', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    // $20 off on a $100 subtotal: platform fee is only $15, so platform
+    // revenue goes to -$5 — the platform subsidizes the difference.
+    const discount = 2_000;
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - discount;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: discount,
+        totalCents: discountedTotal,
+        promoCodeId: PROMO_ID,
+        discountFundedBy: 'platform',
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_plat_subsidy',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    // Dispensary still whole; platform_revenue is a DEBIT of the 500 shortfall.
+    expect(entries.find((e) => e.accountType === 'dispensary')?.creditCents).toBe(
+      SAMPLE_ORDER_DISPENSARY_SHARE_CENTS,
+    );
+    const platformLeg = entries.find((e) => e.accountType === 'platform_revenue');
+    expect(platformLeg?.debitCents).toBe(500);
+    expect(platformLeg?.creditCents).toBe(0);
+    // The debit grows the DR side by exactly the shortfall and the books
+    // still balance.
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(credits);
+    expect(debits).toBe(2 * discountedTotal + 500);
+    // Single-side invariant holds on every leg including the debit.
+    for (const entry of entries) {
+      const dr = entry.debitCents ?? 0;
+      const cr = entry.creditCents ?? 0;
+      expect((dr > 0 && cr === 0) || (cr > 0 && dr === 0)).toBe(true);
+    }
   });
 
   it('credits driver with delivery_fee + tip and uses driverId as accountRef', async () => {
@@ -1905,5 +2099,174 @@ describe('PaymentMethodsService.applyWebhook — payment.canceled', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.refunded', () => {
+  const REFUNDED_EVENT = {
+    type: 'payment.refunded' as const,
+    eventId: 'evt_pay_refunded_1',
+    objectId: AEROPAY_PAYMENT_ID,
+    occurredAt: WEBHOOK_OCCURRED_AT,
+    raw: {},
+  };
+
+  it('is a confirmation no-op when the payment is already fully refunded', async () => {
+    // RefundsService reversed the full charge at approval time and flipped
+    // the payment row to `refunded`. The webhook only confirms — no writes.
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'refunded' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
+  it('reverses the full charge for an external/chargeback refund with no local reversal', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(1);
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    const reserveLeg = entries.find((e) => e.accountType === 'refund_reserve');
+    const customerLeg = entries.find((e) => e.accountType === 'customer');
+    expect(reserveLeg).toMatchObject({
+      accountRef: DISPENSARY_ID,
+      debitCents: SAMPLE_ORDER_TOTAL_CENTS,
+      creditCents: 0,
+    });
+    // No local refund row backs a chargeback reversal.
+    expect(reserveLeg?.refundId).toBeUndefined();
+    expect(customerLeg).toMatchObject({
+      accountRef: USER_ID,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_TOTAL_CENTS,
+    });
+    // Balanced double-entry.
+    const debit = entries.reduce((s, e) => s + (e.debitCents ?? 0), 0);
+    const credit = entries.reduce((s, e) => s + (e.creditCents ?? 0), 0);
+    expect(debit).toBe(credit);
+    // Payment row advanced to terminal.
+    expect(txRepo.updateStatusCalls).toEqual([
+      { id: PAYMENT_TX_ID, status: 'refunded', patch: {} },
+    ]);
+  });
+
+  it('reverses only the unreversed remainder when a partial internal refund preceded it', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'partially_refunded' }));
+    // Seed a prior internal partial refund reversal of 4_000¢.
+    await ledgerRepo.recordTransaction([
+      {
+        orderId: ORDER_ID,
+        refundId: '01935f3d-0000-7000-8000-0000000000f9',
+        accountType: 'refund_reserve',
+        accountRef: DISPENSARY_ID,
+        debitCents: 4_000,
+        creditCents: 0,
+        description: 'prior partial refund (reserve)',
+      },
+      {
+        orderId: ORDER_ID,
+        refundId: '01935f3d-0000-7000-8000-0000000000f9',
+        accountType: 'customer',
+        accountRef: USER_ID,
+        debitCents: 0,
+        creditCents: 4_000,
+        description: 'prior partial refund (customer)',
+      },
+    ]);
+    ledgerRepo.recordTransactionCalls.length = 0; // ignore the seed write
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    const reserveLeg = entries.find((e) => e.accountType === 'refund_reserve');
+    expect(reserveLeg?.debitCents).toBe(SAMPLE_ORDER_TOTAL_CENTS - 4_000);
+    expect(txRepo.updateStatusCalls).toEqual([
+      { id: PAYMENT_TX_ID, status: 'refunded', patch: {} },
+    ]);
+  });
+
+  it('only advances the status (no ledger write) when the ledger is already fully reversed', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'partially_refunded' }));
+    await ledgerRepo.recordTransaction([
+      {
+        orderId: ORDER_ID,
+        accountType: 'refund_reserve',
+        accountRef: DISPENSARY_ID,
+        debitCents: SAMPLE_ORDER_TOTAL_CENTS,
+        creditCents: 0,
+        description: 'reserve fully drawn',
+      },
+      {
+        orderId: ORDER_ID,
+        accountType: 'customer',
+        accountRef: USER_ID,
+        debitCents: 0,
+        creditCents: SAMPLE_ORDER_TOTAL_CENTS,
+        description: 'customer credited',
+      },
+    ]);
+    ledgerRepo.recordTransactionCalls.length = 0;
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+    expect(txRepo.updateStatusCalls).toEqual([
+      { id: PAYMENT_TX_ID, status: 'refunded', patch: {} },
+    ]);
+  });
+
+  it('ignores a refund event for a payment that never settled', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
+  it('throws when the payment row exists but its order does not (data integrity)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await expect(service.applyWebhook(REFUNDED_EVENT)).rejects.toThrow(/order .* missing/);
+  });
+
+  it('is idempotent across redelivery — a second event does not double-reverse', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+    // The first pass flipped the row to `refunded`; a replay short-circuits.
+    await service.applyWebhook({ ...REFUNDED_EVENT, eventId: 'evt_pay_refunded_1_replay' });
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(1);
+    expect(txRepo.updateStatusCalls).toHaveLength(1);
+  });
+
+  it('throws RepositoryError when the reversal UPDATE finds the row gone mid-transaction', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+    ordersRepo.rows.push(makeOrder());
+    // Pre-tx read found the row, but a concurrent delete lands before the
+    // in-tx status flip, so updateStatus returns null — the throw rolls back
+    // before any reverse leg is written.
+    txRepo.updateStatus = (): Promise<PaymentTransaction | null> => Promise.resolve(null);
+
+    await expect(service.applyWebhook(REFUNDED_EVENT)).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 });

@@ -141,6 +141,24 @@ export class CartsRepository extends BaseRepository {
     return row ?? null;
   }
 
+  /**
+   * Attach or clear the applied promo and touch the TTL in one statement,
+   * returning the refreshed row. `promoCodeId = null` removes the promo. Like
+   * `touch`, recomputes `expiresAt` in JS so the caller can project the fresh
+   * expiry without a second round trip. Null on a concurrent delete → 404 at
+   * the service.
+   */
+  async setPromoCode(id: string, promoCodeId: string | null): Promise<Cart | null> {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + CART_TTL_MS);
+    const [row] = await this.db
+      .update(carts)
+      .set({ promoCodeId, updatedAt: now, expiresAt })
+      .where(eq(carts.id, id))
+      .returning();
+    return row ?? null;
+  }
+
   async deleteExpired(now: Date): Promise<number> {
     const result = await this.db.delete(carts).where(lt(carts.expiresAt, now));
     return result.count;

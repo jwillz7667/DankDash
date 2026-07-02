@@ -58,6 +58,7 @@ import {
 } from '@dankdash/aeropay';
 import {
   DispensariesRepository,
+  DriversRepository,
   LedgerEntriesRepository,
   OrdersRepository,
   PaymentMethodsRepository,
@@ -82,6 +83,8 @@ import { OrdersModule } from '../orders/orders.module.js';
 import { AdminRefundsController } from './admin-refunds.controller.js';
 import { AeropayWebhookController } from './aeropay-webhook.controller.js';
 import { DispensaryBankLinkService } from './dispensary-bank-link.service.js';
+import { DriverBankLinkService } from './driver-bank-link.service.js';
+import { DriverPayoutAccountController } from './driver-payout-account.controller.js';
 import { PaymentMethodsController } from './payment-methods.controller.js';
 import {
   PaymentMethodsService,
@@ -194,6 +197,18 @@ const payoutsRepoProvider: FactoryProvider<PayoutsRepository> = {
   useFactory: (db: Database): PayoutsRepository => new PayoutsRepository(db),
 };
 
+// DriverBankLinkService writes `aeropay_account_ref` on the driver (payout
+// linking). PaymentsModule provides its own DriversRepository singleton
+// rather than importing DriversModule — DriversModule already imports
+// PaymentsModule (for AEROPAY_CLIENT), so importing back would form a cycle.
+// The repo is a thin wrapper around the shared Database, so a second instance
+// is free.
+const driversRepoProvider: FactoryProvider<DriversRepository> = {
+  provide: DriversRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriversRepository => new DriversRepository(db),
+};
+
 // DispensaryBankLinkService writes `aeropay_account_ref` on the dispensary
 // (payout linking). It reuses the DispensariesRepository singleton exported
 // by DispensariesModule (already imported for the VendorContextGuard) so the
@@ -205,6 +220,15 @@ const dispensaryBankLinkServiceProvider: FactoryProvider<DispensaryBankLinkServi
     dispensaries: DispensariesRepository,
     client: AeropayClient,
   ): DispensaryBankLinkService => new DispensaryBankLinkService(dispensaries, client),
+};
+
+// DriverBankLinkService writes `aeropay_account_ref` on the driver row,
+// looked up by `user_id`. Symmetric with dispensaryBankLinkServiceProvider.
+const driverBankLinkServiceProvider: FactoryProvider<DriverBankLinkService> = {
+  provide: DriverBankLinkService,
+  inject: [DriversRepository, AEROPAY_CLIENT],
+  useFactory: (drivers: DriversRepository, client: AeropayClient): DriverBankLinkService =>
+    new DriverBankLinkService(drivers, client),
 };
 
 const payoutWebhookServiceProvider: FactoryProvider<PayoutWebhookService> = {
@@ -247,6 +271,7 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     DRIZZLE_DB,
     AEROPAY_CLIENT,
     DispensaryBankLinkService,
+    DriverBankLinkService,
     PayoutWebhookService,
   ],
   useFactory: (
@@ -257,6 +282,7 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     db: Database,
     client: AeropayClient,
     dispensaryBankLink: DispensaryBankLinkService,
+    driverBankLink: DriverBankLinkService,
     payoutWebhooks: PayoutWebhookService,
   ): PaymentMethodsService =>
     new PaymentMethodsService(
@@ -268,6 +294,7 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
       settlementReposFor,
       client,
       dispensaryBankLink,
+      driverBankLink,
       payoutWebhooks,
     ),
 };
@@ -316,10 +343,12 @@ const providers: Provider[] = [
   paymentTransactionsRepoProvider,
   ordersRepoProvider,
   payoutsRepoProvider,
+  driversRepoProvider,
   refundsRepoProvider,
   webhookEventsRepoProvider,
   VendorContextGuard,
   dispensaryBankLinkServiceProvider,
+  driverBankLinkServiceProvider,
   payoutWebhookServiceProvider,
   serviceProvider,
   refundsServiceProvider,
@@ -332,6 +361,7 @@ const providers: Provider[] = [
     AeropayWebhookController,
     VendorRefundsController,
     VendorPayoutAccountController,
+    DriverPayoutAccountController,
     AdminRefundsController,
   ],
   providers,

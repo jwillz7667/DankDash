@@ -152,9 +152,12 @@ export function computeOrderTotals(
  *
  * Computed on subtotal (not on total) by design — taxes pass through to
  * the state and tips pass through to the driver, so the platform's take
- * is only on the dispensary's revenue line. Same reason discounts reduce
- * the dispensary's share, not the platform fee: the dispensary funds
- * its own promotions.
+ * is only on the dispensary's revenue line. A promo discount is routed to
+ * its funder at settlement (see `buildSettlementEntries`): a dispensary-scoped
+ * code reduces the dispensary's share, a platform-scoped code reduces this
+ * platform fee (and can drive platform revenue negative). This fee function
+ * is funder-agnostic — it always returns the gross 15% of subtotal; the
+ * settlement split decides who absorbs the promo.
  *
  * `subtotalCents` must be a non-negative integer; throws otherwise so a
  * corrupt caller fails loud rather than rounding garbage into the books.

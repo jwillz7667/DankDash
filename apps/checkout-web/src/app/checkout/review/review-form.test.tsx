@@ -9,7 +9,7 @@ function noop(): void {
 
 describe('ReviewForm', () => {
   it('renders tip presets with $5.00 selected by default and the running total', () => {
-    render(<ReviewForm subtotalCents={2000} action={noop} />);
+    render(<ReviewForm subtotalCents={2000} promoCode={null} discountCents={0} action={noop} />);
     // Four presets.
     expect(screen.getByRole('button', { name: '$3.00' })).toBeInTheDocument();
     const five = screen.getByRole('button', { name: '$5.00' });
@@ -18,9 +18,24 @@ describe('ReviewForm', () => {
     expect(screen.getByRole('button', { name: /Place order · \$25\.00/ })).toBeInTheDocument();
   });
 
+  it('renders a discount line with the code and subtracts it from the total', () => {
+    // $20 subtotal, $5 off (SAVE5), default $5 tip → $20 - $5 + $5 = $20.00.
+    render(<ReviewForm subtotalCents={2000} promoCode="SAVE5" discountCents={500} action={noop} />);
+    expect(screen.getByText('Discount (SAVE5)')).toBeInTheDocument();
+    expect(screen.getByText('−$5.00')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Place order · \$20\.00/ })).toBeInTheDocument();
+  });
+
+  it('omits the discount line when there is no discount', () => {
+    render(<ReviewForm subtotalCents={2000} promoCode={null} discountCents={0} action={noop} />);
+    expect(screen.queryByText(/Discount/)).not.toBeInTheDocument();
+  });
+
   it('updates the hidden tip field and total when a preset is chosen', async () => {
     const user = userEvent.setup();
-    const { container } = render(<ReviewForm subtotalCents={2000} action={noop} />);
+    const { container } = render(
+      <ReviewForm subtotalCents={2000} promoCode={null} discountCents={0} action={noop} />,
+    );
 
     await user.click(screen.getByRole('button', { name: '$10.00' }));
 
@@ -32,7 +47,9 @@ describe('ReviewForm', () => {
 
   it('clamps a custom tip below the $2 floor up to the floor', async () => {
     const user = userEvent.setup();
-    const { container } = render(<ReviewForm subtotalCents={1000} action={noop} />);
+    const { container } = render(
+      <ReviewForm subtotalCents={1000} promoCode={null} discountCents={0} action={noop} />,
+    );
 
     await user.type(screen.getByLabelText(/Custom tip/i), '1');
 
@@ -41,7 +58,7 @@ describe('ReviewForm', () => {
   });
 
   it('exposes a delivery-instructions field bound to the form', () => {
-    render(<ReviewForm subtotalCents={1000} action={vi.fn()} />);
+    render(<ReviewForm subtotalCents={1000} promoCode={null} discountCents={0} action={vi.fn()} />);
     const textarea = screen.getByLabelText(/Delivery instructions/i);
     expect(textarea).toHaveAttribute('name', 'deliveryInstructions');
   });

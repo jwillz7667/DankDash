@@ -35,6 +35,8 @@ function makeRow(overrides: Partial<Order> = {}): Order {
     driverTipCents: 500,
     discountCents: 0,
     totalCents: 11019,
+    promoCodeId: null,
+    discountFundedBy: null,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},
     placedAt: PLACED_AT,

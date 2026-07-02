@@ -11,6 +11,7 @@ import {
   Package,
   Settings,
   ShoppingBag,
+  Ticket,
   Users,
   type LucideIcon,
 } from 'lucide-react';
@@ -50,6 +51,13 @@ export const PRIMARY_NAV: ReadonlyArray<NavItem> = [
   { key: 'menu', label: 'Menu', href: '/menu', icon: ShoppingBag, roles: VENDOR_ROLES },
   { key: 'products', label: 'Products', href: '/products', icon: Package, roles: VENDOR_ROLES },
   { key: 'staff', label: 'Staff', href: '/staff', icon: Users, roles: MANAGER_PLUS },
+  {
+    key: 'promotions',
+    label: 'Promotions',
+    href: '/promotions',
+    icon: Ticket,
+    roles: MANAGER_PLUS,
+  },
   { key: 'payouts', label: 'Payouts', href: '/payouts', icon: Banknote, roles: MANAGER_PLUS },
   {
     key: 'analytics',

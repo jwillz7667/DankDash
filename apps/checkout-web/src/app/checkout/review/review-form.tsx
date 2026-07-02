@@ -28,9 +28,13 @@ function SubmitButton({ totalCents }: { totalCents: number }): ReactNode {
  */
 export function ReviewForm({
   subtotalCents,
+  promoCode,
+  discountCents,
   action,
 }: {
   subtotalCents: number;
+  promoCode: string | null;
+  discountCents: number;
   action: (formData: FormData) => void | Promise<void>;
 }): ReactNode {
   const [tipCents, setTipCents] = useState<number>(TIP_PRESETS_CENTS[1] ?? 500);
@@ -98,12 +102,18 @@ export function ReviewForm({
         <span className="muted">Subtotal</span>
         <span className="mono muted">{formatCents(subtotalCents)}</span>
       </div>
+      {discountCents > 0 && (
+        <div className="row">
+          <span className="muted">Discount{promoCode !== null ? ` (${promoCode})` : ''}</span>
+          <span className="mono muted">−{formatCents(discountCents)}</span>
+        </div>
+      )}
       <div className="row" style={{ marginBottom: 12 }}>
         <span className="muted">Driver tip</span>
         <span className="mono muted">{formatCents(tipCents)}</span>
       </div>
 
-      <SubmitButton totalCents={subtotalCents + tipCents} />
+      <SubmitButton totalCents={subtotalCents - discountCents + tipCents} />
     </form>
   );
 }

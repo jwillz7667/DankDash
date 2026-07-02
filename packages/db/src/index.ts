@@ -28,6 +28,11 @@ export {
   type StatusOptions,
 } from './migrate.js';
 export * from './repositories/index.js';
+export {
+  resolvePayoutTerminalTransition,
+  type PayoutTerminalResolution,
+  type PayoutTerminalStatus,
+} from './domain/payout-settlement.js';
 export { seed, stableUuid, type SeedOptions, type SeedSummary } from './seed.js';
 export {
   createEncryptionService,

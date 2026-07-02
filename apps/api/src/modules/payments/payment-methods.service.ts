@@ -51,6 +51,7 @@ import {
   DispensaryBankLinkService,
   parseDispensaryCustomerRef,
 } from './dispensary-bank-link.service.js';
+import { DriverBankLinkService, parseDriverCustomerRef } from './driver-bank-link.service.js';
 import { PayoutWebhookService } from './payout-webhook.service.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
 import type {
@@ -85,6 +86,7 @@ export class PaymentMethodsService {
     private readonly settlementReposFor: SettlementScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
     private readonly dispensaryBankLink: DispensaryBankLinkService,
+    private readonly driverBankLink: DriverBankLinkService,
     private readonly payoutWebhooks: PayoutWebhookService,
   ) {}
 
@@ -226,13 +228,14 @@ export class PaymentMethodsService {
    *                                 `customer_ref`: a `dispensary:<id>` ref
    *                                 persists the confirmed bank-account id
    *                                 onto the dispensary (payout linking); a
-   *                                 bare consumer ref flips the pending
-   *                                 payment_methods row to `active`, enriches
-   *                                 with bank metadata, and rewrites
-   *                                 `aeropay_payment_method_ref` to the
-   *                                 upstream bank-account id.
-   *   - `bank_account.failed`    → dispensary ref → logged, ref untouched;
-   *                                 consumer ref → flip the pending
+   *                                 `driver:<userId>` ref persists it onto the
+   *                                 driver (payout linking); a bare consumer
+   *                                 ref flips the pending payment_methods row
+   *                                 to `active`, enriches with bank metadata,
+   *                                 and rewrites `aeropay_payment_method_ref`
+   *                                 to the upstream bank-account id.
+   *   - `bank_account.failed`    → dispensary / driver ref → logged, ref
+   *                                 untouched; consumer ref → flip the pending
    *                                 payment_methods row to `failed` so the
    *                                 iOS UI can show a retry CTA.
    *   - `payout.paid`            → move the matching `payouts` row
@@ -259,10 +262,16 @@ export class PaymentMethodsService {
    *                                 order stays in `placed` — explicit
    *                                 order cancellation is a separate
    *                                 flow with its own auditing.
-   *   - `payment.refunded`       → noop here. Phase 6.5 handles refunds on
-   *                                 its dedicated admin-gated controller. The
-   *                                 204 the controller still returns drains
-   *                                 Aeropay's retry queue.
+   *   - `payment.refunded`       → confirm the distribution ledger has been
+   *                                 reversed for the refunded amount. Refunds
+   *                                 driven through RefundsService already wrote
+   *                                 the reverse legs at approval time, so this
+   *                                 is a no-op for them; it only writes
+   *                                 compensating legs for an *unreversed*
+   *                                 remainder — an externally-originated
+   *                                 refund / chargeback that never crossed
+   *                                 RefundsService. Idempotent (see
+   *                                 `handlePaymentRefunded`).
    *   - `ignored` / unknown      → noop.
    *
    * Idempotency: re-receiving the same event after the row is already in
@@ -286,11 +295,17 @@ export class PaymentMethodsService {
   async applyWebhook(outcome: AeropayWebhookOutcome): Promise<void> {
     if (outcome.type === 'bank_account.linked') {
       // Resolve the account once; `customer_ref` tells us whether this is a
-      // dispensary payout link (`dispensary:<id>`) or a bare consumer link.
+      // dispensary payout link (`dispensary:<id>`), a driver payout link
+      // (`driver:<userId>`), or a bare consumer link.
       const account = await this.aeropay.getBankAccount(outcome.objectId);
       const dispensaryId = parseDispensaryCustomerRef(account.customerRef);
       if (dispensaryId !== null) {
         await this.dispensaryBankLink.applyBankLinked(dispensaryId, account.id);
+        return;
+      }
+      const driverUserId = parseDriverCustomerRef(account.customerRef);
+      if (driverUserId !== null) {
+        await this.driverBankLink.applyBankLinked(driverUserId, account.id);
         return;
       }
       await this.handleBankAccountLinked(account);
@@ -301,6 +316,11 @@ export class PaymentMethodsService {
       const dispensaryId = parseDispensaryCustomerRef(account.customerRef);
       if (dispensaryId !== null) {
         this.dispensaryBankLink.applyBankFailed(dispensaryId);
+        return;
+      }
+      const driverUserId = parseDriverCustomerRef(account.customerRef);
+      if (driverUserId !== null) {
+        this.driverBankLink.applyBankFailed(driverUserId);
         return;
       }
       await this.handleBankAccountFailed(account);
@@ -330,8 +350,11 @@ export class PaymentMethodsService {
       await this.handlePaymentCanceled(outcome.objectId, outcome.occurredAt);
       return;
     }
-    // payment.refunded and `ignored` land here as a noop. Refunds get their
-    // own admin-gated controller in Phase 6.5. Returning silently lets the
+    if (outcome.type === 'payment.refunded') {
+      await this.handlePaymentRefunded(outcome.objectId, outcome.occurredAt);
+      return;
+    }
+    // `ignored` / unknown land here as a noop. Returning silently lets the
     // controller 204 so Aeropay drains its retry queue.
   }
 
@@ -541,6 +564,110 @@ export class PaymentMethodsService {
     // does the order-side transition with the right actor recorded.
   }
 
+  /**
+   * Reconcile the distribution ledger when Aeropay confirms a payment was
+   * refunded.
+   *
+   * The refund state machine spans two writers:
+   *
+   *   - **RefundsService** (vendor-initiate / admin-approve) issues the
+   *     Aeropay reverse-ACH and writes the reverse ledger legs (DR
+   *     `refund_reserve` @ dispensaryId / CR `customer` @ userId) *at
+   *     approval time*, then flips the payment_transactions row to
+   *     `refunded` / `partially_refunded`. For those refunds the ledger is
+   *     already correct before this webhook ever fires — this handler
+   *     confirms and no-ops.
+   *
+   *   - **This handler** is the safety net for a refund that never crossed
+   *     RefundsService: an Aeropay-console refund or a chargeback. Nothing
+   *     else would ever reverse the dispensary's share, so the payout job
+   *     would over-pay them. We reverse the *unreversed remainder* here.
+   *
+   * "Unreversed remainder" is derived from the ledger, not the refunds
+   * table, so it also accounts for reversals this handler itself wrote:
+   *   remainder = payment_amount − Σ(refund_reserve debits already on the
+   *   order). We write compensating legs for the remainder using the same
+   *   two-leg shape RefundsService uses (kept consistent so the payout
+   *   aggregator's `refund_reserve` drawdown math is uniform), and advance
+   *   the payment row to `refunded`.
+   *
+   * Idempotency: once the row reaches `refunded` a replay short-circuits at
+   * the top guard; combined with the controller's `webhook_events_processed`
+   * dedup, re-delivery never double-reverses. `payment.refunded` denotes a
+   * *fully* refunded payment (Aeropay reports partial refunds via a
+   * different, ignored event), so the remainder always targets the full
+   * charge.
+   */
+  private async handlePaymentRefunded(aeropayPaymentId: string, occurredAt: Date): Promise<void> {
+    const tx = await this.findPaymentTransaction(aeropayPaymentId);
+    if (tx === null) {
+      this.logger.warn(
+        `payment.refunded for unknown aeropay payment ${aeropayPaymentId} — ignoring`,
+      );
+      return;
+    }
+    // Already terminal — RefundsService fully reversed it, or a prior
+    // delivery of this event already reconciled the remainder.
+    if (tx.status === 'refunded') return;
+    // A refund on a payment that never settled is nonsensical (an
+    // unsettled charge is canceled, not refunded). Log and drop rather
+    // than distribute against a charge that never moved money.
+    if (tx.status !== 'settled' && tx.status !== 'partially_refunded') {
+      this.logger.warn(
+        `payment.refunded for payment_tx ${tx.id} in status '${tx.status}' — ignoring`,
+      );
+      return;
+    }
+
+    const order = await this.orders.findById(tx.orderId);
+    if (order === null) {
+      // FK from payment_transactions.order_id makes this impossible under a
+      // healthy DB; fail loudly rather than silently skip a money movement.
+      throw new RepositoryError(
+        `handlePaymentRefunded: order ${tx.orderId} missing for payment_transactions ${tx.id}`,
+      );
+    }
+
+    // Read prior reversals off the ledger (covers both RefundsService and
+    // any earlier run of this handler). Uses the base db handle via the
+    // same factory the tx-scoped writes use — no extra injected repo.
+    const ledgerRead = this.settlementReposFor(this.db).ledgerEntries;
+    const priorEntries = await ledgerRead.listForOrder(order.id);
+    const alreadyReversedCents = priorEntries
+      .filter((entry) => entry.accountType === 'refund_reserve')
+      .reduce((sum, entry) => sum + entry.debitCents, 0);
+
+    const remainderCents = tx.amountCents - alreadyReversedCents;
+    if (remainderCents <= 0) {
+      // Ledger already reflects the full charge as reversed (e.g. internal
+      // partial refunds summed to the total). Just advance the row to its
+      // terminal state so a replay short-circuits and the vendor surface
+      // stops showing a refundable balance.
+      await this.paymentTransactions.updateStatus(tx.id, 'refunded');
+      return;
+    }
+
+    const entries = buildWebhookRefundReversalEntries(order, remainderCents, occurredAt);
+    // One transaction so the status flip and the reverse legs commit
+    // together — the top-of-method guards prevent a partial state on
+    // Aeropay's retry.
+    await this.db.transaction(async (txDb) => {
+      const scoped = this.settlementReposFor(txDb);
+      const updated = await scoped.paymentTransactions.updateStatus(tx.id, 'refunded');
+      if (updated === null) {
+        throw new RepositoryError(
+          `handlePaymentRefunded: payment_transactions ${tx.id} vanished mid-reversal`,
+        );
+      }
+      await scoped.ledgerEntries.recordTransaction(entries);
+    });
+    this.logger.warn(
+      `payment.refunded reconciled an unreversed ${String(remainderCents)}¢ on order ` +
+        `${order.id} (payment_tx ${tx.id}) — no local refund covered it; treated as an ` +
+        `external/chargeback refund and reversed against refund_reserve`,
+    );
+  }
+
   private async findPaymentTransaction(
     aeropayPaymentId: string,
   ): Promise<PaymentTransaction | null> {
@@ -611,18 +738,26 @@ function extractFailureDetails(raw: Readonly<Record<string, unknown>>): {
  *      per delivered order), which the auditor reads as "what this
  *      customer's purchases have been allocated to."
  *
- * Math:
+ * Math (the discount is routed to its funder — snapshotted on the order as
+ * `discount_funded_by` at checkout — so exactly one of the two funded-discount
+ * terms is non-zero):
  *   platformFee     = banker_round(subtotal * PLATFORM_FEE_RATE)
- *   dispensaryShare = subtotal - platformFee - discount
+ *   dispFunded      = discount if funded_by = 'dispensary' else 0
+ *   platFunded      = discount if funded_by = 'platform'   else 0
+ *   dispensaryShare = subtotal - platformFee - dispFunded
+ *   platformRevenue = platformFee - platFunded          (may be < 0 → a debit)
  *   driverPayout    = deliveryFee + driverTip
  *
- * Sum DR  = total + total            (clearing DR + customer DR)
- * Sum CR  = total + dispensaryShare + platformFee + cannabis + sales + driverPayout
- *         = total + (subtotal - platformFee - discount) + platformFee
- *           + cannabis + sales + (delivery + tip)
- *         = total + subtotal + cannabis + sales + delivery + tip - discount
- *         = total + total
- *         = balanced.
+ * dispensaryShare + platformRevenue = subtotal - dispFunded - platFunded
+ *                                   = subtotal - discount.
+ * So whichever party funds it, the distribution credits still sum to `total`:
+ *   dispensaryShare + platformRevenue + cannabis + sales + driverPayout
+ *     = (subtotal - discount) + cannabis + sales + delivery + tip
+ *     = total.
+ * With the settlement pair (clearing DR total / customer CR total) and the
+ * customer DR total that funds distribution, Sum DR == Sum CR regardless of
+ * funder or of a negative platformRevenue (emitted as a debit that grows the
+ * DR side by exactly the shortfall) — the ledger stays balanced.
  *
  * Driver assignment: if `driverId` is null at settlement time (the order
  * settled before dispatch — pathological but possible) the driver
@@ -638,6 +773,45 @@ function extractFailureDetails(raw: Readonly<Record<string, unknown>>): {
  */
 type SettlementLedgerEntry = Omit<NewLedgerEntry, 'id'> & { readonly id?: string };
 
+/**
+ * Two-leg reverse-ledger entries the `payment.refunded` webhook writes for
+ * the portion of a refund that no local `refunds` row reversed — i.e. an
+ * externally-originated refund or chargeback.
+ *
+ * The shape mirrors RefundsService's `buildRefundLedgerEntries` (DR
+ * `refund_reserve` @ dispensaryId / CR `customer` @ userId) so the payout
+ * job's per-dispensary `refund_reserve` drawdown nets these the same way it
+ * nets internal refunds. `refundId` is intentionally null — there is no
+ * `refunds` row for a chargeback — but `orderId` still ties every leg back
+ * to the originating order for audit.
+ */
+function buildWebhookRefundReversalEntries(
+  order: Order,
+  amountCents: number,
+  occurredAt: Date,
+): readonly SettlementLedgerEntry[] {
+  return [
+    {
+      orderId: order.id,
+      accountType: 'refund_reserve',
+      accountRef: order.dispensaryId,
+      debitCents: amountCents,
+      creditCents: 0,
+      description: `Order ${order.shortCode} refund (external reconciliation, reserve)`,
+      occurredAt,
+    },
+    {
+      orderId: order.id,
+      accountType: 'customer',
+      accountRef: order.userId,
+      debitCents: 0,
+      creditCents: amountCents,
+      description: `Order ${order.shortCode} refund (external reconciliation, customer)`,
+      occurredAt,
+    },
+  ];
+}
+
 function buildSettlementEntries(order: Order, occurredAt: Date): readonly SettlementLedgerEntry[] {
   const subtotal = order.subtotalCents;
   const cannabis = order.cannabisTaxCents;
@@ -648,18 +822,32 @@ function buildSettlementEntries(order: Order, occurredAt: Date): readonly Settle
   const total = order.totalCents;
 
   const platformFee = computePlatformFeeCents(subtotal);
-  const dispensaryShare = subtotal - platformFee - discount;
+  // The discount is routed to its funder (snapshotted on the order at
+  // checkout). A platform-funded discount comes out of platform revenue;
+  // everything else (an explicit 'dispensary' funder, or a null funder on a
+  // legacy/manually-discounted order) comes out of the dispensary's share —
+  // which preserves the historical default that the store funds its own
+  // discounts and keeps the ledger balanced regardless of funder.
+  const platformFundedDiscount = order.discountFundedBy === 'platform' ? discount : 0;
+  const dispensaryFundedDiscount = discount - platformFundedDiscount;
+  const dispensaryShare = subtotal - platformFee - dispensaryFundedDiscount;
+  // Platform revenue nets the fee against any promo the platform funded. It
+  // can go NEGATIVE (a "$15 off" platform promo on a small order exceeds the
+  // 15% fee) — the platform subsidizes the difference, emitted as a debit
+  // against platform_revenue below. dispensary_share is unaffected in that case
+  // (the store is paid in full), which is the whole point of a platform promo.
+  const platformRevenue = platformFee - platformFundedDiscount;
   const driverPayout = delivery + tip;
 
   if (dispensaryShare < 0) {
-    // discount + platform_fee > subtotal — would credit the dispensary
-    // negatively, which the ledger CHECK constraint rejects anyway.
-    // Surface as a domain error so the cause (most likely a promo +
-    // platform-fee policy interaction) is visible rather than a raw
-    // Postgres error.
+    // A dispensary-funded discount larger than (subtotal - platform_fee) would
+    // credit the dispensary negatively, which the ledger CHECK rejects anyway.
+    // Surface the cause rather than a raw Postgres error. Promo max-discount
+    // caps should keep this unreachable in practice.
     throw new RepositoryError(
       `buildSettlementEntries: order ${order.id} dispensary share would be negative ` +
-        `(subtotal=${String(subtotal)}, platformFee=${String(platformFee)}, discount=${String(discount)})`,
+        `(subtotal=${String(subtotal)}, platformFee=${String(platformFee)}, ` +
+        `dispensaryFundedDiscount=${String(dispensaryFundedDiscount)})`,
     );
   }
 
@@ -706,14 +894,27 @@ function buildSettlementEntries(order: Order, occurredAt: Date): readonly Settle
       occurredAt,
     });
   }
-  if (platformFee > 0) {
+  if (platformRevenue > 0) {
     entries.push({
       orderId: order.id,
       accountType: 'platform_revenue',
       accountRef: null,
       debitCents: 0,
-      creditCents: platformFee,
+      creditCents: platformRevenue,
       description: `Order ${order.shortCode} platform fee`,
+      occurredAt,
+    });
+  } else if (platformRevenue < 0) {
+    // Platform-funded promo exceeded the fee — the platform eats the
+    // difference. Debit platform_revenue by the shortfall; the distribution
+    // still balances (the customer DR already reflects the discounted total).
+    entries.push({
+      orderId: order.id,
+      accountType: 'platform_revenue',
+      accountRef: null,
+      debitCents: -platformRevenue,
+      creditCents: 0,
+      description: `Order ${order.shortCode} platform-funded promo subsidy`,
       occurredAt,
     });
   }

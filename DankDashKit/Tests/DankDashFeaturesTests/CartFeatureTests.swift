@@ -798,6 +798,164 @@ final class CartFeatureTests: XCTestCase {
     }
     // No serverCart → guard skips validate; no further actions to receive.
   }
+
+  // MARK: - Promo code
+
+  func test_applyPromo_success_setsDiscountAndClearsInput() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(
+      items: [makeCartItem(unitPriceCents: 5_000)],
+      subtotalCents: 5_000,
+      expiresAt: referenceDate.addingTimeInterval(1_800)
+    )
+    let discounted = makeCart(
+      id: cart.id,
+      userId: cart.userId,
+      dispensaryId: cart.dispensaryId,
+      items: cart.items,
+      subtotalCents: 5_000,
+      promoCode: "SAVE10",
+      discountCents: 500,
+      expiresAt: referenceDate.addingTimeInterval(1_800)
+    )
+    let codeRecorder = ArgsRecorder<String>()
+
+    let store = TestStore(
+      initialState: CartFeature.State(serverCart: cart)
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+      $0.cartAPIClient.applyPromo = { _, code in
+        await codeRecorder.record(code)
+        return discounted
+      }
+    }
+
+    // Leading / trailing whitespace must be trimmed before submit.
+    await store.send(.promoCodeChanged(" SAVE10 ")) {
+      $0.promoCodeInput = " SAVE10 "
+    }
+    await store.send(.applyPromoTapped) {
+      $0.isApplyingPromo = true
+    }
+    await store.receive(\.applyPromoResponse.success) {
+      $0.isApplyingPromo = false
+      $0.serverCart = discounted
+      $0.promoCodeInput = ""
+      $0.expirySecondsRemaining = 1_800
+    }
+
+    XCTAssertEqual(store.state.serverCart?.discountCents, 500)
+    XCTAssertEqual(store.state.serverCart?.promoCode, "SAVE10")
+    let recorded = await codeRecorder.calls
+    XCTAssertEqual(recorded, ["SAVE10"], "the trimmed code must be sent to the API")
+  }
+
+  func test_applyPromo_failure_setsInlinePromoError() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(
+      items: [makeCartItem()],
+      expiresAt: referenceDate.addingTimeInterval(1_800)
+    )
+
+    let store = TestStore(
+      initialState: CartFeature.State(serverCart: cart, promoCodeInput: "BADCODE")
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+      $0.cartAPIClient.applyPromo = { _, _ in
+        throw CartAPIError.promo(
+          code: "PROMO_NOT_FOUND",
+          message: "That promo code doesn't exist."
+        )
+      }
+    }
+
+    await store.send(.applyPromoTapped) {
+      $0.isApplyingPromo = true
+    }
+    await store.receive(\.applyPromoResponse.failure) {
+      $0.isApplyingPromo = false
+      $0.promoError = "That promo code doesn't exist."
+    }
+
+    XCTAssertNil(store.state.error, "a promo rejection must not spill into the top error banner")
+    XCTAssertEqual(store.state.promoCodeInput, "BADCODE", "the rejected input is preserved for editing")
+  }
+
+  func test_applyPromoTapped_withoutServerCart_isIgnored() async {
+    let store = TestStore(
+      initialState: CartFeature.State(promoCodeInput: "SAVE10")
+    ) {
+      CartFeature()
+    }
+
+    await store.send(.applyPromoTapped)
+    // No serverCart → guard rejects the tap; no in-flight flag, no effect.
+  }
+
+  func test_removePromo_success_clearsPromo() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let applied = makeCart(
+      items: [makeCartItem(unitPriceCents: 5_000)],
+      subtotalCents: 5_000,
+      promoCode: "SAVE10",
+      discountCents: 500,
+      expiresAt: referenceDate.addingTimeInterval(1_800)
+    )
+    let cleared = makeCart(
+      id: applied.id,
+      userId: applied.userId,
+      dispensaryId: applied.dispensaryId,
+      items: applied.items,
+      subtotalCents: 5_000,
+      promoCode: nil,
+      discountCents: 0,
+      expiresAt: referenceDate.addingTimeInterval(1_800)
+    )
+
+    let store = TestStore(
+      initialState: CartFeature.State(serverCart: applied)
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+      $0.cartAPIClient.removePromo = { _ in cleared }
+    }
+
+    await store.send(.removePromoTapped) {
+      $0.isRemovingPromo = true
+    }
+    await store.receive(\.removePromoResponse.success) {
+      $0.isRemovingPromo = false
+      $0.serverCart = cleared
+      $0.expirySecondsRemaining = 1_800
+    }
+
+    XCTAssertNil(store.state.serverCart?.promoCode)
+    XCTAssertEqual(store.state.serverCart?.discountCents, 0)
+  }
+
+  func test_removePromoTapped_withoutAppliedPromo_isIgnored() async {
+    let referenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    let cart = makeCart(
+      items: [makeCartItem()],
+      expiresAt: referenceDate.addingTimeInterval(1_800)
+    )
+
+    let store = TestStore(
+      initialState: CartFeature.State(serverCart: cart)
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(referenceDate)
+    }
+
+    await store.send(.removePromoTapped)
+    // No applied promo → guard rejects the tap; nothing to receive.
+  }
 }
 
 // MARK: - Free-function helpers
@@ -812,6 +970,8 @@ private func makeCart(
   dispensaryId: UUID = UUID(),
   items: [CartItem] = [],
   subtotalCents: Int? = nil,
+  promoCode: String? = nil,
+  discountCents: Int = 0,
   expiresAt: Date = Date(timeIntervalSinceReferenceDate: 100_000)
 ) -> Cart {
   Cart(
@@ -820,6 +980,8 @@ private func makeCart(
     dispensaryId: dispensaryId,
     items: items,
     subtotalCents: subtotalCents ?? items.reduce(0) { $0 + $1.lineSubtotalCents },
+    promoCode: promoCode,
+    discountCents: discountCents,
     expiresAt: expiresAt,
     createdAt: Date(timeIntervalSinceReferenceDate: 0),
     updatedAt: Date(timeIntervalSinceReferenceDate: 0)

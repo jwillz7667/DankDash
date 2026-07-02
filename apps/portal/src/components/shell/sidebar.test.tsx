@@ -17,6 +17,7 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Orders' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Menu' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Staff' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Promotions' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Payouts' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument();
   });
@@ -30,6 +31,7 @@ describe('Sidebar', () => {
       'Orders',
       'Menu',
       'Staff',
+      'Promotions',
       'Payouts',
       'Analytics',
       'Settings',

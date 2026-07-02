@@ -7,6 +7,7 @@ export {
   ConflictError,
   ComplianceError,
   InventoryError,
+  PromoError,
   PaymentError,
   ExternalServiceError,
   RateLimitError,

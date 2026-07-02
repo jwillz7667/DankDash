@@ -354,18 +354,21 @@ const driverEarningsServiceProvider: FactoryProvider<DriverEarningsService> = {
 /**
  * Stub-vs-live selection. `AEROPAY_LIVE=false` (default) returns the
  * persisted-only stub. `AEROPAY_LIVE=true` wraps the real
- * `AeropayClient.createPayout` — the live branch currently throws
- * `PAYMENT_METHOD_INVALID` because the driver-side bank-link flow is
- * a future phase; wiring this here keeps the eventual flip to a
- * single env change.
+ * `AeropayClient.createPayout`: the live gateway resolves the driver's
+ * linked `aeropay_account_ref` and dispatches an ACH payout, refusing with
+ * a typed 422 when the driver has not linked a bank account yet.
  */
 const driverPayoutGatewayProvider: FactoryProvider<AeropayDriverPayoutGateway> = {
   provide: DRIVER_PAYOUT_GATEWAY,
-  inject: [ConfigService, AEROPAY_CLIENT],
-  useFactory: (config: ConfigService, aeropay: AeropayClientLike): AeropayDriverPayoutGateway => {
+  inject: [ConfigService, AEROPAY_CLIENT, DriversRepository],
+  useFactory: (
+    config: ConfigService,
+    aeropay: AeropayClientLike,
+    drivers: DriversRepository,
+  ): AeropayDriverPayoutGateway => {
     const live = config.get<boolean>('AEROPAY_LIVE') ?? false;
     return live
-      ? new LiveAeropayDriverPayoutGateway({ aeropay })
+      ? new LiveAeropayDriverPayoutGateway({ aeropay, drivers })
       : new StubAeropayDriverPayoutGateway();
   },
 };

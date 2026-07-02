@@ -33,6 +33,9 @@ import type {
   NewCartItem,
   Product,
   ProductsRepository,
+  PromoCode,
+  PromoCodesRepository,
+  PromoRedemptionsRepository,
   User,
   UserAddress,
   UserAddressesRepository,
@@ -88,6 +91,7 @@ function makeCart(overrides: Partial<Cart> = {}): Cart {
     id: CART_ID,
     userId: USER_ID,
     dispensaryId: DISPENSARY_ID,
+    promoCodeId: null,
     expiresAt: new Date('2026-05-18T22:00:00.000Z'),
     createdAt,
     updatedAt: createdAt,
@@ -292,6 +296,53 @@ class FakeCartsRepo implements Pick<
     this.rows.delete(id);
     return Promise.resolve(true);
   }
+
+  setPromoCode(id: string, promoCodeId: string | null): Promise<Cart | null> {
+    const existing = this.rows.get(id);
+    if (existing === undefined) return Promise.resolve(null);
+    const now = new Date();
+    const next: Cart = {
+      ...existing,
+      promoCodeId,
+      updatedAt: now,
+      expiresAt: new Date(now.getTime() + 4 * 60 * 60 * 1000),
+    };
+    this.rows.set(id, next);
+    return Promise.resolve(next);
+  }
+}
+
+class FakePromoCodesRepo implements Pick<PromoCodesRepository, 'findByCode' | 'findById'> {
+  public rows = new Map<string, PromoCode>();
+
+  seed(promo: PromoCode): void {
+    this.rows.set(promo.id, promo);
+  }
+
+  findByCode(code: string): Promise<PromoCode | null> {
+    const row = [...this.rows.values()].find((r) => r.code.toUpperCase() === code.toUpperCase());
+    return Promise.resolve(row ?? null);
+  }
+
+  findById(id: string): Promise<PromoCode | null> {
+    return Promise.resolve(this.rows.get(id) ?? null);
+  }
+}
+
+class FakePromoRedemptionsRepo implements Pick<
+  PromoRedemptionsRepository,
+  'countForPromo' | 'countForPromoAndUser'
+> {
+  public global = new Map<string, number>();
+  public perUser = new Map<string, number>();
+
+  countForPromo(promoId: string): Promise<number> {
+    return Promise.resolve(this.global.get(promoId) ?? 0);
+  }
+
+  countForPromoAndUser(promoId: string, userId: string): Promise<number> {
+    return Promise.resolve(this.perUser.get(`${promoId}:${userId}`) ?? 0);
+  }
 }
 
 class FakeCartItemsRepo implements Pick<
@@ -441,6 +492,8 @@ interface Rig {
   readonly users: FakeUsersRepo;
   readonly userAddresses: FakeUserAddressesRepo;
   readonly products: FakeProductsRepo;
+  readonly promoCodes: FakePromoCodesRepo;
+  readonly promoRedemptions: FakePromoRedemptionsRepo;
 }
 
 function makeRig(): Rig {
@@ -451,6 +504,8 @@ function makeRig(): Rig {
   const users = new FakeUsersRepo();
   const userAddresses = new FakeUserAddressesRepo();
   const products = new FakeProductsRepo();
+  const promoCodes = new FakePromoCodesRepo();
+  const promoRedemptions = new FakePromoRedemptionsRepo();
   const fakeDb = {
     transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
   } as unknown as Database;
@@ -463,6 +518,8 @@ function makeRig(): Rig {
       users,
       userAddresses,
       products,
+      promoCodes,
+      promoRedemptions,
     }) as unknown as CartScopedRepos;
   return {
     service: new CartService(fakeDb, factory),
@@ -473,8 +530,143 @@ function makeRig(): Rig {
     users,
     userAddresses,
     products,
+    promoCodes,
+    promoRedemptions,
   };
 }
+
+const PROMO_ID = '01935f3d-0000-7000-8000-0000000000f0';
+
+function makePromo(overrides: Partial<PromoCode> = {}): PromoCode {
+  const createdAt = new Date('2026-05-01T00:00:00.000Z');
+  return {
+    id: PROMO_ID,
+    code: 'SAVE10',
+    type: 'percent',
+    value: 10,
+    scope: 'platform',
+    dispensaryId: null,
+    minSubtotalCents: 0,
+    maxDiscountCents: null,
+    startsAt: new Date('2026-05-01T00:00:00.000Z'),
+    endsAt: new Date('2027-01-01T00:00:00.000Z'),
+    maxRedemptions: null,
+    maxRedemptionsPerUser: 1,
+    active: true,
+    createdBy: null,
+    createdAt,
+    updatedAt: createdAt,
+    ...overrides,
+  };
+}
+
+function seedItem(rig: Rig, unitPriceCents: number, quantity: number): void {
+  rig.items.seed({
+    id: '01935f3d-0000-7000-8000-000000000099',
+    cartId: CART_ID,
+    listingId: LISTING_ID,
+    quantity,
+    unitPriceCents,
+    createdAt: new Date('2026-05-18T18:30:00.000Z'),
+    updatedAt: new Date('2026-05-18T18:30:00.000Z'),
+  });
+}
+
+describe('CartService — promo codes', () => {
+  it('applies a valid percent promo and previews the discount', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart());
+    seedItem(rig, 5000, 1);
+    rig.promoCodes.seed(makePromo({ value: 10 }));
+
+    const res = await rig.service.applyPromo(USER_ID, CART_ID, 'save10');
+
+    expect(res.promoCode).toBe('SAVE10');
+    expect(res.discountCents).toBe(500);
+    expect(rig.carts.rows.get(CART_ID)?.promoCodeId).toBe(PROMO_ID);
+  });
+
+  it('rejects an unknown code with PROMO_NOT_FOUND', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart());
+    seedItem(rig, 5000, 1);
+
+    await expect(rig.service.applyPromo(USER_ID, CART_ID, 'NOPE')).rejects.toMatchObject({
+      code: 'PROMO_NOT_FOUND',
+      statusCode: 422,
+    });
+  });
+
+  it('rejects a cart below the minimum subtotal', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart());
+    seedItem(rig, 3000, 1);
+    rig.promoCodes.seed(makePromo({ minSubtotalCents: 5000 }));
+
+    await expect(rig.service.applyPromo(USER_ID, CART_ID, 'SAVE10')).rejects.toMatchObject({
+      code: 'PROMO_MIN_SUBTOTAL',
+    });
+  });
+
+  it('rejects a promo the user already redeemed to its per-user cap', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart());
+    seedItem(rig, 5000, 1);
+    rig.promoCodes.seed(makePromo({ maxRedemptionsPerUser: 1 }));
+    rig.promoRedemptions.perUser.set(`${PROMO_ID}:${USER_ID}`, 1);
+
+    await expect(rig.service.applyPromo(USER_ID, CART_ID, 'SAVE10')).rejects.toMatchObject({
+      code: 'PROMO_ALREADY_USED',
+    });
+  });
+
+  it('rejects a dispensary-scoped promo for a different dispensary', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart());
+    seedItem(rig, 5000, 1);
+    rig.promoCodes.seed(makePromo({ scope: 'dispensary', dispensaryId: 'other-disp' }));
+
+    await expect(rig.service.applyPromo(USER_ID, CART_ID, 'SAVE10')).rejects.toMatchObject({
+      code: 'PROMO_WRONG_DISPENSARY',
+    });
+  });
+
+  it('caps a percent discount at maxDiscountCents', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart());
+    seedItem(rig, 10_000, 1);
+    rig.promoCodes.seed(makePromo({ value: 50, maxDiscountCents: 1000 }));
+
+    const res = await rig.service.applyPromo(USER_ID, CART_ID, 'SAVE10');
+
+    expect(res.discountCents).toBe(1000);
+  });
+
+  it('removes an applied promo', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart({ promoCodeId: PROMO_ID }));
+    seedItem(rig, 5000, 1);
+    rig.promoCodes.seed(makePromo());
+
+    const res = await rig.service.removePromo(USER_ID, CART_ID);
+
+    expect(res.promoCode).toBeNull();
+    expect(res.discountCents).toBe(0);
+    expect(rig.carts.rows.get(CART_ID)?.promoCodeId).toBeNull();
+  });
+
+  it('previews a 0 discount but keeps the code when the cart falls below the minimum', async () => {
+    const rig = makeRig();
+    rig.carts.seed(makeCart({ promoCodeId: PROMO_ID }));
+    seedItem(rig, 3000, 1);
+    rig.promoCodes.seed(makePromo({ minSubtotalCents: 5000 }));
+
+    const res = await rig.service.findForUser(USER_ID, CART_ID);
+
+    expect(res.promoCode).toBe('SAVE10');
+    expect(res.discountCents).toBe(0);
+  });
+});
 
 describe('CartService.createOrGet', () => {
   let rig: Rig;

@@ -83,6 +83,8 @@ function orderRow(overrides: Partial<Order> = {}): Order {
     deliveryFeeCents: 500,
     driverTipCents: 1000,
     discountCents: 0,
+    promoCodeId: null,
+    discountFundedBy: null,
     totalCents: 7350,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: { location: DROPOFF_LOCATION },
