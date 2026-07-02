@@ -12,6 +12,7 @@
 		4A6B5C01000000000000C003 /* DankDashStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 4A6B5C01000000000000B003 /* DankDashStorage */; };
 		4A6B5C01000000000000C004 /* DankDashNetwork in Frameworks */ = {isa = PBXBuildFile; productRef = 4A6B5C01000000000000B004 /* DankDashNetwork */; };
 		4A6B5C01000000000000C005 /* DankDashFeatures in Frameworks */ = {isa = PBXBuildFile; productRef = 4A6B5C01000000000000B005 /* DankDashFeatures */; };
+		4A6B5C01000000000000C006 /* Veriff in Frameworks */ = {isa = PBXBuildFile; productRef = 4A6B5C01000000000000B006 /* Veriff */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,6 +50,7 @@
 				4A6B5C01000000000000C003 /* DankDashStorage in Frameworks */,
 				4A6B5C01000000000000C004 /* DankDashNetwork in Frameworks */,
 				4A6B5C01000000000000C005 /* DankDashFeatures in Frameworks */,
+				4A6B5C01000000000000C006 /* Veriff in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -96,6 +98,7 @@
 				4A6B5C01000000000000B003 /* DankDashStorage */,
 				4A6B5C01000000000000B004 /* DankDashNetwork */,
 				4A6B5C01000000000000B005 /* DankDashFeatures */,
+				4A6B5C01000000000000B006 /* Veriff */,
 			);
 			productName = DankDasher;
 			productReference = 4A6B5CE42FBAB05400BB1B87 /* DankDasher.app */;
@@ -127,6 +130,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */,
+				4A6B5C01000000000000A002 /* XCRemoteSwiftPackageReference "veriff-ios-spm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A6B5CE52FBAB05400BB1B87 /* Products */;
@@ -376,6 +380,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		4A6B5C01000000000000A002 /* XCRemoteSwiftPackageReference "veriff-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Veriff/veriff-ios-spm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 10.4.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		4A6B5C01000000000000B001 /* DankDashDomain */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -401,6 +416,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4A6B5C01000000000000A001 /* XCLocalSwiftPackageReference "DankDashKit" */;
 			productName = DankDashFeatures;
+		};
+		4A6B5C01000000000000B006 /* Veriff */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A6B5C01000000000000A002 /* XCRemoteSwiftPackageReference "veriff-ios-spm" */;
+			productName = Veriff;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
