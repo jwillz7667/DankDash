@@ -115,12 +115,15 @@ import {
   type PaymentTransactionsRepository,
   type Product,
   type ProductsRepository,
+  type PromoCodesRepository,
+  type PromoRedemptionsRepository,
   type User,
   type UserAddress,
   type UserAddressesRepository,
   type UsersRepository,
 } from '@dankdash/db';
 import { computeOrderTotals, type PricingLine } from '@dankdash/pricing';
+import { evaluatePromo, type PromoScope } from '@dankdash/promotions';
 import {
   ComplianceError,
   DomainError,
@@ -137,6 +140,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Decimal } from 'decimal.js';
 import { ORDER_PLACED_EVENT, OrderPlacedEvent } from '../orders/order-placed.events.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from '../payments/tokens.js';
+import { promoErrorForReason, promoRowToDefinition } from '../promotions/promo.mapper.js';
 import type {
   CheckoutCapabilitiesResponse,
   CheckoutRequest,
@@ -161,6 +165,18 @@ export interface CheckoutScopedRepos {
   readonly paymentTransactions: PaymentTransactionsRepository;
   readonly paymentMethods: PaymentMethodsRepository;
   readonly ledgerEntries: LedgerEntriesRepository;
+  readonly promoCodes: PromoCodesRepository;
+  readonly promoRedemptions: PromoRedemptionsRepository;
+}
+
+/**
+ * Authoritative promo outcome resolved inside the checkout transaction. `null`
+ * when no promo is attached to the cart.
+ */
+interface ResolvedPromo {
+  readonly promoId: string;
+  readonly discountCents: number;
+  readonly fundedBy: PromoScope;
 }
 
 export type CheckoutScopedReposFactory = (db: Database) => CheckoutScopedRepos;
@@ -291,8 +307,21 @@ export class CheckoutService {
         );
       }
 
+      // Step 8b: promo — server-authoritative, mirroring compliance. If the
+      // cart carries a promo, re-lock it, re-count redemptions under the lock,
+      // and re-evaluate against the live subtotal. A promo that lapsed between
+      // apply and checkout (expired, exhausted, cart fell below its minimum)
+      // throws a typed PromoError and rolls the whole checkout back. The
+      // computed discount and funding source are snapshotted onto the order.
+      const subtotalCents = hydrated.reduce(
+        (sum, line) => sum + line.item.unitPriceCents * line.item.quantity,
+        0,
+      );
+      const resolvedPromo = await this.resolvePromo(scoped, cart, userId, subtotalCents, now);
+
       // Step 9: pricing. Per-line breakdown survives so order_items rows
-      // are exact, then summed into the header.
+      // are exact, then summed into the header. The promo discount (if any)
+      // comes off the post-tax total via the pricing engine.
       const pricing = computeOrderTotals(
         hydrated.map(
           (line): PricingLine => ({
@@ -304,7 +333,7 @@ export class CheckoutService {
         {
           deliveryFeeCents: 0,
           driverTipCents: body.driverTipCents,
-          discountCents: 0,
+          discountCents: resolvedPromo?.discountCents ?? 0,
         },
       );
 
@@ -332,6 +361,8 @@ export class CheckoutService {
         deliveryFeeCents: pricing.totals.deliveryFeeCents,
         driverTipCents: pricing.totals.driverTipCents,
         discountCents: pricing.totals.discountCents,
+        promoCodeId: resolvedPromo?.promoId ?? null,
+        discountFundedBy: resolvedPromo?.fundedBy ?? null,
         totalCents: pricing.totals.totalCents,
         complianceCheckPayload: serializeEvaluation(evaluation),
         deliveryAddressSnapshot: serializeAddress(address, body.deliveryInstructions),
@@ -399,6 +430,22 @@ export class CheckoutService {
         },
         occurredAt: now,
       });
+
+      // Step 13b: record the promo redemption (one row per order — the
+      // `promo_redemptions_order_uq` UNIQUE makes a double-redeem impossible).
+      // Written inside the same tx that locked the promo row, so the global +
+      // per-user caps this order counted against cannot be beaten by a racing
+      // checkout. `amountAppliedCents` is the discount the customer actually
+      // received (may be 0 for a degenerate free_delivery with no fee).
+      if (resolvedPromo !== null) {
+        await scoped.promoRedemptions.create({
+          promoId: resolvedPromo.promoId,
+          userId,
+          orderId: order.id,
+          amountAppliedCents: pricing.totals.discountCents,
+          createdAt: now,
+        });
+      }
 
       // Step 14: decrement inventory per line. The repo's conditional
       // decrement is race-free; a null return here means the FOR UPDATE
@@ -532,6 +579,57 @@ export class CheckoutService {
       };
       return { item, listing, product, cartLine };
     });
+  }
+
+  /**
+   * Resolve the cart's applied promo authoritatively inside the checkout
+   * transaction. Returns `null` when no promo is attached. Locks the promo row
+   * FOR UPDATE and counts redemptions under that lock so the global cap is
+   * enforced without a race between concurrent checkouts of the same code.
+   *
+   * Any rejection (the promo vanished, went inactive/expired, is exhausted, or
+   * the cart no longer meets its minimum) throws a typed `PromoError` that
+   * rolls the whole checkout back — no order, no charge. A promo that was
+   * valid at apply-time but lapsed before checkout fails here, which is the
+   * correct authoritative behaviour.
+   */
+  private async resolvePromo(
+    scoped: CheckoutScopedRepos,
+    cart: { readonly promoCodeId: string | null; readonly dispensaryId: string },
+    userId: string,
+    subtotalCents: number,
+    now: Date,
+  ): Promise<ResolvedPromo | null> {
+    if (cart.promoCodeId === null) return null;
+
+    const promo = await scoped.promoCodes.findByIdForUpdate(cart.promoCodeId);
+    if (promo === null) {
+      // The attached promo was hard-deleted between apply and checkout. Treat
+      // as an unknown code so the customer gets a clean, retryable error.
+      throw promoErrorForReason('inactive', { promoCodeId: cart.promoCodeId });
+    }
+
+    const [globalRedemptionCount, userRedemptionCount] = await Promise.all([
+      scoped.promoRedemptions.countForPromo(promo.id),
+      scoped.promoRedemptions.countForPromoAndUser(promo.id, userId),
+    ]);
+    const evaluation = evaluatePromo(promoRowToDefinition(promo), {
+      subtotalCents,
+      // Delivery fees are structurally 0 through checkout today.
+      deliveryFeeCents: 0,
+      cartDispensaryId: cart.dispensaryId,
+      now,
+      globalRedemptionCount,
+      userRedemptionCount,
+    });
+    if (!evaluation.ok) {
+      throw promoErrorForReason(evaluation.reason, { code: promo.code });
+    }
+    return {
+      promoId: evaluation.promoId,
+      discountCents: evaluation.discountCents,
+      fundedBy: evaluation.fundedBy,
+    };
   }
 
   private buildEvaluationContext(input: {

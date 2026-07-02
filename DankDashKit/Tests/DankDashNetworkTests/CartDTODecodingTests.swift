@@ -26,6 +26,41 @@ final class CartDTODecodingTests: XCTestCase {
     XCTAssertEqual(domain.items.first?.lineSubtotalCents, 7_000)
   }
 
+  func test_cartDTO_decodesPromoFields() throws {
+    let dto = try decoder.decode(CartDTO.self, from: Self.promoCartJSON.data(using: .utf8)!)
+    let domain = try XCTUnwrap(dto.toDomain())
+
+    XCTAssertEqual(dto.promoCode, "SAVE10")
+    XCTAssertEqual(dto.discountCents, 500)
+    XCTAssertEqual(domain.promoCode, "SAVE10")
+    XCTAssertEqual(domain.discountCents, 500)
+    XCTAssertEqual(domain.discountedSubtotalCents, 7_900)
+    XCTAssertTrue(domain.hasPromo)
+  }
+
+  func test_cartDTO_backwardCompatible_whenPromoFieldsAbsent() throws {
+    // A server that predates the promo feature omits both fields entirely.
+    let dto = try decoder.decode(CartDTO.self, from: Self.cartJSON.data(using: .utf8)!)
+    let domain = try XCTUnwrap(dto.toDomain())
+
+    XCTAssertNil(dto.promoCode)
+    XCTAssertEqual(dto.discountCents, 0, "absent discountCents defaults to 0")
+    XCTAssertNil(domain.promoCode)
+    XCTAssertEqual(domain.discountCents, 0)
+    XCTAssertFalse(domain.hasPromo)
+  }
+
+  func test_cartDTO_decodesNullPromoCode() throws {
+    let json = Self.cartJSON.replacingOccurrences(
+      of: "\"subtotalCents\": 8400,",
+      with: "\"subtotalCents\": 8400,\n  \"promoCode\": null,\n  \"discountCents\": 0,"
+    )
+    let dto = try decoder.decode(CartDTO.self, from: json.data(using: .utf8)!)
+
+    XCTAssertNil(dto.promoCode)
+    XCTAssertEqual(dto.discountCents, 0)
+  }
+
   func test_cartDTO_refusesWholeCart_ifAnyItemMalformed() throws {
     let bad = Self.cartJSON.replacingOccurrences(
       of: "\"id\": \"0190B7A4-9C00-72F5-A6B0-1C6F77CE0301\"",
@@ -123,6 +158,40 @@ final class CartDTODecodingTests: XCTestCase {
       }
     ],
     "subtotalCents": 8400,
+    "expiresAt": "2026-05-20T13:30:00.000Z",
+    "createdAt": "2026-05-20T13:00:00.000Z",
+    "updatedAt": "2026-05-20T13:05:00.000Z"
+  }
+  """
+
+  private static let promoCartJSON = """
+  {
+    "id": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0010",
+    "userId": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0020",
+    "dispensaryId": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0001",
+    "items": [
+      {
+        "id": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0301",
+        "listingId": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0101",
+        "quantity": 2,
+        "unitPriceCents": 3500,
+        "lineSubtotalCents": 7000,
+        "createdAt": "2026-05-20T13:00:00.000Z",
+        "updatedAt": "2026-05-20T13:00:00.000Z"
+      },
+      {
+        "id": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0302",
+        "listingId": "0190B7A4-9C00-72F5-A6B0-1C6F77CE0102",
+        "quantity": 1,
+        "unitPriceCents": 1400,
+        "lineSubtotalCents": 1400,
+        "createdAt": "2026-05-20T13:05:00.000Z",
+        "updatedAt": "2026-05-20T13:05:00.000Z"
+      }
+    ],
+    "subtotalCents": 8400,
+    "promoCode": "SAVE10",
+    "discountCents": 500,
     "expiresAt": "2026-05-20T13:30:00.000Z",
     "createdAt": "2026-05-20T13:00:00.000Z",
     "updatedAt": "2026-05-20T13:05:00.000Z"

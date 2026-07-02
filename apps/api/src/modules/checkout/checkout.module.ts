@@ -26,6 +26,8 @@ import {
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
   ProductsRepository,
+  PromoCodesRepository,
+  PromoRedemptionsRepository,
   UserAddressesRepository,
   UsersRepository,
   type Database,
@@ -64,6 +66,8 @@ export function createCheckoutScopedRepos(scopedDb: Database): CheckoutScopedRep
     paymentTransactions: new PaymentTransactionsRepository(scopedDb),
     paymentMethods: new PaymentMethodsRepository(scopedDb),
     ledgerEntries: new LedgerEntriesRepository(scopedDb),
+    promoCodes: new PromoCodesRepository(scopedDb),
+    promoRedemptions: new PromoRedemptionsRepository(scopedDb),
   };
 }
 

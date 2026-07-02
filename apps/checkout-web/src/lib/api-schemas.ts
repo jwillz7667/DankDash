@@ -37,6 +37,10 @@ export const cartSchema = z.object({
   dispensaryId: z.string().uuid(),
   items: z.array(cartItemSchema),
   subtotalCents: z.number().int().nonnegative(),
+  // Applied promo + its current discount (integer cents). Defaulted so a
+  // response from an older API that predates promo support still parses.
+  promoCode: z.string().nullable().default(null),
+  discountCents: z.number().int().nonnegative().default(0),
   expiresAt: z.string(),
 });
 export type Cart = z.infer<typeof cartSchema>;

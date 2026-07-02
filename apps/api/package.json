@@ -24,6 +24,7 @@
     "@dankdash/observability": "workspace:*",
     "@dankdash/orders": "workspace:*",
     "@dankdash/pricing": "workspace:*",
+    "@dankdash/promotions": "workspace:*",
     "@dankdash/realtime-events": "workspace:*",
     "@dankdash/storage": "workspace:*",
     "@dankdash/types": "workspace:*",

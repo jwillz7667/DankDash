@@ -14,8 +14,9 @@ import {
 } from 'drizzle-orm/pg-core';
 import { dispensaryListings } from './catalog.js';
 import { dispensaries } from './dispensaries.js';
-import { orderStatus } from './enums.js';
+import { discountFundedBy, orderStatus } from './enums.js';
 import { userAddresses, users } from './identity.js';
+import { promoCodes } from './promotions.js';
 
 export const orders = pgTable(
   'orders',
@@ -44,6 +45,13 @@ export const orders = pgTable(
     deliveryFeeCents: integer('delivery_fee_cents').notNull(),
     driverTipCents: integer('driver_tip_cents').notNull().default(0),
     discountCents: integer('discount_cents').notNull().default(0),
+    // Promo snapshot. `promoCodeId` is the applied code (null = none);
+    // `discountFundedBy` is who eats the discount at settlement. Both are set
+    // or both null (enforced by CHECK) — the settlement path reads
+    // `discountFundedBy` to route the discount cost without joining back to
+    // the promo. `SET NULL` on promo delete keeps historical orders intact.
+    promoCodeId: uuid('promo_code_id').references(() => promoCodes.id, { onDelete: 'set null' }),
+    discountFundedBy: discountFundedBy('discount_funded_by'),
     totalCents: integer('total_cents').notNull(),
 
     complianceCheckPayload: jsonb('compliance_check_payload').notNull(),
@@ -88,6 +96,15 @@ export const orders = pgTable(
       'orders_total_matches',
       sql`${table.totalCents} = ${table.subtotalCents} + ${table.cannabisTaxCents} + ${table.salesTaxCents}
             + ${table.deliveryFeeCents} + ${table.driverTipCents} - ${table.discountCents}`,
+    ),
+    // A promo is either fully attached (code + funder) or fully absent. The
+    // funder drives the settlement split, so it must never be present without
+    // a code or vice-versa. Discount amount is intentionally NOT tied to this:
+    // a valid promo (e.g. free_delivery with no delivery fee) can yield a 0
+    // discount while still being an attached, funded redemption.
+    check(
+      'orders_promo_funding_consistency',
+      sql`(${table.promoCodeId} IS NULL) = (${table.discountFundedBy} IS NULL)`,
     ),
     check(
       'orders_rating_range',

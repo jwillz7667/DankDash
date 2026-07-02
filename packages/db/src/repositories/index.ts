@@ -70,6 +70,11 @@ export {
   RefundsRepository,
 } from './payments.repo.js';
 export {
+  type PromoCodePatch,
+  PromoCodesRepository,
+  PromoRedemptionsRepository,
+} from './promotions.repo.js';
+export {
   type DriverLocationHistoryArchiveRow,
   type PartitionInfo,
   PartitionsRepository,

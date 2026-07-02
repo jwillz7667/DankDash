@@ -91,6 +91,34 @@ public enum CartEndpoints {
     )
   }
 
+  /// `POST /v1/carts/:id/promo` — applies a promo code. Returns 200 with
+  /// the post-mutation cart (`promoCode` + `discountCents` populated) or a
+  /// 422 `PROMO_*` envelope on rejection. Idempotent: re-applying the same
+  /// code returns the same discounted cart.
+  public static func applyPromo(
+    cartId: UUID,
+    body: ApplyPromoRequestDTO
+  ) -> Endpoint<CartDTO> {
+    Endpoint(
+      method: .POST,
+      path: "v1/carts/\(cartId.uuidString.lowercased())/promo",
+      body: AnyEncodableBody(body),
+      requiresAuth: true
+    )
+  }
+
+  /// `DELETE /v1/carts/:id/promo` — removes any applied promo. Returns 200
+  /// with the cart reset to `promoCode: null` / `discountCents: 0`.
+  /// Idempotent — removing when none is applied is a no-op that still
+  /// returns the current cart.
+  public static func removePromo(cartId: UUID) -> Endpoint<CartDTO> {
+    Endpoint(
+      method: .DELETE,
+      path: "v1/carts/\(cartId.uuidString.lowercased())/promo",
+      requiresAuth: true
+    )
+  }
+
   /// `DELETE /v1/carts/:id` — 204 on success. Used on the "switch
   /// dispensaries" confirmation flow when the user picks a product
   /// outside the active cart's storefront.

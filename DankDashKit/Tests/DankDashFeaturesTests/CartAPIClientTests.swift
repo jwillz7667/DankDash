@@ -40,6 +40,37 @@ final class CartAPIClientTests: XCTestCase {
       try await client.deleteCart(cartId),
       expectedMatch: "deleteCart"
     )
+    await assertThrows(
+      try await client.applyPromo(cartId, "SAVE10"),
+      expectedMatch: "applyPromo"
+    )
+    await assertThrows(
+      try await client.removePromo(cartId),
+      expectedMatch: "removePromo"
+    )
+  }
+
+  func test_promoError_fromServerEnvelope_carriesCodeAndMessage() {
+    let envelope = ErrorEnvelope(
+      error: ErrorEnvelope.ErrorBody(
+        code: "PROMO_EXPIRED",
+        message: "This promo code has expired."
+      )
+    )
+    let mapped = CartAPIError.from(promoError: .server(status: 422, envelope: envelope))
+
+    XCTAssertEqual(mapped, .promo(code: "PROMO_EXPIRED", message: "This promo code has expired."))
+    XCTAssertEqual((mapped as LocalizedError).errorDescription, "This promo code has expired.")
+  }
+
+  func test_promoError_fromTransport_usesGenericMessage() {
+    let mapped = CartAPIError.from(promoError: .transport(URLError(.notConnectedToInternet)))
+
+    if case .promo(let code, _) = mapped {
+      XCTAssertEqual(code, "PROMO_TRANSPORT")
+    } else {
+      XCTFail("expected a .promo mapping, got \(mapped)")
+    }
   }
 
   func test_customClient_passesArgumentsThrough() async throws {
@@ -55,7 +86,9 @@ final class CartAPIClientTests: XCTestCase {
       patchItem: { _, _, _ in stubCart },
       removeItem: { _, _ in stubCart },
       validate: { _, _ in throw CartAPIError.malformedPayload("ignored") },
-      deleteCart: { _ in () }
+      deleteCart: { _ in () },
+      applyPromo: { _, _ in stubCart },
+      removePromo: { _ in stubCart }
     )
 
     let cartId = UUID()
