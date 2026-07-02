@@ -125,6 +125,8 @@ describe('CartResponseSchema', () => {
       },
     ],
     subtotalCents: 9000,
+    promoCode: null,
+    discountCents: 0,
     expiresAt: '2026-05-18T22:00:00.000Z',
     createdAt: '2026-05-18T18:00:00.000Z',
     updatedAt: '2026-05-18T18:30:00.000Z',
