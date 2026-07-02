@@ -19,6 +19,7 @@
  * request before RolesGuard runs.
  */
 import {
+  DispensaryListingsRepository,
   ProductCategoriesRepository,
   ProductLabResultsRepository,
   ProductsRepository,
@@ -54,6 +55,13 @@ const labResultsRepoProvider: FactoryProvider<ProductLabResultsRepository> = {
   useFactory: (db: Database): ProductLabResultsRepository => new ProductLabResultsRepository(db),
 };
 
+const listingsRepoProvider: FactoryProvider<DispensaryListingsRepository> = {
+  provide: DispensaryListingsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DispensaryListingsRepository =>
+    new DispensaryListingsRepository(db),
+};
+
 const categoriesServiceProvider: FactoryProvider<CategoriesService> = {
   provide: CategoriesService,
   inject: [ProductCategoriesRepository],
@@ -63,11 +71,12 @@ const categoriesServiceProvider: FactoryProvider<CategoriesService> = {
 
 const productsServiceProvider: FactoryProvider<ProductsService> = {
   provide: ProductsService,
-  inject: [ProductsRepository, ProductLabResultsRepository],
+  inject: [ProductsRepository, ProductLabResultsRepository, DispensaryListingsRepository],
   useFactory: (
     products: ProductsRepository,
     labResults: ProductLabResultsRepository,
-  ): ProductsService => new ProductsService(products, labResults),
+    listings: DispensaryListingsRepository,
+  ): ProductsService => new ProductsService(products, labResults, listings),
 };
 
 const adminCategoriesServiceProvider: FactoryProvider<AdminCategoriesService> = {
@@ -99,6 +108,7 @@ const adminProductsServiceProvider: FactoryProvider<AdminProductsService> = {
     categoriesRepoProvider,
     productsRepoProvider,
     labResultsRepoProvider,
+    listingsRepoProvider,
     categoriesServiceProvider,
     productsServiceProvider,
     adminCategoriesServiceProvider,

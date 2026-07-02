@@ -17,6 +17,7 @@
  * 404 path, which is negligible against the latency win on the hot path.
  */
 import {
+  DispensaryListingsRepository,
   ProductLabResultsRepository,
   ProductsRepository,
   type Product,
@@ -24,13 +25,20 @@ import {
 } from '@dankdash/db';
 import { NotFoundError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
-import type { LabResultResponse, ProductResponse } from './dto/index.js';
+import type {
+  LabResultResponse,
+  ProductListingResult,
+  ProductListingsQuery,
+  ProductListingsResponse,
+  ProductResponse,
+} from './dto/index.js';
 
 @Injectable()
 export class ProductsService {
   constructor(
     private readonly products: ProductsRepository,
     private readonly labResults: ProductLabResultsRepository,
+    private readonly listings: DispensaryListingsRepository,
   ) {}
 
   async getById(id: string): Promise<ProductResponse> {
@@ -45,6 +53,55 @@ export class ProductsService {
 
     return projectProduct(product, labResults);
   }
+
+  /**
+   * The stores actively carrying this product, in-stock, paginated. Gates on
+   * the product first (same 404 semantics as `getById`) so a soft-deleted or
+   * inactive product cannot be probed for a store list; then reads the
+   * cross-dispensary listing set. A live-but-uncarried product returns an
+   * empty page, distinct from a 404 for a product that doesn't exist.
+   */
+  async getListings(
+    id: string,
+    query: ProductListingsQuery,
+  ): Promise<ProductListingsResponse> {
+    const product = await this.products.findById(id);
+    if (product?.deletedAt !== null || !product.isActive) {
+      throw new NotFoundError('Product', id);
+    }
+
+    const page = await this.listings.listAvailableForProduct(id, {
+      limit: query.limit,
+      offset: query.offset,
+    });
+
+    return {
+      listings: page.results.map((row) => projectProductListing(row)),
+      page: { limit: query.limit, offset: query.offset, total: page.total },
+    };
+  }
+}
+
+function projectProductListing(row: {
+  readonly listing: {
+    readonly id: string;
+    readonly dispensaryId: string;
+    readonly sku: string;
+    readonly priceCents: number;
+    readonly compareAtPriceCents: number | null;
+    readonly quantityAvailable: number;
+  };
+  readonly dispensaryName: string;
+}): ProductListingResult {
+  return {
+    listingId: row.listing.id,
+    dispensaryId: row.listing.dispensaryId,
+    dispensaryName: row.dispensaryName,
+    sku: row.listing.sku,
+    priceCents: row.listing.priceCents,
+    compareAtPriceCents: row.listing.compareAtPriceCents,
+    quantityAvailable: row.listing.quantityAvailable,
+  };
 }
 
 function projectProduct(

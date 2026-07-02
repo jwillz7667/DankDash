@@ -34,6 +34,13 @@ export const drivers = pgTable(
     insuranceExpiresAt: date('insurance_expires_at'),
     backgroundCheckPassedAt: date('background_check_passed_at'),
     backgroundCheckProviderRef: text('background_check_provider_ref'),
+    // Aeropay bank-account id for driver payouts (instant cashout + the
+    // nightly batch job). Restricted (spec §8.1): never returned to a client,
+    // never logged; the driver bank-link status surface exposes a boolean
+    // only. Written solely by the `bank_account.linked` webhook once Aeropay
+    // confirms a `driver:<userId>`-namespaced link. Mirrors
+    // `dispensaries.aeropay_account_ref`.
+    aeropayAccountRef: text('aeropay_account_ref'),
     currentStatus: driverStatus('current_status').notNull().default('offline'),
     lastStatusChangeAt: timestamp('last_status_change_at', { withTimezone: true, mode: 'date' })
       .notNull()

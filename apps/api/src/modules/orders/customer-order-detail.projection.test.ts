@@ -95,6 +95,7 @@ function makeDriver(overrides: Partial<Driver> = {}): Driver {
     insuranceExpiresAt: null,
     backgroundCheckPassedAt: null,
     backgroundCheckProviderRef: null,
+    aeropayAccountRef: null,
     currentStatus: 'en_route_dropoff',
     lastStatusChangeAt: PIN_NOW,
     currentLocation: { type: 'Point', coordinates: [-93.2, 44.96] },

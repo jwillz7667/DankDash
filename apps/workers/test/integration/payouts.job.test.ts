@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { type CreatePayoutInput, type AeropayPayout } from '@dankdash/aeropay';
 import {
   DispensariesRepository,
+  DriversRepository,
   LedgerEntriesRepository,
   PayoutsRepository,
   createPool,
@@ -92,6 +93,7 @@ describe('runPayoutJob — Phase 6.8 integration', () => {
     aeropay = new FakeAeropayPayoutsClient();
     deps = {
       dispensaries: new DispensariesRepository(pool.db),
+      drivers: new DriversRepository(pool.db),
       ledger: new LedgerEntriesRepository(pool.db),
       payouts: new PayoutsRepository(pool.db),
       aeropay,

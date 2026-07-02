@@ -42,7 +42,9 @@ import {
   type RefundsRepository,
 } from '@dankdash/db';
 import { NotFoundError, PaymentError, RepositoryError, ValidationError } from '@dankdash/types';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { describe, expect, it } from 'vitest';
+import { REFUND_ISSUED_EVENT, type RefundIssuedEvent } from './refund-issued.events.js';
 import {
   RefundsService,
   type RefundScopedRepos,
@@ -361,12 +363,14 @@ function build(): {
   refundsRepo: FakeRefundsRepo;
   ledgerRepo: FakeLedgerEntriesRepo;
   aeropay: FakeAeropayClient;
+  events: EventEmitter2;
 } {
   const ordersRepo = new FakeOrdersRepo();
   const txRepo = new FakePaymentTransactionsRepo();
   const refundsRepo = new FakeRefundsRepo();
   const ledgerRepo = new FakeLedgerEntriesRepo();
   const aeropay = new FakeAeropayClient();
+  const events = new EventEmitter2();
   const fakeDb = {
     transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
   } as unknown as Database;
@@ -383,8 +387,9 @@ function build(): {
     fakeDb,
     refundReposFor,
     aeropay,
+    events,
   );
-  return { service, ordersRepo, txRepo, refundsRepo, ledgerRepo, aeropay };
+  return { service, ordersRepo, txRepo, refundsRepo, ledgerRepo, aeropay, events };
 }
 
 describe('RefundsService.initiate', () => {
@@ -435,6 +440,43 @@ describe('RefundsService.initiate', () => {
     expect(res.requiresAdminApproval).toBe(false);
     expect(res.providerRef).toBe(AEROPAY_REFUND_ID);
     expect(res.completedAt).not.toBeNull();
+  });
+
+  it('emits REFUND_ISSUED_EVENT to the order owner after a finalize commits', async () => {
+    const { service, ordersRepo, txRepo, events } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction());
+    const emitted: RefundIssuedEvent[] = [];
+    events.on(REFUND_ISSUED_EVENT, (e: RefundIssuedEvent) => emitted.push(e));
+
+    await service.initiate(VENDOR_CTX, ORDER_ID, {
+      amountCents: 5_000,
+      reasonCode: 'missing_item',
+      reasonNotes: 'Customer reported one item missing',
+    });
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      orderId: ORDER_ID,
+      userId: USER_ID,
+      amountCents: 5_000,
+      reason: 'Customer reported one item missing',
+    });
+  });
+
+  it('falls back to a generic reason when the refund has no reasonNotes', async () => {
+    const { service, ordersRepo, txRepo, events } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction());
+    const emitted: RefundIssuedEvent[] = [];
+    events.on(REFUND_ISSUED_EVENT, (e: RefundIssuedEvent) => emitted.push(e));
+
+    await service.initiate(VENDOR_CTX, ORDER_ID, {
+      amountCents: 5_000,
+      reasonCode: 'missing_item',
+    });
+
+    expect(emitted[0]?.reason).toMatch(/refund/i);
   });
 
   it('throws RepositoryError when the refund row vanishes inside the finalize tx', async () => {

@@ -63,6 +63,7 @@ function makeDriver(overrides: Partial<Driver> = {}): Driver {
     insuranceExpiresAt: '2026-12-31',
     backgroundCheckPassedAt: '2026-01-01',
     backgroundCheckProviderRef: null,
+    aeropayAccountRef: null,
     currentStatus: 'online',
     lastStatusChangeAt: ISO('2026-05-19T14:00:00.000Z'),
     currentLocation: null,

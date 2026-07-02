@@ -5,8 +5,9 @@
  *   - Dispensary path: skip net-zero, skip net-negative-after-refund,
  *     skip no-bank, skip already-paid (idempotent), dispatch happy path,
  *     failed-Aeropay path, missing-dispensary-row path.
- *   - Driver path: skip net-zero, record pending (drivers have no bank
- *     ref yet), already-paid idempotency.
+ *   - Driver path: skip net-zero, record pending (no linked bank),
+ *     dispatch happy path (linked bank), failed-Aeropay path, already-paid
+ *     idempotency.
  *   - Refund drawdown math: dispensary gross 10000 − reserve 3000 = 7000
  *     payout.
  *   - End-to-end shape: summary counts match what the fakes saw.
@@ -101,6 +102,29 @@ class FakeDispensariesRepo {
   findById = (id: string): Promise<Dispensary | null> => {
     this.findByIdCalls.push(id);
     return Promise.resolve(this.rows.get(id) ?? null);
+  };
+}
+
+class FakeDriversRepo {
+  // driverUserId → linked aeropay bank ref (null = linked-but-no-ref is
+  // impossible; absence from the map means no driver row at all).
+  private refs = new Map<string, string | null>();
+  findByUserIdCalls: string[] = [];
+
+  /** Register a driver with a linked bank ref. */
+  addLinked(driverUserId: string, aeropayAccountRef: string): void {
+    this.refs.set(driverUserId, aeropayAccountRef);
+  }
+
+  /** Register a driver row that exists but has not linked a bank account. */
+  addUnlinked(driverUserId: string): void {
+    this.refs.set(driverUserId, null);
+  }
+
+  findByUserId = (userId: string): Promise<{ aeropayAccountRef: string | null } | null> => {
+    this.findByUserIdCalls.push(userId);
+    if (!this.refs.has(userId)) return Promise.resolve(null);
+    return Promise.resolve({ aeropayAccountRef: this.refs.get(userId) ?? null });
   };
 }
 
@@ -278,23 +302,27 @@ function silentLogger(): Logger {
 function build(): {
   deps: PayoutJobDeps;
   dispensaries: FakeDispensariesRepo;
+  drivers: FakeDriversRepo;
   ledger: FakeLedgerRepo;
   payouts: FakePayoutsRepo;
   aeropay: FakeAeropayClient;
 } {
   const dispensaries = new FakeDispensariesRepo();
+  const drivers = new FakeDriversRepo();
   const ledger = new FakeLedgerRepo();
   const payouts = new FakePayoutsRepo();
   const aeropay = new FakeAeropayClient();
   return {
     deps: {
       dispensaries: dispensaries as unknown as PayoutJobDeps['dispensaries'],
+      drivers: drivers as unknown as PayoutJobDeps['drivers'],
       ledger: ledger as unknown as PayoutJobDeps['ledger'],
       payouts: payouts as unknown as PayoutJobDeps['payouts'],
       aeropay,
       logger: silentLogger(),
     },
     dispensaries,
+    drivers,
     ledger,
     payouts,
     aeropay,
@@ -448,26 +476,78 @@ describe('runPayoutJob — dispensary path', () => {
 });
 
 describe('runPayoutJob — driver path', () => {
-  it('records driver payouts as pending without dispatching to Aeropay (bank linkage is Phase 8)', async () => {
-    const { deps, ledger, payouts, aeropay } = build();
+  it('records driver payouts as pending without dispatching when no bank is linked', async () => {
+    const { deps, drivers, ledger, payouts, aeropay } = build();
     ledger.set('dispensary', []);
     ledger.set('refund_reserve', []);
     ledger.set('driver', [
       { accountRef: DRIVER_1, netCents: 3_400 },
       { accountRef: DRIVER_2, netCents: 2_100 },
     ]);
+    // DRIVER_1 has a profile but no linked bank; DRIVER_2 has no profile row
+    // at all — both keep the earnings pending (owed, not lost).
+    drivers.addUnlinked(DRIVER_1);
 
     const summary = await runPayoutJob({ now: NOW, deps });
 
     expect(summary.driversProcessed).toBe(2);
     expect(summary.driversPendingBank).toBe(2);
+    expect(summary.driversDispatched).toBe(0);
+    expect(summary.driversFailed).toBe(0);
     expect(aeropay.createPayoutCalls).toHaveLength(0);
     expect(
       payouts.createIfAbsentCalls.filter((c) => c.input.recipientType === 'driver'),
     ).toHaveLength(2);
+    // Pending rows are NOT flipped to failed — the earnings are owed.
+    expect(payouts.updateStatusCalls).toHaveLength(0);
     expect(
       payouts.createIfAbsentCalls.find((c) => c.input.recipientId === DRIVER_1)?.input.netCents,
     ).toBe(3_400);
+  });
+
+  it('dispatches a real Aeropay payout for a driver with a linked bank account', async () => {
+    const { deps, drivers, ledger, payouts, aeropay } = build();
+    ledger.set('dispensary', []);
+    ledger.set('refund_reserve', []);
+    ledger.set('driver', [{ accountRef: DRIVER_1, netCents: 3_400 }]);
+    drivers.addLinked(DRIVER_1, 'bank_driver_1');
+
+    const summary = await runPayoutJob({ now: NOW, deps });
+
+    expect(summary.driversProcessed).toBe(1);
+    expect(summary.driversDispatched).toBe(1);
+    expect(summary.driversPendingBank).toBe(0);
+    expect(aeropay.createPayoutCalls).toHaveLength(1);
+    expect(aeropay.createPayoutCalls[0]?.bankAccountId).toBe('bank_driver_1');
+    expect(aeropay.createPayoutCalls[0]?.amountCents).toBe(3_400);
+    expect(aeropay.createPayoutCalls[0]?.recipientRef).toBe(`driver:${DRIVER_1}`);
+    expect(aeropay.createPayoutCalls[0]?.idempotencyKey).toMatch(/^payout:/);
+    expect(payouts.updateStatusCalls).toEqual([
+      expect.objectContaining({
+        status: 'processing',
+        patch: expect.objectContaining({ aeropayPayoutRef: expect.any(String) }),
+      }),
+    ]);
+  });
+
+  it('marks a driver payout failed when the Aeropay dispatch throws', async () => {
+    const { deps, drivers, ledger, payouts, aeropay } = build();
+    ledger.set('dispensary', []);
+    ledger.set('refund_reserve', []);
+    ledger.set('driver', [{ accountRef: DRIVER_1, netCents: 3_400 }]);
+    drivers.addLinked(DRIVER_1, 'bank_driver_1');
+    aeropay.failNext = true;
+
+    const summary = await runPayoutJob({ now: NOW, deps });
+
+    expect(summary.driversFailed).toBe(1);
+    expect(summary.driversDispatched).toBe(0);
+    expect(payouts.updateStatusCalls).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        patch: expect.objectContaining({ failureReason: expect.any(String) }),
+      }),
+    ]);
   });
 
   it('skips drivers with zero net earnings', async () => {

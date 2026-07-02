@@ -78,7 +78,18 @@ struct AppEnvironment {
     dependencies.driverOrdersAPIClient = .live(apiClient: apiClient)
     dependencies.driverIDScanAPIClient = .live(apiClient: apiClient)
     dependencies.driverCashoutAPIClient = .live(apiClient: apiClient)
+    dependencies.driverPayoutAccountAPIClient = .live(
+      apiClient: apiClient,
+      returnURL: Self.resolvedBankLinkReturnURL()
+    )
     dependencies.hapticsClient = .live
+
+    // Veriff iOS SDK binding for the mandatory handoff ID scan. The
+    // DankDashKit package ships a placeholder `.live` (the SDK is an
+    // iOS-only binary that can't link on the macOS test host); the app
+    // target owns the real launch closure. See
+    // `VeriffIdentityVerificationClient.swift`.
+    dependencies.identityVerificationClient = .veriff
 
     // Local persistence — driver session lives in a per-target
     // UserDefaults suite; document drafts + application draft live in
@@ -146,6 +157,19 @@ struct AppEnvironment {
     #else
     return URL(string: "https://realtime.dankdash.com")!
     #endif
+  }
+
+  /// Absolute URL Aeropay redirects to after the driver finishes the hosted
+  /// bank-link flow. Overridable via `DANKDASH_BANK_LINK_RETURN_URL` so
+  /// staging can point at a different host; defaults to the driver web host.
+  /// The page itself just needs to exist for Safari to land on — the actual
+  /// state change happens server-side via the `bank_account.linked` webhook.
+  private static func resolvedBankLinkReturnURL() -> URL {
+    if let override = Bundle.main.object(forInfoDictionaryKey: "DANKDASH_BANK_LINK_RETURN_URL") as? String,
+       let url = URL(string: override) {
+      return url
+    }
+    return URL(string: "https://dasher.dankdash.com/payouts/bank/return")!
   }
 
   /// CDN base URL — same R2 bucket as the consumer app. Overridable

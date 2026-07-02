@@ -74,7 +74,9 @@ import {
   ValidationError,
 } from '@dankdash/types';
 import { Inject, Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { REFUND_AUTO_APPROVE_LIMIT_CENTS } from './dto/refund.dto.js';
+import { REFUND_ISSUED_EVENT, RefundIssuedEvent } from './refund-issued.events.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
 import type { InitiateRefundRequest, RefundResponse } from './dto/index.js';
 import type { VendorContext } from '../listings/vendor/vendor-context.types.js';
@@ -101,6 +103,7 @@ export class RefundsService {
     private readonly db: Database,
     private readonly refundReposFor: RefundScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
+    private readonly events: EventEmitter2,
   ) {}
 
   /**
@@ -305,7 +308,7 @@ export class RefundsService {
 
     const entries = buildRefundLedgerEntries(order, refund, completedAt);
 
-    return this.db.transaction(async (txDb) => {
+    const completed = await this.db.transaction(async (txDb) => {
       const scoped = this.refundReposFor(txDb);
       const updated = await scoped.refunds.updateStatus(refund.id, 'completed', {
         providerRef: upstream.id,
@@ -323,6 +326,23 @@ export class RefundsService {
       await scoped.ledgerEntries.recordTransaction(entries);
       return updated;
     });
+
+    // Post-commit: notify the customer their refund is on the way. Emitted
+    // here (not inside the tx) so a notifier failure can't roll back the
+    // money movement, which is already durable. EventEmitter2 delivery is
+    // in-process and the listener swallows its own errors.
+    this.events.emit(
+      REFUND_ISSUED_EVENT,
+      new RefundIssuedEvent({
+        refundId: completed.id,
+        orderId: order.id,
+        userId: order.userId,
+        amountCents: completed.amountCents,
+        reason: refund.reasonNotes ?? 'We issued a refund for your order.',
+      }),
+    );
+
+    return completed;
   }
 
   /**

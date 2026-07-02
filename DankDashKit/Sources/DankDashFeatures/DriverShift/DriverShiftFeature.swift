@@ -62,6 +62,15 @@ public struct DriverShiftFeature: Sendable {
     /// else got it" — that case dismisses the sheet and banners instead).
     public var deliveryDetailError: String?
 
+    /// Throttle bookkeeping for online-idle location publishing to the
+    /// `/driver` socket. `lastPublishedIdleLocation` / `lastIdlePublishAt`
+    /// record the coordinate + time of the most recent idle publish so the
+    /// reducer can gate the next one on the 30s-or-150m rule. Reset when a
+    /// shift ends so the first fix of the next shift publishes immediately.
+    /// Not surfaced in the public initializer — internal cadence state.
+    public var lastPublishedIdleLocation: Coordinate? = nil
+    public var lastIdlePublishAt: Date? = nil
+
     public init(
       driver: Driver? = nil,
       activeShift: DriverShift? = nil,
@@ -171,6 +180,10 @@ public struct DriverShiftFeature: Sendable {
     case presentedOffer(DispatchOfferFeature.Action)
     case offerSheetDismissed
 
+    // Realtime `/driver` dispatch-board events (offer:new / offer:expired /
+    // delivery:claimed) — the push complement to the offer + deliveries polls.
+    case dispatchEventReceived(DriverDispatchEvent)
+
     // Open delivery pool
     case deliveriesTick
     case availableDeliveriesLoaded(Result<[AvailableDelivery], ShiftErrorBox>)
@@ -206,10 +219,13 @@ public struct DriverShiftFeature: Sendable {
     case deliveriesTimer
     case deliveryRoute
     case claim
+    case dispatchEvents
+    case offerFetch
   }
 
   @Dependency(\.backgroundLocationClient) var locationClient
   @Dependency(\.batteryMonitorClient) var batteryClient
+  @Dependency(\.driverRealtimeClient) var driverRealtime
   @Dependency(\.driverShiftAPIClient) var shiftAPI
   @Dependency(\.driverAppAPIClient) var driverAppAPI
   @Dependency(\.driverHeatmapAPIClient) var heatmapAPI
@@ -230,6 +246,19 @@ public struct DriverShiftFeature: Sendable {
   /// the 409-on-claim is the correctness backstop, this just keeps the
   /// map feeling live.
   public static let deliveriesRefreshInterval: Duration = .seconds(15)
+
+  /// Online-idle location publishing to the `/driver` socket. Far coarser
+  /// than the ≤1Hz active-delivery cadence `ActiveRouteFeature` uses: an
+  /// idle driver only needs dispatch to know their neighborhood, so we
+  /// publish at most every 30 seconds OR whenever they move ≥150 meters —
+  /// whichever comes first. This keeps `drivers.current_location` fresh for
+  /// open-pool radius + offer scoring without draining the battery or
+  /// flooding the ingest stream. Under Low Power Mode the location stream
+  /// itself switches to `.significantChange` (fixes hundreds of meters
+  /// apart), so cadence naturally drops out further without any extra
+  /// branch here — sparse fixes simply clear the distance gate every time.
+  public static let idleLocationPublishInterval: TimeInterval = 30
+  public static let idleLocationPublishDistanceMeters: Double = 150
 
   public init() {}
 
@@ -338,10 +367,15 @@ public struct DriverShiftFeature: Sendable {
             .cancel(id: CancelID.heatmapTimer),
             .cancel(id: CancelID.heartbeatTimer),
             .cancel(id: CancelID.offerStream),
+            .cancel(id: CancelID.dispatchEvents),
+            .cancel(id: CancelID.offerFetch),
             .cancel(id: CancelID.deliveriesTimer),
             .cancel(id: CancelID.deliveryRoute),
-            .run { [shiftAPI, locationClient, sessionStore] send in
+            .run { [shiftAPI, locationClient, driverRealtime, sessionStore] send in
               await locationClient.endUpdates()
+              // Tear down the `/driver` socket opened by idle publishing so
+              // no location leaves the device once the shift is over.
+              await driverRealtime.disconnect()
               do {
                 let shift = try await shiftAPI.endShift(coord)
                 await sessionStore.clear()
@@ -446,6 +480,10 @@ public struct DriverShiftFeature: Sendable {
         state.availableDeliveries = []
         state.selectedDelivery = nil
         state.selectedDeliveryRoute = nil
+        // Clear idle-publish throttle so the next shift's first fix is sent
+        // immediately rather than waiting out the previous shift's window.
+        state.lastPublishedIdleLocation = nil
+        state.lastIdlePublishAt = nil
         // Carry the closed-out shift onto the earnings card so the
         // "today" total reflects the just-completed run without a
         // round-trip — the next earnings refresh will reconcile.
@@ -492,9 +530,31 @@ public struct DriverShiftFeature: Sendable {
 
       case .locationReceived(let coord):
         state.currentCoordinate = coord
-        return .run { [sessionStore, now] _ in
+        let sessionEffect: Effect<Action> = .run { [sessionStore, now] _ in
           await sessionStore.updateHeartbeat(coord.latitude, coord.longitude, now)
         }
+        // Publish live position to the `/driver` socket while online and NOT
+        // on an active delivery. During a delivery `ActiveRouteFeature` owns
+        // the ≤1Hz publish on the same socket, so we stay silent to avoid
+        // double-streaming. Heavily throttled (30s OR 150m of movement) so
+        // dispatch's open-pool radius + offer scoring see a fresh
+        // `drivers.current_location` without burning battery/radio. The
+        // socket opens lazily on first emit; the server resolves the (null)
+        // active delivery from the JWT and persists the point regardless.
+        guard state.isOnline,
+              state.driver?.isOnActiveDelivery != true,
+              shouldPublishIdleLocation(state: state, coordinate: coord)
+        else {
+          return sessionEffect
+        }
+        state.lastIdlePublishAt = now
+        state.lastPublishedIdleLocation = coord
+        return .merge(
+          sessionEffect,
+          .run { [driverRealtime] _ in
+            await driverRealtime.publishLocation(coord)
+          }
+        )
 
       case .locationStreamFinished:
         // The CoreLocation stream finishes only when we tear it down
@@ -634,6 +694,49 @@ public struct DriverShiftFeature: Sendable {
         // here except acknowledge the terminal yield.
         return .none
 
+      case .dispatchEventReceived(let event):
+        switch event {
+        case .offerNew:
+          // Don't trust the pushed summary (ids only) — fetch the
+          // authoritative pending list and mount via the same path the
+          // 10s poll uses. Gate exactly like `.deliveriesTick` /
+          // `.offerReceived`: accepting work, free, and not already
+          // showing a sheet (refuse-to-stack lives in `.offerReceived`
+          // too, but skipping the fetch avoids a pointless round-trip).
+          guard state.isAcceptingWork,
+                state.driver?.isOnActiveDelivery != true,
+                state.presentedOffer == nil else { return .none }
+          return .run { [offerSubscription] send in
+            guard let offers = try? await offerSubscription.fetchPending() else { return }
+            for offer in offers {
+              await send(.offerReceived(offer))
+            }
+          }
+          .cancellable(id: CancelID.offerFetch, cancelInFlight: true)
+
+        case .offerExpired(let offerId):
+          // Dismiss the sheet if it's the offer that just expired. The
+          // child's own countdown would dismiss it within a second anyway;
+          // this makes a server-side supersede/timeout snappy.
+          if state.presentedOffer?.offer.id == offerId {
+            state.presentedOffer = nil
+          }
+          return .none
+
+        case .deliveryClaimed(let orderId):
+          // Someone won the open-pool race (or the order left
+          // awaiting_driver for any reason) — drop the pin now instead of
+          // waiting for the 15s deliveries tick.
+          state.availableDeliveries.removeAll { $0.orderId == orderId }
+          if state.selectedDelivery?.orderId == orderId {
+            state.selectedDelivery = nil
+            state.selectedDeliveryRoute = nil
+            state.deliveryDetailError = nil
+            return .cancel(id: CancelID.deliveryRoute)
+          }
+          return .none
+        }
+
       case .presentedOffer(.delegate(.accepted(let offer))):
         state.presentedOffer = nil
         return .send(.delegate(.acceptedOffer(orderId: offer.orderId)))
@@ -771,6 +874,25 @@ public struct DriverShiftFeature: Sendable {
     }
   }
 
+  // MARK: - Idle location publish gate
+
+  /// Decide whether an incoming fix warrants an online-idle publish.
+  /// Publishes on the first fix of a shift, then only after
+  /// ``idleLocationPublishInterval`` has elapsed OR the driver has moved at
+  /// least ``idleLocationPublishDistanceMeters`` from the last published
+  /// point — whichever comes first.
+  private func shouldPublishIdleLocation(state: State, coordinate: Coordinate) -> Bool {
+    guard let lastAt = state.lastIdlePublishAt,
+          let lastCoord = state.lastPublishedIdleLocation
+    else {
+      return true
+    }
+    if now.timeIntervalSince(lastAt) >= Self.idleLocationPublishInterval {
+      return true
+    }
+    return coordinate.distanceMeters(to: lastCoord) >= Self.idleLocationPublishDistanceMeters
+  }
+
   // MARK: - Effect factories
 
   private func loadDriver() -> Effect<Action> {
@@ -861,8 +983,18 @@ public struct DriverShiftFeature: Sendable {
       startHeatmapTimer(seededCoordinate: currentCoordinate),
       startHeartbeatTimer(),
       observeOfferStream(),
+      observeDispatchEvents(),
       startDeliveriesTimer()
     )
+  }
+
+  private func observeDispatchEvents() -> Effect<Action> {
+    .run { [driverRealtime] send in
+      for await event in await driverRealtime.dispatchEvents() {
+        await send(.dispatchEventReceived(event))
+      }
+    }
+    .cancellable(id: CancelID.dispatchEvents, cancelInFlight: true)
   }
 
   private func startDeliveriesTimer() -> Effect<Action> {

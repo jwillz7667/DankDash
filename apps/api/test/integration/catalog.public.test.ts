@@ -1,10 +1,11 @@
 /**
  * Public catalog read endpoints — happy + 404 paths.
  *
- *   GET /v1/categories          — flat list, ordered by display_order.
- *   GET /v1/products/:id        — product detail + lab results.
- *   GET /v1/dispensaries/:id    — single dispensary, 404 for unknown.
- *   GET /v1/dispensaries/:id/menu — menu, 404 for unknown dispensary.
+ *   GET /v1/categories             — flat list, ordered by display_order.
+ *   GET /v1/products/:id           — product detail + lab results.
+ *   GET /v1/products/:id/listings  — cross-dispensary listings, paginated.
+ *   GET /v1/dispensaries/:id       — single dispensary, 404 for unknown.
+ *   GET /v1/dispensaries/:id/menu  — menu, 404 for unknown dispensary.
  *
  * Two things matter to assert here:
  *
@@ -68,6 +69,64 @@ describe('public catalog endpoints', () => {
   it('GET /v1/products/:id returns 400 for a malformed UUID (ParseUUIDPipe)', async () => {
     const res = await app.inject({ method: 'GET', url: '/v1/products/not-a-uuid' });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('GET /v1/products/:id/listings returns every active in-stock store carrying the product', async () => {
+    // Northern Lights is seeded at both North Loop (mpls) and Capitol (stp),
+    // stp priced at 0.95× — a genuine multi-dispensary product.
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/products/${SEED_IDS.product.northernLights7g}/listings`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{
+      listings: ReadonlyArray<{
+        listingId: string;
+        dispensaryId: string;
+        dispensaryName: string;
+        priceCents: number;
+        quantityAvailable: number;
+      }>;
+      page: { limit: number; offset: number; total: number };
+    }>();
+
+    expect(body.listings.length).toBeGreaterThanOrEqual(2);
+    expect(body.page.total).toBeGreaterThanOrEqual(2);
+    for (const listing of body.listings) {
+      expect(listing.dispensaryName.length).toBeGreaterThan(0);
+      expect(listing.quantityAvailable).toBeGreaterThan(0);
+      expect(listing.priceCents).toBeGreaterThan(0);
+    }
+    // Deterministic price-ascending order — the client's "cheapest" default
+    // picks listings[0].
+    for (let i = 1; i < body.listings.length; i++) {
+      expect(body.listings[i]!.priceCents).toBeGreaterThanOrEqual(body.listings[i - 1]!.priceCents);
+    }
+  });
+
+  it('GET /v1/products/:id/listings honours limit/offset pagination', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/products/${SEED_IDS.product.northernLights7g}/listings?limit=1&offset=0`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{
+      listings: ReadonlyArray<{ listingId: string }>;
+      page: { limit: number; offset: number; total: number };
+    }>();
+    expect(body.listings).toHaveLength(1);
+    expect(body.page.limit).toBe(1);
+    expect(body.page.total).toBeGreaterThanOrEqual(2);
+  });
+
+  it('GET /v1/products/:id/listings returns 404 for an unknown product (no listing probe)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/products/${UNKNOWN_UUID}/listings`,
+    });
+    expect(res.statusCode).toBe(404);
+    const body = res.json<{ error: { code: string } }>();
+    expect(body.error.code).toBe('NOT_FOUND');
   });
 
   it('GET /v1/dispensaries/:id returns the dispensary for a known active id', async () => {

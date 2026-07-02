@@ -63,6 +63,18 @@ export interface AvailableDeliveryRow {
   readonly awaitingDriverAt: Date | null;
 }
 
+/**
+ * Row returned by {@link DispatchOffersRepository.expireStale} — the
+ * identifying fields a caller needs to fan an `offer:expired` realtime
+ * event to the driver whose offer just timed out. Narrow on purpose: the
+ * expiry job never needs the full offer row, only who to notify.
+ */
+export interface ExpiredOffer {
+  readonly id: string;
+  readonly orderId: string;
+  readonly driverId: string;
+}
+
 interface DriverRow extends Omit<Driver, 'currentLocation'> {
   readonly currentLocation: string | null;
 }
@@ -139,6 +151,7 @@ const DRIVER_COLUMNS = {
   insuranceExpiresAt: drivers.insuranceExpiresAt,
   backgroundCheckPassedAt: drivers.backgroundCheckPassedAt,
   backgroundCheckProviderRef: drivers.backgroundCheckProviderRef,
+  aeropayAccountRef: drivers.aeropayAccountRef,
   currentStatus: drivers.currentStatus,
   lastStatusChangeAt: drivers.lastStatusChangeAt,
   currentLocation: CURRENT_LOCATION_SQL,
@@ -307,6 +320,32 @@ export class DriversRepository extends BaseRepository {
       .update(drivers)
       .set({ totalDeliveries: sql`${drivers.totalDeliveries} + 1`, updatedAt: new Date() })
       .where(eq(drivers.id, id));
+  }
+
+  /**
+   * Fold one post-delivery rating into the running driver aggregate. Keyed
+   * on `user_id` because `orders.driver_id` references the *user* row (the
+   * driver's identity), not `drivers.id` — the aggregate lives on the
+   * matching drivers row. The new average is computed on the row itself in
+   * a single UPDATE — `newAvg = (avg * count + rating) / (count + 1)` —
+   * never read-modify-written in JS, so concurrent ratings for the same
+   * driver serialise on the row lock and no increment is lost. Arithmetic
+   * runs in Postgres `numeric` (rating_avg is `NUMERIC(3,2)`, count is
+   * `integer`) with `round(…, 2)` pinning the stored scale — no float math.
+   * Feeds `drivers.rating_avg`/`rating_count`, the confidence-weighted
+   * quality term in the dispatch scorer. Callers must scope this to one
+   * rating per order (the `rated_at` one-shot guard) so no rating is folded
+   * twice. A driver_id with no matching drivers row is a no-op (0 rows).
+   */
+  async applyRatingByUserId(userId: string, rating: number): Promise<void> {
+    await this.db
+      .update(drivers)
+      .set({
+        ratingAvg: sql`round((coalesce(${drivers.ratingAvg}, 0) * ${drivers.ratingCount} + ${rating}) / (${drivers.ratingCount} + 1), 2)`,
+        ratingCount: sql`${drivers.ratingCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(drivers.userId, userId));
   }
 
   /**
@@ -698,15 +737,20 @@ export class DispatchOffersRepository extends BaseRepository {
 
   /**
    * Bulk-expire offers whose `expires_at` has passed without a response. Run
-   * by a scheduled job — returns the count of expired offers for telemetry.
+   * by a scheduled job — returns the expired rows (id + order + driver) so
+   * the caller can fan an `offer:expired` realtime event to each affected
+   * driver; `rows.length` is the count for telemetry.
    */
-  async expireStale(now: Date): Promise<number> {
-    const rows = await this.db
+  async expireStale(now: Date): Promise<readonly ExpiredOffer[]> {
+    return this.db
       .update(dispatchOffers)
       .set({ status: 'expired', respondedAt: now })
       .where(and(eq(dispatchOffers.status, 'offered'), lte(dispatchOffers.expiresAt, now)))
-      .returning({ id: dispatchOffers.id });
-    return rows.length;
+      .returning({
+        id: dispatchOffers.id,
+        orderId: dispatchOffers.orderId,
+        driverId: dispatchOffers.driverId,
+      });
   }
 
   /**

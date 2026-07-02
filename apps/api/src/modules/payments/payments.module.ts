@@ -7,11 +7,21 @@
  *   AeropayAuth                      (token-cache + HTTP + client creds)
  *      └──► AeropayClient            (REST surface used by service + Phase 6.3 checkout)
  *      └──► AeropayWebhookVerifier   (HMAC verifier used by the webhook controller)
- *      └──► PaymentMethodsService    (link, delete, webhook → ledger)
+ *      └──► PaymentMethodsService    (link, delete, webhook → ledger;
+ *                                      also routes dispensary bank + payout
+ *                                      webhook events to the two services below)
+ *      └──► DispensaryBankLinkService (vendor bank link start/status +
+ *                                      bank_account.* → dispensaries.aeropay_account_ref)
+ *      └──► PayoutWebhookService     (payout.paid/failed → payouts row completion)
  *      └──► RefundsService           (vendor initiate, admin approve,
  *                                      Aeropay reverse-ACH, reverse ledger)
  *      └──► PaymentMethodsController + AeropayWebhookController
- *      └──► VendorRefundsController  + AdminRefundsController
+ *      └──► VendorRefundsController  + VendorPayoutAccountController
+ *      └──► AdminRefundsController
+ *
+ * DispensariesModule additionally exports DispensariesRepository, which
+ * DispensaryBankLinkService injects to persist the confirmed payout bank
+ * account ref onto the dispensary.
  *
  * The undici dispatcher, ioredis-backed token cache, and HttpClient are
  * built once per process (no Scope.REQUEST) — Aeropay tokens are
@@ -47,16 +57,20 @@ import {
   type TokenCache,
 } from '@dankdash/aeropay';
 import {
+  DispensariesRepository,
+  DriversRepository,
   LedgerEntriesRepository,
   OrdersRepository,
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
+  PayoutsRepository,
   RefundsRepository,
   WebhookEventsProcessedRepository,
   type Database,
 } from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Redis } from 'ioredis';
 import { createDisabledFeatureProxy } from '../../common/disabled-feature.proxy.js';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
@@ -68,12 +82,16 @@ import { OrderTransitionService } from '../orders/order-transition.service.js';
 import { OrdersModule } from '../orders/orders.module.js';
 import { AdminRefundsController } from './admin-refunds.controller.js';
 import { AeropayWebhookController } from './aeropay-webhook.controller.js';
+import { DispensaryBankLinkService } from './dispensary-bank-link.service.js';
+import { DriverBankLinkService } from './driver-bank-link.service.js';
+import { DriverPayoutAccountController } from './driver-payout-account.controller.js';
 import { PaymentMethodsController } from './payment-methods.controller.js';
 import {
   PaymentMethodsService,
   type SettlementScopedRepos,
   type SettlementScopedReposFactory,
 } from './payment-methods.service.js';
+import { PayoutWebhookService } from './payout-webhook.service.js';
 import { RedisTokenCache } from './redis-token-cache.js';
 import {
   RefundsService,
@@ -81,6 +99,7 @@ import {
   type RefundScopedReposFactory,
 } from './refunds.service.js';
 import { AEROPAY_CLIENT, AEROPAY_WEBHOOK_VERIFIER } from './tokens.js';
+import { VendorPayoutAccountController } from './vendor-payout-account.controller.js';
 import { VendorRefundsController } from './vendor-refunds.controller.js';
 
 const TOKEN_CACHE = Symbol.for('AEROPAY_TOKEN_CACHE');
@@ -172,6 +191,53 @@ const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
   useFactory: (db: Database): OrdersRepository => new OrdersRepository(db),
 };
 
+const payoutsRepoProvider: FactoryProvider<PayoutsRepository> = {
+  provide: PayoutsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): PayoutsRepository => new PayoutsRepository(db),
+};
+
+// DriverBankLinkService writes `aeropay_account_ref` on the driver (payout
+// linking). PaymentsModule provides its own DriversRepository singleton
+// rather than importing DriversModule — DriversModule already imports
+// PaymentsModule (for AEROPAY_CLIENT), so importing back would form a cycle.
+// The repo is a thin wrapper around the shared Database, so a second instance
+// is free.
+const driversRepoProvider: FactoryProvider<DriversRepository> = {
+  provide: DriversRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): DriversRepository => new DriversRepository(db),
+};
+
+// DispensaryBankLinkService writes `aeropay_account_ref` on the dispensary
+// (payout linking). It reuses the DispensariesRepository singleton exported
+// by DispensariesModule (already imported for the VendorContextGuard) so the
+// vendor bank-link surface and the admin dispensary surface share one repo.
+const dispensaryBankLinkServiceProvider: FactoryProvider<DispensaryBankLinkService> = {
+  provide: DispensaryBankLinkService,
+  inject: [DispensariesRepository, AEROPAY_CLIENT],
+  useFactory: (
+    dispensaries: DispensariesRepository,
+    client: AeropayClient,
+  ): DispensaryBankLinkService => new DispensaryBankLinkService(dispensaries, client),
+};
+
+// DriverBankLinkService writes `aeropay_account_ref` on the driver row,
+// looked up by `user_id`. Symmetric with dispensaryBankLinkServiceProvider.
+const driverBankLinkServiceProvider: FactoryProvider<DriverBankLinkService> = {
+  provide: DriverBankLinkService,
+  inject: [DriversRepository, AEROPAY_CLIENT],
+  useFactory: (drivers: DriversRepository, client: AeropayClient): DriverBankLinkService =>
+    new DriverBankLinkService(drivers, client),
+};
+
+const payoutWebhookServiceProvider: FactoryProvider<PayoutWebhookService> = {
+  provide: PayoutWebhookService,
+  inject: [PayoutsRepository],
+  useFactory: (payouts: PayoutsRepository): PayoutWebhookService =>
+    new PayoutWebhookService(payouts),
+};
+
 // Closure factory used by PaymentMethodsService.handlePaymentSettled to
 // re-bind the write repos to the transactional handle. Stateless — the
 // same closure is reused for every webhook invocation; only the `db`
@@ -204,6 +270,9 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     OrderTransitionService,
     DRIZZLE_DB,
     AEROPAY_CLIENT,
+    DispensaryBankLinkService,
+    DriverBankLinkService,
+    PayoutWebhookService,
   ],
   useFactory: (
     repo: PaymentMethodsRepository,
@@ -212,6 +281,9 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     orderTransitions: OrderTransitionService,
     db: Database,
     client: AeropayClient,
+    dispensaryBankLink: DispensaryBankLinkService,
+    driverBankLink: DriverBankLinkService,
+    payoutWebhooks: PayoutWebhookService,
   ): PaymentMethodsService =>
     new PaymentMethodsService(
       repo,
@@ -221,6 +293,9 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
       db,
       settlementReposFor,
       client,
+      dispensaryBankLink,
+      driverBankLink,
+      payoutWebhooks,
     ),
 };
 
@@ -245,6 +320,7 @@ const refundsServiceProvider: FactoryProvider<RefundsService> = {
     RefundsRepository,
     DRIZZLE_DB,
     AEROPAY_CLIENT,
+    EventEmitter2,
   ],
   useFactory: (
     orders: OrdersRepository,
@@ -252,8 +328,9 @@ const refundsServiceProvider: FactoryProvider<RefundsService> = {
     refunds: RefundsRepository,
     db: Database,
     client: AeropayClient,
+    events: EventEmitter2,
   ): RefundsService =>
-    new RefundsService(orders, paymentTransactions, refunds, db, refundReposFor, client),
+    new RefundsService(orders, paymentTransactions, refunds, db, refundReposFor, client, events),
 };
 
 const providers: Provider[] = [
@@ -265,9 +342,14 @@ const providers: Provider[] = [
   paymentMethodsRepoProvider,
   paymentTransactionsRepoProvider,
   ordersRepoProvider,
+  payoutsRepoProvider,
+  driversRepoProvider,
   refundsRepoProvider,
   webhookEventsRepoProvider,
   VendorContextGuard,
+  dispensaryBankLinkServiceProvider,
+  driverBankLinkServiceProvider,
+  payoutWebhookServiceProvider,
   serviceProvider,
   refundsServiceProvider,
 ];
@@ -278,6 +360,8 @@ const providers: Provider[] = [
     PaymentMethodsController,
     AeropayWebhookController,
     VendorRefundsController,
+    VendorPayoutAccountController,
+    DriverPayoutAccountController,
     AdminRefundsController,
   ],
   providers,

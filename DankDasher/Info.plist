@@ -10,6 +10,8 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>DankDasher uses the camera to scan delivery documents (drivers license, vehicle registration, insurance) during onboarding and to verify customer IDs at handoff.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DankDasher uses the microphone during the customer ID verification at handoff, which records a short guided liveness check.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>DankDasher uses Face ID to unlock your securely stored sign-in so only you can resume your driver session.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

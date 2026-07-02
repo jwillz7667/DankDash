@@ -282,6 +282,13 @@ describe('OrderError factories cover every code', () => {
     expect(e.details).toEqual({ state: 'en_route_dropoff' });
   });
 
+  it('alreadyRated', () => {
+    const e = OrderError.alreadyRated('abc');
+    expect(e.code).toBe('ORDER_ALREADY_RATED');
+    expect(e.statusCode).toBe(409);
+    expect(e.details).toEqual({ orderId: 'abc' });
+  });
+
   it('ratingOutOfRange', () => {
     const e = OrderError.ratingOutOfRange('driverRating', 9);
     expect(e.code).toBe('ORDER_RATING_OUT_OF_RANGE');

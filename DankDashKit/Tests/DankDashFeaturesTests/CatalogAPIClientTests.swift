@@ -24,6 +24,10 @@ final class CatalogAPIClientTests: XCTestCase {
       expectedMatch: "getProduct"
     )
     await assertThrows(
+      try await client.getProductListings(UUID()),
+      expectedMatch: "getProductListings"
+    )
+    await assertThrows(
       try await client.listCategories(),
       expectedMatch: "listCategories"
     )
@@ -43,6 +47,7 @@ final class CatalogAPIClientTests: XCTestCase {
       },
       getMenu: { _ in (UUID(), []) },
       getProduct: { _ in throw CatalogAPIError.malformedPayload("Product") },
+      getProductListings: { _ in [] },
       listCategories: { [] },
       searchProducts: { _ in
         SearchProductsResult(results: [], categoryFacets: [], strainTypeFacets: [], page: SearchPage(limit: 24, offset: 0, total: 0))

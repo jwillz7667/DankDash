@@ -134,6 +134,38 @@ describe('writeLocationBatch', () => {
     expect(byDriver.get(DRIVER_B)?.recordedAt).toEqual(new Date('2026-05-19T12:00:01.000Z'));
   });
 
+  it('updates drivers.current_location for an idle ping with a null orderId', async () => {
+    // Regression guard for online-idle dispatch: a driver on shift but not
+    // on a delivery emits `driver:location:update` with no order, so the
+    // stream envelope carries orderId=null. The current-location write must
+    // NOT be gated on orderId — dispatch's candidate query reads
+    // `drivers.current_location` (WHERE current_order_id IS NULL), so
+    // dropping this write would make idle drivers invisible to scoring.
+    const { drivers, history, recordBatch, updateLocation, updateCalls } = buildDeps();
+
+    const summary = await writeLocationBatch({ drivers, history }, [
+      item({
+        driverId: DRIVER_A,
+        orderId: null,
+        lat: 44.987,
+        lng: -93.273,
+        recordedAt: '2026-05-19T12:00:00.000Z',
+      }),
+    ]);
+
+    expect(summary).toEqual({ historyRows: 1, driversUpdated: 1 });
+    expect(updateLocation).toHaveBeenCalledOnce();
+    expect(updateCalls[0]?.driverId).toBe(DRIVER_A);
+    expect(updateCalls[0]?.location).toEqual({ type: 'Point', coordinates: [-93.273, 44.987] });
+
+    // The history row still records the null orderId — only current-location
+    // ignores it. Proves we route the same idle envelope to both writes.
+    const recordedRows = recordBatch.mock.calls[0]?.[0] as ReadonlyArray<{
+      orderId: string | null;
+    }>;
+    expect(recordedRows[0]?.orderId).toBeNull();
+  });
+
   it('picks the latest ping per driver even when out-of-order in the batch', async () => {
     const { drivers, history, updateCalls } = buildDeps();
 

@@ -115,6 +115,20 @@
       "breakpoints": true
     },
     {
+      "idx": 16,
+      "version": "7",
+      "when": 1748275200007,
+      "tag": "0016_rating_aggregates_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1748275200008,
+      "tag": "0017_driver_aeropay_account",
+      "breakpoints": true
+    },
+    {
       "idx": 20,
       "version": "7",
       "when": 1751472000000,

@@ -77,6 +77,7 @@ function makeDriver(overrides: Partial<Driver> = {}): Driver {
     insuranceExpiresAt: null,
     backgroundCheckPassedAt: null,
     backgroundCheckProviderRef: null,
+    aeropayAccountRef: null,
     currentStatus: 'offline',
     lastStatusChangeAt: at,
     currentLocation: null,
@@ -172,6 +173,7 @@ class FakeDriversRepo implements Pick<
       insuranceExpiresAt: input.insuranceExpiresAt ?? null,
       backgroundCheckPassedAt: input.backgroundCheckPassedAt ?? null,
       backgroundCheckProviderRef: input.backgroundCheckProviderRef ?? null,
+      aeropayAccountRef: input.aeropayAccountRef ?? null,
     });
     this.byId.set(row.id, row);
     this.byUserId.set(row.userId, row);
