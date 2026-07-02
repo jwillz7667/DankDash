@@ -564,6 +564,51 @@ describe('AeropayClient', () => {
     });
   });
 
+  describe('getPayout', () => {
+    it('GETs /v1/payouts/:id and returns the normalized payout', async () => {
+      const dispatcher = vi
+        .fn<HttpDispatcher>()
+        .mockResolvedValue(jsonResponse({ ...PAYOUT_FIXTURE, status: 'paid' }));
+      const client = makeClient({ dispatcher });
+      const payout = await client.getPayout('po_1');
+      expect(payout.status).toBe('paid');
+      expect(payout.amountCents).toBe(50_000);
+      expect(payout.createdAt.toISOString()).toBe('2026-02-02T08:00:00.000Z');
+      const [req] = dispatcher.mock.calls[0]!;
+      expect(req.method).toBe('GET');
+      expect(req.url).toBe(`${BASE_URL}/v1/payouts/po_1`);
+      expect(req.body).toBeUndefined();
+    });
+
+    it('encodes the id so a path-injection id cannot escape the segment', async () => {
+      const dispatcher = vi
+        .fn<HttpDispatcher>()
+        .mockResolvedValue(jsonResponse({ ...PAYOUT_FIXTURE, id: 'po/escape' }));
+      const client = makeClient({ dispatcher });
+      await client.getPayout('po/escape');
+      const [req] = dispatcher.mock.calls[0]!;
+      expect(req.url).toBe(`${BASE_URL}/v1/payouts/po%2Fescape`);
+    });
+
+    it('rejects an empty payout id with PAYMENT_METHOD_INVALID', async () => {
+      const dispatcher = vi.fn<HttpDispatcher>();
+      const client = makeClient({ dispatcher });
+      await expect(client.getPayout('')).rejects.toMatchObject({ code: 'PAYMENT_METHOD_INVALID' });
+      expect(dispatcher).not.toHaveBeenCalled();
+    });
+
+    it('maps a 404 to PAYMENT_METHOD_INVALID so the worker can detect an orphan', async () => {
+      const dispatcher = vi
+        .fn<HttpDispatcher>()
+        .mockResolvedValue({ statusCode: 404, headers: {}, body: '{}' });
+      const client = makeClient({ dispatcher });
+      await expect(client.getPayout('po_missing')).rejects.toMatchObject({
+        code: 'PAYMENT_METHOD_INVALID',
+        statusCode: 404,
+      });
+    });
+  });
+
   it('strips trailing slashes from the configured base URL', async () => {
     const dispatcher = vi.fn<HttpDispatcher>().mockResolvedValue(jsonResponse(PAYMENT_FIXTURE));
     const client = makeClient({ dispatcher });

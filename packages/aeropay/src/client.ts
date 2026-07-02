@@ -162,17 +162,22 @@ export class AeropayClient {
         period_end: input.periodEnd.toISOString(),
       },
     });
-    const parsed = parseOrThrow(PayoutResponseSchema, json, '/v1/payouts');
-    return {
-      id: parsed.id,
-      status: parsed.status,
-      amountCents: parsed.amount_cents,
-      bankAccountId: parsed.bank_account_id,
-      recipientRef: parsed.recipient_ref,
-      periodStart: new Date(parsed.period_start),
-      periodEnd: new Date(parsed.period_end),
-      createdAt: new Date(parsed.created_at),
-    };
+    return toPayout(parseOrThrow(PayoutResponseSchema, json, '/v1/payouts'));
+  }
+
+  /**
+   * Read a payout's current state by its upstream id. Used by the
+   * settlement-reconciliation worker to resolve `payouts` rows stranded in
+   * `processing` when the terminal webhook (`payout.paid`/`payout.failed`)
+   * was never delivered. A GET carries no idempotency concern.
+   */
+  async getPayout(id: string): Promise<AeropayPayout> {
+    assertNonEmpty(id, 'payoutId');
+    const json = await this.request({
+      method: 'GET',
+      path: `/v1/payouts/${encodeURIComponent(id)}`,
+    });
+    return toPayout(parseOrThrow(PayoutResponseSchema, json, '/v1/payouts/:id'));
   }
 
   private async request(opts: {
@@ -231,6 +236,19 @@ function toPayment(parsed: z.infer<typeof PaymentResponseSchema>): AeropayPaymen
     bankAccountId: parsed.bank_account_id,
     customerRef: parsed.customer_ref,
     orderRef: parsed.order_ref,
+    createdAt: new Date(parsed.created_at),
+  };
+}
+
+function toPayout(parsed: z.infer<typeof PayoutResponseSchema>): AeropayPayout {
+  return {
+    id: parsed.id,
+    status: parsed.status,
+    amountCents: parsed.amount_cents,
+    bankAccountId: parsed.bank_account_id,
+    recipientRef: parsed.recipient_ref,
+    periodStart: new Date(parsed.period_start),
+    periodEnd: new Date(parsed.period_end),
     createdAt: new Date(parsed.created_at),
   };
 }
