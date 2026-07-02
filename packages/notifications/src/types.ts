@@ -40,10 +40,13 @@ export type NotificationTemplateKey =
   | 'order.accepted'
   | 'order.prepping'
   | 'order.ready'
+  | 'order.driver_assigned'
   | 'order.picked_up'
   | 'order.arriving'
   | 'order.arrived'
   | 'order.completed'
+  | 'order.canceled'
+  | 'order.rejected'
   | 'payment.failed'
   | 'refund.issued'
   | 'dispensary.new_nearby'
@@ -51,7 +54,8 @@ export type NotificationTemplateKey =
   | 'dispatch.offer'
   | 'dispatch.offer_expired'
   | 'dispatch.canceled'
-  // Vendor-side events (portal email).
+  // Vendor-side events (portal email + in-app).
+  | 'vendor.new_order'
   | 'vendor.payout.completed'
   | 'vendor.metrc.reconciliation_discrepancy'
   // Account / onboarding.
