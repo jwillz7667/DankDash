@@ -552,6 +552,173 @@ final class DriverEarningsFeatureTests: XCTestCase {
     )
   }
 
+  // MARK: - Bank linking
+
+  func test_bankLinkStatusResponse_setsLinkedFlag() async {
+    let store = TestStore(initialState: DriverEarningsFeature.State()) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.bankLinkStatusResponse(.success(true))) {
+      $0.isBankLinked = true
+    }
+    XCTAssertFalse(store.state.needsBankLink)
+
+    await store.send(.bankLinkStatusResponse(.success(false))) {
+      $0.isBankLinked = false
+    }
+    XCTAssertTrue(store.state.needsBankLink)
+  }
+
+  func test_bankLinkStatusResponse_failure_leavesFlagUnknown() async {
+    let envelope = ErrorEnvelope(error: .init(code: "INTERNAL", message: "nope"))
+    let store = TestStore(initialState: DriverEarningsFeature.State()) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(
+      .bankLinkStatusResponse(.failure(EarningsErrorBox(APIError.server(status: 500, envelope: envelope))))
+    )
+    XCTAssertNil(store.state.isBankLinked)
+    XCTAssertFalse(store.state.needsBankLink, "unknown status never shows the CTA")
+  }
+
+  func test_onAppear_fetchesBankStatus() async {
+    let store = TestStore(initialState: DriverEarningsFeature.State()) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverAppAPIClient = DriverAppAPIClient(
+        getMe: { throw DriverAPIError.unimplemented("getMe") },
+        getCurrentRoute: { throw DriverAPIError.unimplemented("getCurrentRoute") },
+        getEarnings: { _ in Self.earnings(.today, totalCents: 4_500, deliveries: 3) },
+        getShifts: { [Self.shift()] }
+      )
+      $0.driverPayoutAccountAPIClient = DriverPayoutAccountAPIClient(
+        getStatus: { false },
+        startLink: { throw DriverAPIError.unimplemented("startLink") }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.onAppear)
+    await store.skipReceivedActions()
+    XCTAssertEqual(store.state.isBankLinked, false)
+    XCTAssertTrue(store.state.needsBankLink)
+    await store.finish()
+  }
+
+  func test_linkBankTapped_startsSessionAndPresents() async {
+    let session = Self.linkSession()
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(isBankLinked: false)
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverPayoutAccountAPIClient = DriverPayoutAccountAPIClient(
+        getStatus: { false },
+        startLink: { session }
+      )
+    }
+
+    await store.send(.linkBankTapped) {
+      $0.isStartingBankLink = true
+    }
+    await store.receive(\.bankLinkStarted.success) {
+      $0.isStartingBankLink = false
+      $0.bankLinkSession = session
+    }
+  }
+
+  func test_linkBankTapped_whileStarting_isNoOp() async {
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(isBankLinked: false, isStartingBankLink: true)
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(.linkBankTapped)
+  }
+
+  func test_linkBankStarted_failure_surfacesBanner() async {
+    let envelope = ErrorEnvelope(error: .init(code: "PAYMENT_PROVIDER_UNAVAILABLE", message: "Bank linking is down"))
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(isBankLinked: false, isStartingBankLink: true)
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+    }
+
+    await store.send(
+      .bankLinkStarted(.failure(EarningsErrorBox(APIError.server(status: 503, envelope: envelope))))
+    ) {
+      $0.isStartingBankLink = false
+      $0.errorBanner = "Bank linking is down"
+    }
+  }
+
+  func test_bankLinkSheetDismissed_clearsSessionAndReloadsStatus() async {
+    let session = Self.linkSession()
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(isBankLinked: false, bankLinkSession: session)
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverPayoutAccountAPIClient = DriverPayoutAccountAPIClient(
+        getStatus: { true },
+        startLink: { throw DriverAPIError.unimplemented("startLink") }
+      )
+    }
+
+    await store.send(.bankLinkSheetDismissed) {
+      $0.bankLinkSession = nil
+    }
+    await store.receive(\.bankLinkStatusResponse.success) {
+      $0.isBankLinked = true
+    }
+  }
+
+  func test_cashoutConfirmed_bankNotLinked_closesSheetAndShowsLinkCTA() async {
+    let envelope = ErrorEnvelope(
+      error: .init(
+        code: "PAYMENT_METHOD_INVALID",
+        message: "link a bank account before cashing out",
+        details: .object(["reason": .string("driver_bank_account_not_linked")])
+      )
+    )
+    let store = TestStore(
+      initialState: DriverEarningsFeature.State(
+        cashoutSheet: DriverEarningsFeature.CashoutSheetState(amountText: "10.00")
+      )
+    ) {
+      DriverEarningsFeature()
+    } withDependencies: {
+      Self.disableDependencies(&$0)
+      $0.driverCashoutAPIClient = DriverCashoutAPIClient(
+        requestCashout: { _ in throw APIError.server(status: 422, envelope: envelope) }
+      )
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cashoutConfirmed) {
+      $0.cashoutSheet?.isSubmitting = true
+    }
+    await store.skipReceivedActions()
+    XCTAssertNil(store.state.cashoutSheet, "sheet closes so the link CTA is visible")
+    XCTAssertEqual(store.state.isBankLinked, false)
+    XCTAssertTrue(store.state.needsBankLink)
+    XCTAssertEqual(store.state.errorBanner, "Link a bank account to cash out your earnings.")
+  }
+
   // MARK: - Fixtures
 
   nonisolated private static func earnings(
@@ -602,9 +769,20 @@ final class DriverEarningsFeatureTests: XCTestCase {
     )
   }
 
+  nonisolated private static func linkSession(
+    id: String = "link_session_driver_1"
+  ) -> AeropayLinkSession {
+    AeropayLinkSession(
+      id: id,
+      hostedUrl: URL(string: "https://link.aeropay.com/session/\(id)")!,
+      expiresAt: Date(timeIntervalSince1970: 1_700_003_600)
+    )
+  }
+
   static func disableDependencies(_ values: inout DependencyValues) {
     values.driverAppAPIClient = .unimplemented
     values.driverCashoutAPIClient = .unimplemented
+    values.driverPayoutAccountAPIClient = .unimplemented
     values.continuousClock = ImmediateClock()
     values.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))
   }

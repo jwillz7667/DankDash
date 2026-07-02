@@ -38,6 +38,11 @@ struct EarningsWalletScreen: View {
         }
 
         VStack(spacing: DankSpacing.sm) {
+          if store.needsBankLink {
+            bankLinkBanner
+              .padding(.horizontal, DankSpacing.md)
+              .padding(.top, DankSpacing.sm)
+          }
           if let banner = store.errorBanner {
             errorBanner(banner)
               .padding(.horizontal, DankSpacing.md)
@@ -73,7 +78,60 @@ struct EarningsWalletScreen: View {
         cashoutSheetContent
           .presentationDetents([.medium, .large])
       }
+      .sheet(
+        item: Binding(
+          get: { store.bankLinkSession },
+          set: { session in
+            if session == nil { store.send(.bankLinkSheetDismissed) }
+          }
+        )
+      ) { session in
+        BankLinkSafariView(
+          url: session.hostedUrl,
+          onDismiss: { store.send(.bankLinkSheetDismissed) }
+        )
+        .ignoresSafeArea()
+      }
     }
+  }
+
+  // MARK: - Bank link
+
+  /// Shown when the server reports the driver has no linked bank account
+  /// (either from the status endpoint or a not-linked cashout refusal). Taps
+  /// mint an Aeropay hosted link session and open Safari.
+  private var bankLinkBanner: some View {
+    HStack(alignment: .center, spacing: DankSpacing.sm) {
+      Image(systemName: "building.columns.fill")
+        .foregroundStyle(DankColor.primary)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: DankSpacing.xxs) {
+        Text("Link a bank account")
+          .font(DankFont.body.weight(.semibold))
+          .foregroundStyle(DankColor.Text.primary)
+        Text("Connect your bank to cash out your earnings.")
+          .font(DankFont.caption)
+          .foregroundStyle(DankColor.Text.secondary)
+      }
+      Spacer(minLength: 0)
+      if store.isStartingBankLink {
+        ProgressView()
+      } else {
+        Button("Link") { store.send(.linkBankTapped) }
+          .font(DankFont.body.weight(.semibold))
+          .foregroundStyle(DankColor.primary)
+      }
+    }
+    .padding(DankSpacing.sm)
+    .background(DankColor.cream)
+    .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous)
+        .strokeBorder(DankColor.primary.opacity(0.4), lineWidth: 1)
+    )
+    .shadow(color: DankColor.Text.primary.opacity(0.08), radius: 8, x: 0, y: 2)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Link a bank account to cash out your earnings")
   }
 
   /// Cashout CTA is enabled when we have a positive total in the
