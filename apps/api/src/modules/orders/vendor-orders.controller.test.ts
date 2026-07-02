@@ -49,6 +49,8 @@ function makeOrder(status: Order['status'] = 'placed'): Order {
     driverTipCents: 500,
     discountCents: 0,
     totalCents: 11019,
+    promoCodeId: null,
+    discountFundedBy: null,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},
     placedAt: PINNED_NOW,

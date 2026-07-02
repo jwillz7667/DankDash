@@ -50,6 +50,7 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { CartService } from './cart.service.js';
 import {
   AddCartItemRequestDto,
+  ApplyPromoRequestDto,
   CreateCartRequestDto,
   PatchCartItemRequestDto,
   ValidateCartQueryDto,
@@ -141,6 +142,32 @@ export class CartController {
     @Query() query: ValidateCartQueryDto,
   ): Promise<ValidateCartResponse> {
     return this.carts.validate(user.userId, id, query.deliveryAddressId);
+  }
+
+  /**
+   * Apply a promo code. Returns the cart with the live discount preview. The
+   * full validation (including redemption caps) runs here; only a valid promo
+   * is attached. Checkout re-validates authoritatively.
+   */
+  @Post(':id/promo')
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({ name: 'cart-apply-promo', tracker: 'user', limit: 60, windowMs: 60_000 })
+  applyPromo(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: ApplyPromoRequestDto,
+  ): Promise<CartResponse> {
+    return this.carts.applyPromo(user.userId, id, body.code);
+  }
+
+  @Delete(':id/promo')
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({ name: 'cart-remove-promo', tracker: 'user', limit: 60, windowMs: 60_000 })
+  removePromo(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<CartResponse> {
+    return this.carts.removePromo(user.userId, id);
   }
 
   @Delete(':id')

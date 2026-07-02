@@ -44,6 +44,8 @@ const CART: CartResponse = {
   dispensaryId: DISPENSARY_ID,
   items: [],
   subtotalCents: 0,
+  promoCode: null,
+  discountCents: 0,
   expiresAt: '2026-05-18T23:00:00.000Z',
   createdAt: '2026-05-18T18:00:00.000Z',
   updatedAt: '2026-05-18T19:00:00.000Z',

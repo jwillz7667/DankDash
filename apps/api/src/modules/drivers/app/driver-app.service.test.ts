@@ -107,6 +107,8 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     driverTipCents: 500,
     discountCents: 0,
     totalCents: 7050,
+    promoCodeId: null,
+    discountFundedBy: null,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: SNAPSHOT,
     placedAt: ISO('2026-05-19T14:00:00.000Z'),

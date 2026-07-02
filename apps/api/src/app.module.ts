@@ -82,6 +82,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
 import { PayoutsModule } from './modules/payouts/payouts.module.js';
+import { PromotionsModule } from './modules/promotions/promotions.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 import { SettingsModule } from './modules/settings/settings.module.js';
@@ -124,6 +125,7 @@ import { StaffModule } from './modules/staff/staff.module.js';
     SearchModule,
     CartModule,
     CheckoutModule,
+    PromotionsModule,
     PaymentsModule,
     PayoutsModule,
     StaffModule,

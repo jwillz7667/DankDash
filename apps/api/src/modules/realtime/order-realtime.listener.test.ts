@@ -43,6 +43,8 @@ function buildOrder(overrides: Partial<Order> = {}): Order {
     driverTipCents: 0,
     discountCents: 0,
     totalCents: 6_250,
+    promoCodeId: null,
+    discountFundedBy: null,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},
     placedAt: CREATED_AT,

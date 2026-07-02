@@ -55,6 +55,7 @@ function makeCart(overrides: Partial<Cart> = {}): Cart {
     id: CART_ID,
     userId: USER_ID,
     dispensaryId: '01935f3d-0000-7000-8000-0000000000aa',
+    promoCodeId: null,
     expiresAt: new Date('2026-05-20T20:30:00.000Z'),
     createdAt: at,
     updatedAt: at,

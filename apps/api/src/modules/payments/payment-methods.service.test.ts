@@ -70,6 +70,7 @@ const OTHER_USER_ID = '01935f3d-0000-7000-8000-000000000002';
 const ORDER_ID = '01935f3d-0000-7000-8000-0000000000d1';
 const DISPENSARY_ID = '01935f3d-0000-7000-8000-0000000000a1';
 const DRIVER_ID = '01935f3d-0000-7000-8000-0000000000c1';
+const PROMO_ID = '01935f3d-0000-7000-8000-0000000000e1';
 const DELIVERY_ADDRESS_ID = '01935f3d-0000-7000-8000-0000000000b1';
 const PAYMENT_TX_ID = '01935f3d-0000-7000-8000-0000000000e1';
 const AEROPAY_PAYMENT_ID = 'pay_aeropay_abc123';
@@ -116,6 +117,8 @@ function makeOrder(overrides: Partial<Order> = {}): Order {
     driverTipCents: SAMPLE_ORDER_DRIVER_TIP_CENTS,
     discountCents: SAMPLE_ORDER_DISCOUNT_CENTS,
     totalCents: SAMPLE_ORDER_TOTAL_CENTS,
+    promoCodeId: null,
+    discountFundedBy: null,
     complianceCheckPayload: {},
     deliveryAddressSnapshot: {},
     placedAt: new Date('2026-05-01T00:00:00.000Z'),
@@ -1286,6 +1289,127 @@ describe('PaymentMethodsService.applyWebhook — payment.settled distribution', 
     // Total ledger movement still balances at 2 * (discounted) total.
     const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
     expect(debits).toBe(2 * discountedTotal);
+  });
+
+  it('routes a dispensary-funded promo to the dispensary share, platform fee intact', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - 500;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: 500,
+        totalCents: discountedTotal,
+        promoCodeId: PROMO_ID,
+        discountFundedBy: 'dispensary',
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_disp_promo',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    expect(entries.find((e) => e.accountType === 'dispensary')?.creditCents).toBe(8_000);
+    // Platform still collects its full 15% fee — the store funded the promo.
+    expect(entries.find((e) => e.accountType === 'platform_revenue')?.creditCents).toBe(
+      SAMPLE_ORDER_PLATFORM_FEE_CENTS,
+    );
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(2 * discountedTotal);
+    expect(credits).toBe(2 * discountedTotal);
+  });
+
+  it('routes a platform-funded promo to platform revenue, dispensary share whole', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - 500;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: 500,
+        totalCents: discountedTotal,
+        promoCodeId: PROMO_ID,
+        discountFundedBy: 'platform',
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_plat_promo',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    // Dispensary is paid in full (10_000 - 1_500) — the platform ate the promo.
+    expect(entries.find((e) => e.accountType === 'dispensary')?.creditCents).toBe(
+      SAMPLE_ORDER_DISPENSARY_SHARE_CENTS,
+    );
+    // Platform revenue = fee (1_500) - platform-funded discount (500) = 1_000.
+    const platformLeg = entries.find((e) => e.accountType === 'platform_revenue');
+    expect(platformLeg?.creditCents).toBe(1_000);
+    expect(platformLeg?.debitCents).toBe(0);
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(2 * discountedTotal);
+    expect(credits).toBe(2 * discountedTotal);
+  });
+
+  it('emits a platform_revenue DEBIT when a platform-funded promo exceeds the fee', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    // $20 off on a $100 subtotal: platform fee is only $15, so platform
+    // revenue goes to -$5 — the platform subsidizes the difference.
+    const discount = 2_000;
+    const discountedTotal = SAMPLE_ORDER_TOTAL_CENTS - discount;
+    txRepo.rows.push(
+      makePaymentTransaction({ status: 'authorized', amountCents: discountedTotal }),
+    );
+    ordersRepo.rows.push(
+      makeOrder({
+        discountCents: discount,
+        totalCents: discountedTotal,
+        promoCodeId: PROMO_ID,
+        discountFundedBy: 'platform',
+      }),
+    );
+
+    await service.applyWebhook({
+      type: 'payment.settled',
+      eventId: 'evt_dist_plat_subsidy',
+      objectId: AEROPAY_PAYMENT_ID,
+      occurredAt: WEBHOOK_OCCURRED_AT,
+      raw: {},
+    });
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    // Dispensary still whole; platform_revenue is a DEBIT of the 500 shortfall.
+    expect(entries.find((e) => e.accountType === 'dispensary')?.creditCents).toBe(
+      SAMPLE_ORDER_DISPENSARY_SHARE_CENTS,
+    );
+    const platformLeg = entries.find((e) => e.accountType === 'platform_revenue');
+    expect(platformLeg?.debitCents).toBe(500);
+    expect(platformLeg?.creditCents).toBe(0);
+    // The debit grows the DR side by exactly the shortfall and the books
+    // still balance.
+    const debits = entries.reduce((sum, e) => sum + (e.debitCents ?? 0), 0);
+    const credits = entries.reduce((sum, e) => sum + (e.creditCents ?? 0), 0);
+    expect(debits).toBe(credits);
+    expect(debits).toBe(2 * discountedTotal + 500);
+    // Single-side invariant holds on every leg including the debit.
+    for (const entry of entries) {
+      const dr = entry.debitCents ?? 0;
+      const cr = entry.creditCents ?? 0;
+      expect((dr > 0 && cr === 0) || (cr > 0 && dr === 0)).toBe(true);
+    }
   });
 
   it('credits driver with delivery_fee + tip and uses driverId as accountRef', async () => {

@@ -576,18 +576,26 @@ function extractFailureDetails(raw: Readonly<Record<string, unknown>>): {
  *      per delivered order), which the auditor reads as "what this
  *      customer's purchases have been allocated to."
  *
- * Math:
+ * Math (the discount is routed to its funder — snapshotted on the order as
+ * `discount_funded_by` at checkout — so exactly one of the two funded-discount
+ * terms is non-zero):
  *   platformFee     = banker_round(subtotal * PLATFORM_FEE_RATE)
- *   dispensaryShare = subtotal - platformFee - discount
+ *   dispFunded      = discount if funded_by = 'dispensary' else 0
+ *   platFunded      = discount if funded_by = 'platform'   else 0
+ *   dispensaryShare = subtotal - platformFee - dispFunded
+ *   platformRevenue = platformFee - platFunded          (may be < 0 → a debit)
  *   driverPayout    = deliveryFee + driverTip
  *
- * Sum DR  = total + total            (clearing DR + customer DR)
- * Sum CR  = total + dispensaryShare + platformFee + cannabis + sales + driverPayout
- *         = total + (subtotal - platformFee - discount) + platformFee
- *           + cannabis + sales + (delivery + tip)
- *         = total + subtotal + cannabis + sales + delivery + tip - discount
- *         = total + total
- *         = balanced.
+ * dispensaryShare + platformRevenue = subtotal - dispFunded - platFunded
+ *                                   = subtotal - discount.
+ * So whichever party funds it, the distribution credits still sum to `total`:
+ *   dispensaryShare + platformRevenue + cannabis + sales + driverPayout
+ *     = (subtotal - discount) + cannabis + sales + delivery + tip
+ *     = total.
+ * With the settlement pair (clearing DR total / customer CR total) and the
+ * customer DR total that funds distribution, Sum DR == Sum CR regardless of
+ * funder or of a negative platformRevenue (emitted as a debit that grows the
+ * DR side by exactly the shortfall) — the ledger stays balanced.
  *
  * Driver assignment: if `driverId` is null at settlement time (the order
  * settled before dispatch — pathological but possible) the driver
@@ -613,18 +621,32 @@ function buildSettlementEntries(order: Order, occurredAt: Date): readonly Settle
   const total = order.totalCents;
 
   const platformFee = computePlatformFeeCents(subtotal);
-  const dispensaryShare = subtotal - platformFee - discount;
+  // The discount is routed to its funder (snapshotted on the order at
+  // checkout). A platform-funded discount comes out of platform revenue;
+  // everything else (an explicit 'dispensary' funder, or a null funder on a
+  // legacy/manually-discounted order) comes out of the dispensary's share —
+  // which preserves the historical default that the store funds its own
+  // discounts and keeps the ledger balanced regardless of funder.
+  const platformFundedDiscount = order.discountFundedBy === 'platform' ? discount : 0;
+  const dispensaryFundedDiscount = discount - platformFundedDiscount;
+  const dispensaryShare = subtotal - platformFee - dispensaryFundedDiscount;
+  // Platform revenue nets the fee against any promo the platform funded. It
+  // can go NEGATIVE (a "$15 off" platform promo on a small order exceeds the
+  // 15% fee) — the platform subsidizes the difference, emitted as a debit
+  // against platform_revenue below. dispensary_share is unaffected in that case
+  // (the store is paid in full), which is the whole point of a platform promo.
+  const platformRevenue = platformFee - platformFundedDiscount;
   const driverPayout = delivery + tip;
 
   if (dispensaryShare < 0) {
-    // discount + platform_fee > subtotal — would credit the dispensary
-    // negatively, which the ledger CHECK constraint rejects anyway.
-    // Surface as a domain error so the cause (most likely a promo +
-    // platform-fee policy interaction) is visible rather than a raw
-    // Postgres error.
+    // A dispensary-funded discount larger than (subtotal - platform_fee) would
+    // credit the dispensary negatively, which the ledger CHECK rejects anyway.
+    // Surface the cause rather than a raw Postgres error. Promo max-discount
+    // caps should keep this unreachable in practice.
     throw new RepositoryError(
       `buildSettlementEntries: order ${order.id} dispensary share would be negative ` +
-        `(subtotal=${String(subtotal)}, platformFee=${String(platformFee)}, discount=${String(discount)})`,
+        `(subtotal=${String(subtotal)}, platformFee=${String(platformFee)}, ` +
+        `dispensaryFundedDiscount=${String(dispensaryFundedDiscount)})`,
     );
   }
 
@@ -671,14 +693,27 @@ function buildSettlementEntries(order: Order, occurredAt: Date): readonly Settle
       occurredAt,
     });
   }
-  if (platformFee > 0) {
+  if (platformRevenue > 0) {
     entries.push({
       orderId: order.id,
       accountType: 'platform_revenue',
       accountRef: null,
       debitCents: 0,
-      creditCents: platformFee,
+      creditCents: platformRevenue,
       description: `Order ${order.shortCode} platform fee`,
+      occurredAt,
+    });
+  } else if (platformRevenue < 0) {
+    // Platform-funded promo exceeded the fee — the platform eats the
+    // difference. Debit platform_revenue by the shortfall; the distribution
+    // still balances (the customer DR already reflects the discounted total).
+    entries.push({
+      orderId: order.id,
+      accountType: 'platform_revenue',
+      accountRef: null,
+      debitCents: -platformRevenue,
+      creditCents: 0,
+      description: `Order ${order.shortCode} platform-funded promo subsidy`,
       occurredAt,
     });
   }

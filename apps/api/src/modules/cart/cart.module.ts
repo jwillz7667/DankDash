@@ -21,6 +21,8 @@ import {
   DispensariesRepository,
   DispensaryListingsRepository,
   ProductsRepository,
+  PromoCodesRepository,
+  PromoRedemptionsRepository,
   UserAddressesRepository,
   UsersRepository,
   type Database,
@@ -45,6 +47,8 @@ const cartServiceProvider: FactoryProvider<CartService> = {
         users: new UsersRepository(scopedDb),
         userAddresses: new UserAddressesRepository(scopedDb),
         products: new ProductsRepository(scopedDb),
+        promoCodes: new PromoCodesRepository(scopedDb),
+        promoRedemptions: new PromoRedemptionsRepository(scopedDb),
       }),
     ),
 };

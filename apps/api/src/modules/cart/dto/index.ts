@@ -18,6 +18,11 @@ export {
   type CartResponse,
 } from './cart.dto.js';
 export {
+  ApplyPromoRequestDto,
+  ApplyPromoRequestSchema,
+  type ApplyPromoRequest,
+} from './apply-promo.dto.js';
+export {
   ComplianceLimitsSnapshotSchema,
   ComplianceTotalsSnapshotSchema,
   RuleIdSchema,

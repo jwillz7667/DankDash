@@ -51,6 +51,12 @@ export const CartResponseSchema = z
     dispensaryId: z.string().uuid(),
     items: z.array(CartItemResponseSchema).readonly(),
     subtotalCents: z.number().int().nonnegative(),
+    // Applied promo (null = none) and the discount it currently yields against
+    // this cart's subtotal, in integer cents. The discount is a live preview
+    // recomputed on every cart read; checkout re-validates authoritatively and
+    // may compute a different amount (or reject the promo) at that time.
+    promoCode: z.string().nullable(),
+    discountCents: z.number().int().nonnegative(),
     expiresAt: z.string().datetime({ offset: true }),
     createdAt: z.string().datetime({ offset: true }),
     updatedAt: z.string().datetime({ offset: true }),
