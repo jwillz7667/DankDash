@@ -35,7 +35,7 @@ const TRACER_NAME = 'dankdash-workers/cron';
  * therefore fixed at typecheck time, which keeps the metric series
  * count predictable.
  */
-export type WorkerJobName = 'payouts' | 'webhook-events-cleanup';
+export type WorkerJobName = 'payouts' | 'payout-reconciliation' | 'webhook-events-cleanup';
 
 export interface CronMetrics {
   readonly durationSeconds: Histogram;
