@@ -67,3 +67,39 @@ export async function getVendorPayout(
 ): Promise<VendorPayoutDetail> {
   return client.request<VendorPayoutDetail>(`/v1/vendor/payouts/${encodeURIComponent(payoutId)}`);
 }
+
+/**
+ * Payout bank-account link status. Boolean only by design — the underlying
+ * Aeropay account ref is a Restricted value that never leaves the API
+ * (mirrors `hasAeropayAccount` on the settings surface).
+ */
+export interface DispensaryBankAccountStatus {
+  readonly linked: boolean;
+}
+
+export interface DispensaryBankLinkSession {
+  readonly id: string;
+  readonly hostedUrl: string;
+  /** ISO-8601 UTC timestamp. */
+  readonly expiresAt: string;
+}
+
+export interface StartDispensaryBankLinkResult {
+  readonly link: DispensaryBankLinkSession;
+}
+
+export async function getVendorBankAccountStatus(
+  client: ApiClient,
+): Promise<DispensaryBankAccountStatus> {
+  return client.request<DispensaryBankAccountStatus>('/v1/vendor/payouts/bank-account');
+}
+
+export async function startVendorBankLink(
+  client: ApiClient,
+  returnUrl: string,
+): Promise<StartDispensaryBankLinkResult> {
+  return client.request<StartDispensaryBankLinkResult>('/v1/vendor/payouts/bank-account/link', {
+    method: 'POST',
+    body: { returnUrl },
+  });
+}
