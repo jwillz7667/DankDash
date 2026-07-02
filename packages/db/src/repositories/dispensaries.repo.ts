@@ -214,6 +214,29 @@ export class DispensariesRepository extends BaseRepository {
     if (updated === undefined) return null;
     return this.findById(updated.id);
   }
+
+  /**
+   * Fold one post-delivery rating into the running dispensary aggregate.
+   * The new average is computed on the row itself in a single UPDATE —
+   * `newAvg = (avg * count + rating) / (count + 1)` — never read-modify-
+   * written in JS, so concurrent ratings on the same dispensary serialise
+   * on the row lock and cannot lose an increment. The arithmetic runs in
+   * Postgres `numeric` (rating_avg is `NUMERIC(3,2)`, count is `integer`),
+   * so there is no float rounding; `round(…, 2)` pins the stored scale.
+   * Feeds `dispensaries.rating_avg`/`rating_count`, which the dispatch
+   * scorer and menu ranking read. Callers must scope this to one rating
+   * per order (the `rated_at` one-shot guard) so no rating is folded twice.
+   */
+  async applyRating(id: string, rating: number): Promise<void> {
+    await this.db
+      .update(dispensaries)
+      .set({
+        ratingAvg: sql`round((coalesce(${dispensaries.ratingAvg}, 0) * ${dispensaries.ratingCount} + ${rating}) / (${dispensaries.ratingCount} + 1), 2)`,
+        ratingCount: sql`${dispensaries.ratingCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(dispensaries.id, id));
+  }
 }
 
 export class DispensaryStaffRepository extends BaseRepository {
