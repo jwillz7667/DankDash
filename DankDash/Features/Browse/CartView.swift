@@ -105,6 +105,9 @@ struct CartView: View {
 
           addressSection
             .padding(.horizontal, DankSpacing.md)
+
+          promoSection
+            .padding(.horizontal, DankSpacing.md)
         }
         .padding(.top, DankSpacing.md)
         .padding(.bottom, DankSpacing.xl)
@@ -236,6 +239,103 @@ struct CartView: View {
     )
   }
 
+  // MARK: - Promo code
+
+  /// Only meaningful against a server cart (the code is scoped to a
+  /// cartId). Shows the applied code + Remove once a promo lands, the
+  /// entry field otherwise, and any server rejection inline beneath.
+  @ViewBuilder private var promoSection: some View {
+    if store.serverCart != nil {
+      VStack(alignment: .leading, spacing: DankSpacing.xs) {
+        Text("Promo code")
+          .font(DankFont.caption)
+          .tracking(0.8)
+          .foregroundStyle(DankColor.Text.secondary)
+
+        if let code = store.serverCart?.promoCode {
+          appliedPromoRow(code)
+        } else {
+          promoEntryRow
+        }
+
+        if let promoError = store.promoError {
+          Text(promoError)
+            .font(DankFont.caption)
+            .foregroundStyle(DankColor.Semantic.danger)
+            .accessibilityLabel("Promo error: \(promoError)")
+        }
+      }
+      .padding(DankSpacing.md)
+      .background(DankColor.cream)
+      .clipShape(RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: DankRadius.lg, style: .continuous)
+          .strokeBorder(DankColor.primary.opacity(0.1), lineWidth: 1)
+      )
+    }
+  }
+
+  private var promoEntryRow: some View {
+    HStack(spacing: DankSpacing.sm) {
+      TextField("Enter code", text: promoBinding)
+        .font(DankFont.body)
+        .foregroundStyle(DankColor.Text.primary)
+        .textInputAutocapitalization(.characters)
+        .autocorrectionDisabled(true)
+        .submitLabel(.done)
+        .onSubmit { store.send(.applyPromoTapped) }
+        .padding(.horizontal, DankSpacing.md)
+        .frame(minHeight: 48)
+        .background(DankColor.cream)
+        .clipShape(RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: DankRadius.md, style: .continuous)
+            .strokeBorder(DankColor.primary.opacity(0.18), lineWidth: 1)
+        )
+        .accessibilityLabel("Promo code")
+
+      DankButton(
+        "Apply",
+        style: .secondary,
+        size: .medium,
+        isLoading: store.isApplyingPromo,
+        isDisabled: !store.canApplyPromo,
+        action: { store.send(.applyPromoTapped) }
+      )
+      .fixedSize(horizontal: true, vertical: false)
+    }
+  }
+
+  private func appliedPromoRow(_ code: String) -> some View {
+    HStack(spacing: DankSpacing.sm) {
+      Image(systemName: "checkmark.seal.fill")
+        .foregroundStyle(DankColor.Semantic.success)
+        .accessibilityHidden(true)
+      Text(code)
+        .font(DankFont.body.weight(.semibold))
+        .foregroundStyle(DankColor.Text.primary)
+      Spacer(minLength: 0)
+      DankButton(
+        "Remove",
+        style: .ghost,
+        size: .small,
+        isLoading: store.isRemovingPromo,
+        isDisabled: store.isApplyingPromo || store.isRemovingPromo,
+        action: { store.send(.removePromoTapped) }
+      )
+      .fixedSize(horizontal: true, vertical: false)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Promo \(code) applied")
+  }
+
+  private var promoBinding: Binding<String> {
+    Binding(
+      get: { store.promoCodeInput },
+      set: { store.send(.promoCodeChanged($0)) }
+    )
+  }
+
   private func errorBanner(_ message: String) -> some View {
     HStack(alignment: .top, spacing: DankSpacing.xs) {
       Image(systemName: "exclamationmark.triangle.fill")
@@ -266,6 +366,19 @@ struct CartView: View {
         Text(formatPrice(subtotalCents))
           .font(DankFont.headline.monospacedDigit())
           .foregroundStyle(DankColor.Text.primary)
+      }
+      if let discountCents = store.serverCart?.discountCents, discountCents > 0 {
+        HStack {
+          Text(discountLabel)
+            .font(DankFont.body)
+            .foregroundStyle(DankColor.Text.secondary)
+          Spacer()
+          Text("-\(formatPrice(discountCents))")
+            .font(DankFont.headline.monospacedDigit())
+            .foregroundStyle(DankColor.Semantic.success)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(discountLabel), minus \(formatPrice(discountCents))")
       }
       CheckoutCTAButton(
         isLoading: store.isPromoting || store.isValidating,
@@ -367,6 +480,16 @@ struct CartView: View {
   /// mutually exclusive (server-cart presence clears the draft).
   private var subtotalCents: Int {
     store.serverCart?.subtotalCents ?? store.draft.totalCents
+  }
+
+  /// "Discount (SAVE10)" when the applied code is known, plain "Discount"
+  /// otherwise. The discount line only renders when `discountCents > 0`.
+  private var discountLabel: String {
+    if let code = store.serverCart?.promoCode {
+      "Discount (\(code))"
+    } else {
+      "Discount"
+    }
   }
 
   private func formatPrice(_ cents: Int) -> String {

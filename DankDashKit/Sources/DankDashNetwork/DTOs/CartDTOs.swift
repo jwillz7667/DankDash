@@ -65,6 +65,13 @@ public struct CartDTO: Decodable, Sendable, Equatable {
   public let dispensaryId: String
   public let items: [CartItemDTO]
   public let subtotalCents: Int
+  /// Applied promo code, or nil. Decoded with `decodeIfPresent` so an
+  /// older server that omits the field (or sends `null`) stays valid.
+  public let promoCode: String?
+  /// Current discount in integer cents. Defaults to `0` when the field is
+  /// absent so pre-promo servers keep decoding — the server guarantees
+  /// `>= 0`, and `toDomain()` floors it defensively.
+  public let discountCents: Int
   public let expiresAt: String
   public let createdAt: String
   public let updatedAt: String
@@ -75,6 +82,8 @@ public struct CartDTO: Decodable, Sendable, Equatable {
     dispensaryId: String,
     items: [CartItemDTO],
     subtotalCents: Int,
+    promoCode: String? = nil,
+    discountCents: Int = 0,
     expiresAt: String,
     createdAt: String,
     updatedAt: String
@@ -84,9 +93,31 @@ public struct CartDTO: Decodable, Sendable, Equatable {
     self.dispensaryId = dispensaryId
     self.items = items
     self.subtotalCents = subtotalCents
+    self.promoCode = promoCode
+    self.discountCents = discountCents
     self.expiresAt = expiresAt
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case id, userId, dispensaryId, items, subtotalCents
+    case promoCode, discountCents
+    case expiresAt, createdAt, updatedAt
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.id = try container.decode(String.self, forKey: .id)
+    self.userId = try container.decode(String.self, forKey: .userId)
+    self.dispensaryId = try container.decode(String.self, forKey: .dispensaryId)
+    self.items = try container.decode([CartItemDTO].self, forKey: .items)
+    self.subtotalCents = try container.decode(Int.self, forKey: .subtotalCents)
+    self.promoCode = try container.decodeIfPresent(String.self, forKey: .promoCode)
+    self.discountCents = try container.decodeIfPresent(Int.self, forKey: .discountCents) ?? 0
+    self.expiresAt = try container.decode(String.self, forKey: .expiresAt)
+    self.createdAt = try container.decode(String.self, forKey: .createdAt)
+    self.updatedAt = try container.decode(String.self, forKey: .updatedAt)
   }
 }
 
@@ -115,6 +146,8 @@ public extension CartDTO {
       dispensaryId: parsedDispensaryID,
       items: parsedItems,
       subtotalCents: subtotalCents,
+      promoCode: promoCode,
+      discountCents: max(0, discountCents),
       expiresAt: parsedExpires,
       createdAt: parsedCreated,
       updatedAt: parsedUpdated
@@ -153,5 +186,17 @@ public struct PatchCartItemRequestDTO: Encodable, Sendable, Equatable {
 
   public init(quantity: Int) {
     self.quantity = quantity
+  }
+}
+
+/// Body for `POST /v1/carts/:id/promo`. The server validates the code
+/// (active window, dispensary scope, min subtotal, usage caps) and
+/// returns the post-mutation cart with `promoCode` + `discountCents`
+/// populated, or a 422 with a `PROMO_*` envelope on rejection.
+public struct ApplyPromoRequestDTO: Encodable, Sendable, Equatable {
+  public let code: String
+
+  public init(code: String) {
+    self.code = code
   }
 }

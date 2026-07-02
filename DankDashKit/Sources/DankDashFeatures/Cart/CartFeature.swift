@@ -91,6 +91,20 @@ public struct CartFeature: Sendable {
     /// button spinner and guards against a double tap creating two orders.
     public var isPlacingTestOrder: Bool
 
+    /// Promo-code text-field buffer. Cleared once a code applies (the
+    /// applied code then reads off ``serverCart``'s `promoCode`).
+    public var promoCodeInput: String
+
+    /// In-flight flags for the promo apply / remove calls. Each drives its
+    /// button spinner and guards against a double tap.
+    public var isApplyingPromo: Bool
+    public var isRemovingPromo: Bool
+
+    /// Server's user-facing reason a promo apply/remove failed — rendered
+    /// inline beneath the promo field, distinct from the top ``error``
+    /// banner. `nil` when the promo surface is healthy.
+    public var promoError: String?
+
     public init(
       draft: LocalCartDraft = LocalCartDraft(),
       dispensaryId: UUID? = nil,
@@ -107,7 +121,11 @@ public struct CartFeature: Sendable {
       addressPicker: AddressPickerFeature.State? = nil,
       selectedTipCents: Int = TipPolicy.minimumCents,
       paymentBypassEnabled: Bool = false,
-      isPlacingTestOrder: Bool = false
+      isPlacingTestOrder: Bool = false,
+      promoCodeInput: String = "",
+      isApplyingPromo: Bool = false,
+      isRemovingPromo: Bool = false,
+      promoError: String? = nil
     ) {
       self.draft = draft
       self.dispensaryId = dispensaryId
@@ -125,6 +143,10 @@ public struct CartFeature: Sendable {
       self.selectedTipCents = TipPolicy.clamp(selectedTipCents)
       self.paymentBypassEnabled = paymentBypassEnabled
       self.isPlacingTestOrder = isPlacingTestOrder
+      self.promoCodeInput = promoCodeInput
+      self.isApplyingPromo = isApplyingPromo
+      self.isRemovingPromo = isRemovingPromo
+      self.promoError = promoError
     }
 
     /// Convenience selector — the picked address row, if any.
@@ -149,6 +171,19 @@ public struct CartFeature: Sendable {
     /// *payment*, never compliance), and "not already placing".
     public var canPlaceTestOrder: Bool {
       paymentBypassEnabled && canCheckout && !isPlacingTestOrder
+    }
+
+    /// Trimmed promo code the user is about to submit. Empty when the field
+    /// is blank or whitespace-only.
+    public var trimmedPromoCode: String {
+      promoCodeInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Renders the promo Apply button enabled: a server cart must exist
+    /// (the code is scoped to a cartId), the field must be non-empty, and
+    /// no promo call may be in flight.
+    public var canApplyPromo: Bool {
+      serverCart != nil && !trimmedPromoCode.isEmpty && !isApplyingPromo && !isRemovingPromo
     }
   }
 
@@ -188,6 +223,12 @@ public struct CartFeature: Sendable {
 
     case placeTestOrderTapped
     case testOrderResponse(Result<UUID, EquatableError>)
+
+    case promoCodeChanged(String)
+    case applyPromoTapped
+    case applyPromoResponse(Result<Cart, EquatableError>)
+    case removePromoTapped
+    case removePromoResponse(Result<Cart, EquatableError>)
 
     case delegate(Delegate)
 
@@ -438,6 +479,10 @@ public struct CartFeature: Sendable {
         state.serverCart = nil
         state.evaluation = nil
         state.expirySecondsRemaining = nil
+        // The promo was scoped to the now-dead cart; drop its surface so a
+        // stale code/error doesn't linger over a fresh re-add.
+        state.promoCodeInput = ""
+        state.promoError = nil
         state.error = "Your cart expired. Re-add items to continue."
         return .merge(
           .cancel(id: CancelID.sync),
@@ -483,6 +528,68 @@ public struct CartFeature: Sendable {
       case .testOrderResponse(.failure(let error)):
         state.isPlacingTestOrder = false
         state.error = "Couldn't place test order: \(error.message)"
+        return .none
+
+      // MARK: Promo code
+
+      case .promoCodeChanged(let text):
+        state.promoCodeInput = text
+        // Typing again clears the previous rejection so the field reads as
+        // a fresh attempt rather than pinning a stale error.
+        state.promoError = nil
+        return .none
+
+      case .applyPromoTapped:
+        guard let cart = state.serverCart, state.canApplyPromo else { return .none }
+        let code = state.trimmedPromoCode
+        state.isApplyingPromo = true
+        state.promoError = nil
+        return .run { [cartAPIClient] send in
+          do {
+            let updated = try await cartAPIClient.applyPromo(cart.id, code)
+            await send(.applyPromoResponse(.success(updated)))
+          } catch {
+            await send(.applyPromoResponse(.failure(EquatableError(error))))
+          }
+        }
+
+      case .applyPromoResponse(.success(let cart)):
+        state.isApplyingPromo = false
+        state.serverCart = cart
+        state.promoError = nil
+        state.promoCodeInput = ""
+        state.expirySecondsRemaining = secondsUntil(cart.expiresAt)
+        return .none
+
+      case .applyPromoResponse(.failure(let error)):
+        state.isApplyingPromo = false
+        state.promoError = error.message
+        return .none
+
+      case .removePromoTapped:
+        guard let cart = state.serverCart, cart.hasPromo,
+              !state.isApplyingPromo, !state.isRemovingPromo else { return .none }
+        state.isRemovingPromo = true
+        state.promoError = nil
+        return .run { [cartAPIClient] send in
+          do {
+            let updated = try await cartAPIClient.removePromo(cart.id)
+            await send(.removePromoResponse(.success(updated)))
+          } catch {
+            await send(.removePromoResponse(.failure(EquatableError(error))))
+          }
+        }
+
+      case .removePromoResponse(.success(let cart)):
+        state.isRemovingPromo = false
+        state.serverCart = cart
+        state.promoError = nil
+        state.expirySecondsRemaining = secondsUntil(cart.expiresAt)
+        return .none
+
+      case .removePromoResponse(.failure(let error)):
+        state.isRemovingPromo = false
+        state.promoError = error.message
         return .none
 
       case .delegate:
@@ -579,6 +686,11 @@ private extension Cart {
       dispensaryId: dispensaryId,
       items: items,
       subtotalCents: items.reduce(0) { $0 + $1.lineSubtotalCents },
+      // Optimistic edit: carry the applied promo forward. The server
+      // re-computes the discount (and may drop it below a min subtotal) on
+      // the next sync, which replaces the cart wholesale.
+      promoCode: promoCode,
+      discountCents: discountCents,
       expiresAt: expiresAt,
       createdAt: createdAt,
       updatedAt: updatedAt
