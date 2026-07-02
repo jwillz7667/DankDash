@@ -67,6 +67,7 @@ import { NullNotificationProvider } from './null-notification.provider.js';
 import { OrderNotificationsListener } from './order-notifications.listener.js';
 import { PushTokensController } from './push-tokens.controller.js';
 import { PushTokensService } from './push-tokens.service.js';
+import { RefundNotificationsListener } from './refund-notifications.listener.js';
 import { VendorOrderNotificationsListener } from './vendor-order-notifications.listener.js';
 
 const PUSH_PROVIDER = Symbol.for('NOTIFICATIONS_PUSH_PROVIDER');
@@ -273,6 +274,13 @@ const orderListenerProvider: FactoryProvider<OrderNotificationsListener> = {
     new OrderNotificationsListener({ dispatcher, orders, dispensaries, drivers, users }),
 };
 
+const refundListenerProvider: FactoryProvider<RefundNotificationsListener> = {
+  provide: RefundNotificationsListener,
+  inject: [NotificationDispatcher],
+  useFactory: (dispatcher: NotificationDispatcher): RefundNotificationsListener =>
+    new RefundNotificationsListener({ dispatcher }),
+};
+
 const vendorOrderListenerProvider: FactoryProvider<VendorOrderNotificationsListener> = {
   provide: VendorOrderNotificationsListener,
   inject: [NotificationDispatcher, DispensariesRepository, DispensaryStaffRepository],
@@ -301,6 +309,7 @@ const providers: Provider[] = [
   emailProviderFactory,
   dispatcherProvider,
   orderListenerProvider,
+  refundListenerProvider,
   vendorOrderListenerProvider,
 ];
 
