@@ -383,6 +383,28 @@ export class PayoutsRepository extends BaseRepository {
       .limit(limit);
   }
 
+  /**
+   * Payouts stuck in `processing` since before `initiatedBefore` — the
+   * settlement-reconciliation cron's work list. A row lands in
+   * `processing` the moment dispatch stamps `initiated_at` + the upstream
+   * `aeropay_payout_ref`, so the `initiated_at` predicate both bounds the
+   * age and (by construction) selects only rows that carry a ref to poll
+   * Aeropay with. Ordered oldest-first so the longest-stranded payouts
+   * are reconciled first under the batch limit.
+   *
+   * Served by `payouts_status_idx` on `(status, scheduled_for)` for the
+   * status filter; the `initiated_at` comparison is a cheap residual on
+   * the small `processing` slice.
+   */
+  async listStuckProcessing(initiatedBefore: Date, limit = 200): Promise<readonly Payout[]> {
+    return this.db
+      .select()
+      .from(payouts)
+      .where(and(eq(payouts.status, 'processing'), lt(payouts.initiatedAt, initiatedBefore)))
+      .orderBy(payouts.initiatedAt)
+      .limit(limit);
+  }
+
   async create(input: Omit<NewPayout, 'id'> & { readonly id?: string }): Promise<Payout> {
     const [row] = await this.db
       .insert(payouts)
