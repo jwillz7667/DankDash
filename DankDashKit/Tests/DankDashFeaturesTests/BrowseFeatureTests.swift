@@ -516,6 +516,66 @@ final class BrowseFeatureTests: XCTestCase {
     XCTAssertEqual(store.state.checkoutHandoff?.deliveryAddressId, addressId)
   }
 
+  // MARK: - cart → KYC gating
+
+  func test_cartKycVerificationRequestedDelegate_mountsKYCSheet() async {
+    let store = TestStore(initialState: BrowseFeature.State()) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.cart(.delegate(.kycVerificationRequested)))
+    XCTAssertNotNil(store.state.kyc, "an unverified checkout attempt presents the KYC flow")
+    XCTAssertNil(store.state.checkoutHandoff, "the Safari checkout hand-off is not reachable while unverified")
+  }
+
+  func test_kycVerifiedDelegate_dismissesSheet_andReValidatesCart() async {
+    let store = TestStore(
+      initialState: BrowseFeature.State(kyc: KYCFeature.State(phase: .approved))
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.kyc(.delegate(.verified)))
+    XCTAssertNil(store.state.kyc, "verification dismisses the sheet")
+    // The `.cart(.validateRequested)` re-run is fired so the server `kyc`
+    // rule clears and the checkout CTA unblocks.
+    await store.receive(\.cart.validateFired)
+  }
+
+  func test_kycDismissedDelegate_unmountsSheet() async {
+    let store = TestStore(
+      initialState: BrowseFeature.State(kyc: KYCFeature.State())
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.kyc(.delegate(.dismissed)))
+    XCTAssertNil(store.state.kyc)
+  }
+
+  func test_kycDismissedAction_unmountsSheet() async {
+    let store = TestStore(
+      initialState: BrowseFeature.State(kyc: KYCFeature.State())
+    ) {
+      BrowseFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+
+    await store.send(.kycDismissed) {
+      $0.kyc = nil
+    }
+  }
+
   func test_checkoutHandoffDelegateCompleted_jumpsToOrdersAndPushesDetail() async {
     let cartId = UUID()
     let addressId = UUID()

@@ -144,6 +144,18 @@ struct BrowseRootView: View {
         CheckoutSafariView(store: handoffStore)
       }
     }
+    .sheet(
+      isPresented: Binding(
+        get: { store.kyc != nil },
+        set: { isPresented in
+          if !isPresented { store.send(.kycDismissed) }
+        }
+      )
+    ) {
+      if let kycStore = store.scope(state: \.kyc, action: \.kyc) {
+        KYCView(store: kycStore)
+      }
+    }
   }
 
   /// Badge for the Cart tab — counts unpromoted draft lines plus any

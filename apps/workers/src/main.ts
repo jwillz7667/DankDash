@@ -152,6 +152,24 @@ async function main(): Promise<void> {
     { webhookEvents, logger },
     { cronMetrics },
   );
+  // Shared realtime publish connection (XADD to dankdash:realtime). Kept
+  // off the location-ingest connection because ioredis serialises commands
+  // per connection and the ingest connection spends most of its time
+  // BLOCKed on XREADGROUP. Reused by the dispatch offer push and the ETA
+  // observer below. `family: 0` is required for Railway private networking
+  // — see apps/api/src/infrastructure/redis.module.ts.
+  const realtimePublishRedis = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    family: 0,
+  });
+  realtimePublishRedis.on('error', (err: Error) => {
+    logger.error(
+      { event: 'workers.redis_error', connection: 'realtime-publish', err: err.message },
+      'workers: redis client error',
+    );
+  });
+
   const dispatchTask = scheduleDispatchJob({
     orders,
     drivers,
@@ -164,6 +182,10 @@ async function main(): Promise<void> {
     scoringParams: {
       ...DEFAULT_SCORING_PARAMS,
       maxRadiusMeters: env.DISPATCH_RADIUS_MILES * 1609.344,
+    },
+    offerPublisher: {
+      publish: (input) => publishRealtimeEvent(realtimePublishRedis, input),
+      idGen: uuidv7,
     },
   });
   const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
@@ -231,36 +253,25 @@ async function main(): Promise<void> {
       })
     : null;
 
-  // Two extra Redis connections for the ETA path:
-  //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
-  //   - etaPublishRedis: XADD to dankdash:realtime.
-  // We deliberately keep these off the location-ingest connection because
-  // ioredis serialises commands per connection and the ingest connection
-  // spends most of its time BLOCKed on XREADGROUP; any XADD/GET queued
-  // behind it would wait up to `blockMs` for no reason.
+  // Dedicated Redis connection for the ETA cache (GET/SETEX on the
+  // eta:v1:* keyspace, sub-second timeouts). Kept off the location-ingest
+  // connection because ioredis serialises commands per connection and the
+  // ingest connection spends most of its time BLOCKed on XREADGROUP; any
+  // GET queued behind it would wait up to `blockMs` for no reason.
   // `family: 0` is required for Railway private networking — see the
-  // commentary on apps/api/src/infrastructure/redis.module.ts.
+  // commentary on apps/api/src/infrastructure/redis.module.ts. The XADD
+  // publish path reuses `realtimePublishRedis` created above.
   const etaCacheRedis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     family: 0,
   });
-  const etaPublishRedis = new Redis(env.REDIS_URL, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: true,
-    family: 0,
+  etaCacheRedis.on('error', (err: Error) => {
+    logger.error(
+      { event: 'workers.redis_error', connection: 'eta-cache', err: err.message },
+      'workers: redis client error',
+    );
   });
-  for (const [name, client] of [
-    ['eta-cache', etaCacheRedis],
-    ['eta-publish', etaPublishRedis],
-  ] as const) {
-    client.on('error', (err: Error) => {
-      logger.error(
-        { event: 'workers.redis_error', connection: name, err: err.message },
-        'workers: redis client error',
-      );
-    });
-  }
   const mapbox = new MapboxClient({ accessToken: env.MAPBOX_ACCESS_TOKEN });
   const etaService = new EtaService({ redis: etaCacheRedis, mapbox, logger });
 
@@ -268,7 +279,7 @@ async function main(): Promise<void> {
   const etaObserver = createEtaObserver({
     orders,
     eta: etaService,
-    publish: (input) => publishRealtimeEvent(etaPublishRedis, input),
+    publish: (input) => publishRealtimeEvent(realtimePublishRedis, input),
     logger,
     idGen: uuidv7,
   });
@@ -317,7 +328,7 @@ async function main(): Promise<void> {
     metrcReconciliationTask?.stop();
     await locationIngest.stop();
     etaCacheRedis.disconnect();
-    etaPublishRedis.disconnect();
+    realtimePublishRedis.disconnect();
     // Close the HTTP listener before flushing OTel so the final scrape
     // (if any) sees the same counters the trace exporter is about to
     // ship; then flush spans before closing the pool so any in-flight

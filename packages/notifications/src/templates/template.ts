@@ -22,6 +22,10 @@ export interface TemplatePayloads {
     readonly orderId: string;
     readonly dispensaryName: string;
   };
+  'order.driver_assigned': {
+    readonly orderId: string;
+    readonly driverFirstName: string;
+  };
   'order.picked_up': {
     readonly orderId: string;
     readonly driverFirstName: string;
@@ -38,6 +42,15 @@ export interface TemplatePayloads {
   'order.completed': {
     readonly orderId: string;
     readonly totalCents: number;
+  };
+  'order.canceled': {
+    readonly orderId: string;
+    readonly reason: string;
+  };
+  'order.rejected': {
+    readonly orderId: string;
+    readonly dispensaryName: string;
+    readonly reason: string;
   };
   'payment.failed': {
     readonly orderId: string;
@@ -71,6 +84,12 @@ export interface TemplatePayloads {
     readonly reason: string;
   };
   // Vendor portal.
+  'vendor.new_order': {
+    readonly orderId: string;
+    readonly shortCode: string;
+    readonly dispensaryName: string;
+    readonly totalCents: number;
+  };
   'vendor.payout.completed': {
     readonly payoutId: string;
     readonly amountCents: number;

@@ -80,6 +80,13 @@ struct AppEnvironment {
     dependencies.driverCashoutAPIClient = .live(apiClient: apiClient)
     dependencies.hapticsClient = .live
 
+    // Veriff iOS SDK binding for the mandatory handoff ID scan. The
+    // DankDashKit package ships a placeholder `.live` (the SDK is an
+    // iOS-only binary that can't link on the macOS test host); the app
+    // target owns the real launch closure. See
+    // `VeriffIdentityVerificationClient.swift`.
+    dependencies.identityVerificationClient = .veriff
+
     // Local persistence — driver session lives in a per-target
     // UserDefaults suite; document drafts + application draft live in
     // the per-target Application Support directory.

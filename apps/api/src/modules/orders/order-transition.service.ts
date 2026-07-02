@@ -299,6 +299,7 @@ export class OrderTransitionService {
       event: req.event,
       actor: req.actor,
       occurredAt: new Date(),
+      ...(req.reason !== undefined ? { reason: req.reason } : {}),
     });
     return { result, deferredEvent };
   }

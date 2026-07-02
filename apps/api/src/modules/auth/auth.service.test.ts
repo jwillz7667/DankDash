@@ -23,9 +23,11 @@ import {
   type UsersRepository,
 } from '@dankdash/db';
 import { AuthError, type ConflictError } from '@dankdash/types';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import speakeasy from 'speakeasy';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { AuthService } from './auth.service.js';
+import { USER_REGISTERED_EVENT, type UserRegisteredEvent } from './user-registered.events.js';
 import { JwtService } from './jwt/jwt.service.js';
 import { RefreshTokenService } from './jwt/refresh-token.service.js';
 import { MfaService } from './mfa/mfa.service.js';
@@ -210,6 +212,7 @@ interface TestRig {
   readonly jwt: JwtService;
   readonly mfa: MfaService;
   readonly encryption: EncryptionService;
+  readonly events: EventEmitter2;
 }
 
 function makeRig(): TestRig {
@@ -235,15 +238,17 @@ function makeRig(): TestRig {
   const mfa = new MfaService(users as unknown as UsersRepository, encryption, {
     clock: (): Date => FIXED_NOW,
   });
+  const events = new EventEmitter2();
   const service = new AuthService(
     users as unknown as UsersRepository,
     password,
     jwt,
     refresh,
     mfa,
+    events,
     { accessTtlSeconds: ACCESS_TTL_SECONDS, clock: (): Date => FIXED_NOW },
   );
-  return { service, users, sessions, password, jwt, mfa, encryption };
+  return { service, users, sessions, password, jwt, mfa, encryption, events };
 }
 
 function totpAt(secretBase32: string, time = FIXED_TIME_SECONDS): string {
@@ -285,6 +290,23 @@ describe('AuthService.register', () => {
     const session = Array.from(sessions.rows.values())[0];
     expect(session?.userId).toBe(result.user.id);
     expect(session?.familyId).toBe(session?.id); // root of family
+  });
+
+  it('emits USER_REGISTERED_EVENT with the new user id and first name', async () => {
+    const { service, events } = makeRig();
+    const emitted: UserRegisteredEvent[] = [];
+    events.on(USER_REGISTERED_EVENT, (e: UserRegisteredEvent) => emitted.push(e));
+
+    const result = await service.register({
+      email: 'welcome@example.com',
+      password: 'sufficient-length-1',
+      dateOfBirth: '1990-05-01',
+      firstName: 'Wanda',
+      lastName: 'Welcome',
+    });
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ userId: result.user.id, firstName: 'Wanda' });
   });
 
   it('translates a unique-constraint violation into an enumeration-safe ConflictError', async () => {

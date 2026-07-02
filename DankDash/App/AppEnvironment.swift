@@ -85,6 +85,7 @@ struct AppEnvironment {
     )
     dependencies.notificationPreferencesAPIClient = .live(apiClient: apiClient)
     dependencies.handoffAPIClient = .live(apiClient: apiClient)
+    dependencies.kycAPIClient = .live(apiClient: apiClient)
     // `validAccessToken()` (not a raw Keychain read): the Socket.io
     // handshake replays whatever token it was handed, with no 401-retry
     // layer, so a JWT past its 15-min TTL must be refreshed *before*

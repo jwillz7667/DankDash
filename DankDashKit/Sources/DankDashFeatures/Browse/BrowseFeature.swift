@@ -38,6 +38,11 @@ public struct BrowseFeature: Sendable {
     public var productDetail: ProductDetailFeature.State?
     public var orderDetail: OrderDetailFeature.State?
     public var checkoutHandoff: CheckoutHandoffFeature.State?
+    /// Sheet-mounted identity-verification flow. Presented when the cart
+    /// signals ``CartFeature/Action/Delegate/kycVerificationRequested``
+    /// (the server compliance evaluation blocked checkout on the `kyc`
+    /// rule); dismissed on a `verified`/`dismissed` delegate.
+    public var kyc: KYCFeature.State?
     /// Renders the "Item added to cart" toast after a successful
     /// addToCart. Set when the cart accepts a line; the view
     /// auto-dismisses after a few seconds via `toastDismissed`.
@@ -63,6 +68,7 @@ public struct BrowseFeature: Sendable {
       productDetail: ProductDetailFeature.State? = nil,
       orderDetail: OrderDetailFeature.State? = nil,
       checkoutHandoff: CheckoutHandoffFeature.State? = nil,
+      kyc: KYCFeature.State? = nil,
       addedToCartToast: String? = nil,
       isResolvingProduct: Bool = false,
       productResolveError: String? = nil
@@ -77,6 +83,7 @@ public struct BrowseFeature: Sendable {
       self.productDetail = productDetail
       self.orderDetail = orderDetail
       self.checkoutHandoff = checkoutHandoff
+      self.kyc = kyc
       self.addedToCartToast = addedToCartToast
       self.isResolvingProduct = isResolvingProduct
       self.productResolveError = productResolveError
@@ -89,6 +96,7 @@ public struct BrowseFeature: Sendable {
     case productDetailDismissed
     case orderDetailDismissed
     case checkoutHandoffDismissed
+    case kycDismissed
     case toastDismissed
 
     /// Result of resolving a product's listings after it was opened from
@@ -119,6 +127,7 @@ public struct BrowseFeature: Sendable {
     case productDetail(ProductDetailFeature.Action)
     case orderDetail(OrderDetailFeature.Action)
     case checkoutHandoff(CheckoutHandoffFeature.Action)
+    case kyc(KYCFeature.Action)
     case delegate(Delegate)
 
     /// Surface for concerns the browse subtree can't own itself. Sign-out
@@ -195,6 +204,10 @@ public struct BrowseFeature: Sendable {
 
       case .checkoutHandoffDismissed:
         state.checkoutHandoff = nil
+        return .none
+
+      case .kycDismissed:
+        state.kyc = nil
         return .none
 
       case .toastDismissed:
@@ -376,7 +389,30 @@ public struct BrowseFeature: Sendable {
         state.orderDetail = OrderDetailFeature.State(orderId: orderId)
         return .none
 
+      case .cart(.delegate(.kycVerificationRequested)):
+        // Checkout is blocked on the server's `kyc` compliance rule.
+        // Present the verification flow; on success we re-validate the
+        // cart so the rule clears and the checkout CTA enables.
+        state.kyc = KYCFeature.State()
+        return .none
+
       case .cart:
+        return .none
+
+      // MARK: KYC → cart re-validation
+
+      case .kyc(.delegate(.verified)):
+        // The user is verified server-side. Drop the sheet and re-run the
+        // cart compliance check — the `kyc` rule now passes, so
+        // `canCheckout` flips true and the standard checkout CTA enables.
+        state.kyc = nil
+        return .send(.cart(.validateRequested))
+
+      case .kyc(.delegate(.dismissed)):
+        state.kyc = nil
+        return .none
+
+      case .kyc:
         return .none
 
       // MARK: Checkout hand-off → Order tracking
@@ -487,6 +523,9 @@ public struct BrowseFeature: Sendable {
     }
     .ifLet(\.checkoutHandoff, action: \.checkoutHandoff) {
       CheckoutHandoffFeature()
+    }
+    .ifLet(\.kyc, action: \.kyc) {
+      KYCFeature()
     }
   }
 

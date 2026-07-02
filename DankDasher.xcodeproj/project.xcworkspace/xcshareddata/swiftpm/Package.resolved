@@ -1,5 +1,5 @@
 {
-  "originHash" : "3df6fd0fdbf4c2710834c623ab6f7887f4fab6a9554ee72acb17417190ec7d08",
+  "originHash" : "a8601e9c42aac70dbf81831becdf414804a70a2e0dee0b0e09a7c0f5b62d31bc",
   "pins" : [
     {
       "identity" : "combine-schedulers",
@@ -134,6 +134,15 @@
       "state" : {
         "revision" : "9de99a78f099e59caf2b2beec65a4c45d54b2081",
         "version" : "603.0.1"
+      }
+    },
+    {
+      "identity" : "veriff-ios-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Veriff/veriff-ios-spm",
+      "state" : {
+        "revision" : "0dd023481f96e60094e6dbc0ae059a393461a732",
+        "version" : "10.4.0"
       }
     },
     {

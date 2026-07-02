@@ -150,6 +150,19 @@ public struct CartFeature: Sendable {
     public var canPlaceTestOrder: Bool {
       paymentBypassEnabled && canCheckout && !isPlacingTestOrder
     }
+
+    /// `true` when the server's compliance evaluation blocked the cart
+    /// specifically on the `kyc` rule — the signed-in user has no
+    /// Persona-verified identity on file. This is the server-authoritative
+    /// signal (the `kyc` rule mirrors `users.kyc_verified_at`), so it is
+    /// reliable across cold-launch sessions where the client hasn't cached
+    /// the user's verification flag. The cart surfaces a "Verify your ID"
+    /// CTA that launches the KYC flow; once verified, re-validation clears
+    /// the rule and the standard checkout CTA enables.
+    public var needsKYCVerification: Bool {
+      guard let evaluation, !evaluation.passed else { return false }
+      return evaluation.result(for: .kyc)?.passed == false
+    }
   }
 
   public enum Action: Sendable {
@@ -182,6 +195,12 @@ public struct CartFeature: Sendable {
 
     case checkoutTapped
 
+    /// User tapped the "Verify your ID" CTA shown when the compliance
+    /// evaluation is blocked on the `kyc` rule. Routes up so the parent
+    /// (``BrowseFeature``) can present the KYC flow — the cart itself
+    /// owns no navigation.
+    case verifyIdentityTapped
+
     /// User picked a tip — either a suggested chip or a committed custom
     /// amount. The reducer clamps to ``TipPolicy``'s range.
     case tipSelected(Int)
@@ -198,6 +217,10 @@ public struct CartFeature: Sendable {
       /// The parent routes to order tracking, same as a completed
       /// Safari hand-off.
       case testOrderPlaced(orderId: UUID)
+      /// The user needs to complete identity verification before they
+      /// can check out. The parent presents ``KYCFeature`` and, on
+      /// success, re-validates the cart.
+      case kycVerificationRequested
     }
   }
 
@@ -451,6 +474,12 @@ public struct CartFeature: Sendable {
               let cart = state.serverCart,
               let addressId = state.selectedAddressId else { return .none }
         return .send(.delegate(.checkoutRequested(cartId: cart.id, deliveryAddressId: addressId)))
+
+      case .verifyIdentityTapped:
+        // Only meaningful when the evaluation actually flagged KYC —
+        // guards against a stale tap after re-validation cleared it.
+        guard state.needsKYCVerification else { return .none }
+        return .send(.delegate(.kycVerificationRequested))
 
       case .tipSelected(let cents):
         state.selectedTipCents = TipPolicy.clamp(cents)
