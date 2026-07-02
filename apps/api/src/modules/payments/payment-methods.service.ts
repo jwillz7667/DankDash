@@ -262,10 +262,16 @@ export class PaymentMethodsService {
    *                                 order stays in `placed` — explicit
    *                                 order cancellation is a separate
    *                                 flow with its own auditing.
-   *   - `payment.refunded`       → noop here. Phase 6.5 handles refunds on
-   *                                 its dedicated admin-gated controller. The
-   *                                 204 the controller still returns drains
-   *                                 Aeropay's retry queue.
+   *   - `payment.refunded`       → confirm the distribution ledger has been
+   *                                 reversed for the refunded amount. Refunds
+   *                                 driven through RefundsService already wrote
+   *                                 the reverse legs at approval time, so this
+   *                                 is a no-op for them; it only writes
+   *                                 compensating legs for an *unreversed*
+   *                                 remainder — an externally-originated
+   *                                 refund / chargeback that never crossed
+   *                                 RefundsService. Idempotent (see
+   *                                 `handlePaymentRefunded`).
    *   - `ignored` / unknown      → noop.
    *
    * Idempotency: re-receiving the same event after the row is already in
@@ -344,8 +350,11 @@ export class PaymentMethodsService {
       await this.handlePaymentCanceled(outcome.objectId, outcome.occurredAt);
       return;
     }
-    // payment.refunded and `ignored` land here as a noop. Refunds get their
-    // own admin-gated controller in Phase 6.5. Returning silently lets the
+    if (outcome.type === 'payment.refunded') {
+      await this.handlePaymentRefunded(outcome.objectId, outcome.occurredAt);
+      return;
+    }
+    // `ignored` / unknown land here as a noop. Returning silently lets the
     // controller 204 so Aeropay drains its retry queue.
   }
 
@@ -555,6 +564,110 @@ export class PaymentMethodsService {
     // does the order-side transition with the right actor recorded.
   }
 
+  /**
+   * Reconcile the distribution ledger when Aeropay confirms a payment was
+   * refunded.
+   *
+   * The refund state machine spans two writers:
+   *
+   *   - **RefundsService** (vendor-initiate / admin-approve) issues the
+   *     Aeropay reverse-ACH and writes the reverse ledger legs (DR
+   *     `refund_reserve` @ dispensaryId / CR `customer` @ userId) *at
+   *     approval time*, then flips the payment_transactions row to
+   *     `refunded` / `partially_refunded`. For those refunds the ledger is
+   *     already correct before this webhook ever fires — this handler
+   *     confirms and no-ops.
+   *
+   *   - **This handler** is the safety net for a refund that never crossed
+   *     RefundsService: an Aeropay-console refund or a chargeback. Nothing
+   *     else would ever reverse the dispensary's share, so the payout job
+   *     would over-pay them. We reverse the *unreversed remainder* here.
+   *
+   * "Unreversed remainder" is derived from the ledger, not the refunds
+   * table, so it also accounts for reversals this handler itself wrote:
+   *   remainder = payment_amount − Σ(refund_reserve debits already on the
+   *   order). We write compensating legs for the remainder using the same
+   *   two-leg shape RefundsService uses (kept consistent so the payout
+   *   aggregator's `refund_reserve` drawdown math is uniform), and advance
+   *   the payment row to `refunded`.
+   *
+   * Idempotency: once the row reaches `refunded` a replay short-circuits at
+   * the top guard; combined with the controller's `webhook_events_processed`
+   * dedup, re-delivery never double-reverses. `payment.refunded` denotes a
+   * *fully* refunded payment (Aeropay reports partial refunds via a
+   * different, ignored event), so the remainder always targets the full
+   * charge.
+   */
+  private async handlePaymentRefunded(aeropayPaymentId: string, occurredAt: Date): Promise<void> {
+    const tx = await this.findPaymentTransaction(aeropayPaymentId);
+    if (tx === null) {
+      this.logger.warn(
+        `payment.refunded for unknown aeropay payment ${aeropayPaymentId} — ignoring`,
+      );
+      return;
+    }
+    // Already terminal — RefundsService fully reversed it, or a prior
+    // delivery of this event already reconciled the remainder.
+    if (tx.status === 'refunded') return;
+    // A refund on a payment that never settled is nonsensical (an
+    // unsettled charge is canceled, not refunded). Log and drop rather
+    // than distribute against a charge that never moved money.
+    if (tx.status !== 'settled' && tx.status !== 'partially_refunded') {
+      this.logger.warn(
+        `payment.refunded for payment_tx ${tx.id} in status '${tx.status}' — ignoring`,
+      );
+      return;
+    }
+
+    const order = await this.orders.findById(tx.orderId);
+    if (order === null) {
+      // FK from payment_transactions.order_id makes this impossible under a
+      // healthy DB; fail loudly rather than silently skip a money movement.
+      throw new RepositoryError(
+        `handlePaymentRefunded: order ${tx.orderId} missing for payment_transactions ${tx.id}`,
+      );
+    }
+
+    // Read prior reversals off the ledger (covers both RefundsService and
+    // any earlier run of this handler). Uses the base db handle via the
+    // same factory the tx-scoped writes use — no extra injected repo.
+    const ledgerRead = this.settlementReposFor(this.db).ledgerEntries;
+    const priorEntries = await ledgerRead.listForOrder(order.id);
+    const alreadyReversedCents = priorEntries
+      .filter((entry) => entry.accountType === 'refund_reserve')
+      .reduce((sum, entry) => sum + entry.debitCents, 0);
+
+    const remainderCents = tx.amountCents - alreadyReversedCents;
+    if (remainderCents <= 0) {
+      // Ledger already reflects the full charge as reversed (e.g. internal
+      // partial refunds summed to the total). Just advance the row to its
+      // terminal state so a replay short-circuits and the vendor surface
+      // stops showing a refundable balance.
+      await this.paymentTransactions.updateStatus(tx.id, 'refunded');
+      return;
+    }
+
+    const entries = buildWebhookRefundReversalEntries(order, remainderCents, occurredAt);
+    // One transaction so the status flip and the reverse legs commit
+    // together — the top-of-method guards prevent a partial state on
+    // Aeropay's retry.
+    await this.db.transaction(async (txDb) => {
+      const scoped = this.settlementReposFor(txDb);
+      const updated = await scoped.paymentTransactions.updateStatus(tx.id, 'refunded');
+      if (updated === null) {
+        throw new RepositoryError(
+          `handlePaymentRefunded: payment_transactions ${tx.id} vanished mid-reversal`,
+        );
+      }
+      await scoped.ledgerEntries.recordTransaction(entries);
+    });
+    this.logger.warn(
+      `payment.refunded reconciled an unreversed ${String(remainderCents)}¢ on order ` +
+        `${order.id} (payment_tx ${tx.id}) — no local refund covered it; treated as an ` +
+        `external/chargeback refund and reversed against refund_reserve`,
+    );
+  }
+
   private async findPaymentTransaction(
     aeropayPaymentId: string,
   ): Promise<PaymentTransaction | null> {
@@ -659,6 +772,45 @@ function extractFailureDetails(raw: Readonly<Record<string, unknown>>): {
  * the zero-valued component.
  */
 type SettlementLedgerEntry = Omit<NewLedgerEntry, 'id'> & { readonly id?: string };
+
+/**
+ * Two-leg reverse-ledger entries the `payment.refunded` webhook writes for
+ * the portion of a refund that no local `refunds` row reversed — i.e. an
+ * externally-originated refund or chargeback.
+ *
+ * The shape mirrors RefundsService's `buildRefundLedgerEntries` (DR
+ * `refund_reserve` @ dispensaryId / CR `customer` @ userId) so the payout
+ * job's per-dispensary `refund_reserve` drawdown nets these the same way it
+ * nets internal refunds. `refundId` is intentionally null — there is no
+ * `refunds` row for a chargeback — but `orderId` still ties every leg back
+ * to the originating order for audit.
+ */
+function buildWebhookRefundReversalEntries(
+  order: Order,
+  amountCents: number,
+  occurredAt: Date,
+): readonly SettlementLedgerEntry[] {
+  return [
+    {
+      orderId: order.id,
+      accountType: 'refund_reserve',
+      accountRef: order.dispensaryId,
+      debitCents: amountCents,
+      creditCents: 0,
+      description: `Order ${order.shortCode} refund (external reconciliation, reserve)`,
+      occurredAt,
+    },
+    {
+      orderId: order.id,
+      accountType: 'customer',
+      accountRef: order.userId,
+      debitCents: 0,
+      creditCents: amountCents,
+      description: `Order ${order.shortCode} refund (external reconciliation, customer)`,
+      occurredAt,
+    },
+  ];
+}
 
 function buildSettlementEntries(order: Order, occurredAt: Date): readonly SettlementLedgerEntry[] {
   const subtotal = order.subtotalCents;
