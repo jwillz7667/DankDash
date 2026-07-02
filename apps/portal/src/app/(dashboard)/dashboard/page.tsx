@@ -1,228 +1,187 @@
-import {
-  ArrowUpRight,
-  CheckCircle2,
-  Clock,
-  DollarSign,
-  Leaf,
-  PackageCheck,
-  ShieldCheck,
-  TrendingUp,
-} from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { type Metadata } from 'next';
 import { type ReactNode } from 'react';
-import { Badge } from '../../../components/ui/badge.js';
+import { DashboardKpis } from '../../../components/dashboard/dashboard-kpis.js';
+import { PayoutSnapshotCard } from '../../../components/dashboard/payout-snapshot-card.js';
+import { RecentOrdersCard } from '../../../components/dashboard/recent-orders-card.js';
+import { StoreStatusCard } from '../../../components/dashboard/store-status-card.js';
+import { Card, CardBody } from '../../../components/ui/card.js';
+import { buildServerApiClient } from '../../../lib/api/server-client.js';
+import { getVendorSalesAnalytics, type SalesAnalytics } from '../../../lib/api/vendor-analytics.js';
+import { listVendorQueue, type ListVendorQueueResult } from '../../../lib/api/vendor-orders.js';
+import { listVendorPayouts } from '../../../lib/api/vendor-payouts.js';
+import { getVendorSettings } from '../../../lib/api/vendor-settings.js';
 import {
-  Card,
-  CardBody,
-  CardHeader,
-  CardSubtitle,
-  CardTitle,
-} from '../../../components/ui/card.js';
-import { StatCard } from '../../../components/ui/stat-card.js';
+  canViewStoreFinancials,
+  greetingFor,
+  resolveTodayWindow,
+  selectPayoutSnapshot,
+  selectRecentActivity,
+  STORE_TIMEZONE,
+  summarizeActiveOrders,
+} from '../../../lib/dashboard/dashboard.js';
 
 export const metadata: Metadata = {
   title: 'Dashboard — DankDash for Business',
 };
 
 /**
- * Dashboard preview. The KPIs and order rail wire up to live data in
- * Phase 17; the numbers below are presentational so the visual
- * system can be reviewed against real proportions, copy lengths and
- * hierarchy. No "lorem ipsum"-style content — every value reads like
- * something a dispensary owner would actually see.
+ * Vendor dashboard landing page. Server-renders live data from the
+ * endpoints the operator already relies on elsewhere in the portal:
+ *
+ *   - KPIs + recent activity     — sales analytics (today) + order queue
+ *                                  (available to every vendor role).
+ *   - Store status + payouts     — settings + payouts, manager+ only;
+ *                                  fetched best-effort so a hiccup on
+ *                                  either degrades its own card without
+ *                                  blanking the page.
+ *
+ * `force-dynamic` because every response is scoped to the caller's
+ * `X-Dispensary-Id` and must never serve a cross-vendor cache hit.
  */
-export default function DashboardPage(): ReactNode {
+export const dynamic = 'force-dynamic';
+
+const RECENT_ACTIVITY_LIMIT = 6;
+
+export default async function DashboardPage(): Promise<ReactNode> {
+  const ctx = await buildServerApiClient();
+  if (ctx?.dispensary == null) {
+    return <NoDispensaryContext />;
+  }
+
+  const now = new Date();
+
+  let sales: SalesAnalytics;
+  let queue: ListVendorQueueResult;
+  try {
+    [sales, queue] = await Promise.all([
+      getVendorSalesAnalytics(ctx.client, resolveTodayWindow(now)),
+      listVendorQueue(ctx.client),
+    ]);
+  } catch (error) {
+    return <DashboardFetchError storeName={ctx.dispensary.name} error={error} />;
+  }
+
+  const active = summarizeActiveOrders(queue.orders);
+  const recent = selectRecentActivity(queue.orders, RECENT_ACTIVITY_LIMIT);
+  const showFinancials = canViewStoreFinancials(ctx.user.role);
+
+  const [settingsResult, payoutsResult] = showFinancials
+    ? await Promise.allSettled([getVendorSettings(ctx.client), listVendorPayouts(ctx.client)])
+    : [null, null];
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="space-y-1.5">
-          <p className="text-2xs font-semibold uppercase tracking-wider text-moss-600">Today</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-            Good morning, North Loop
-          </h1>
-          <p className="text-sm text-muted">
-            Live metrics will update in real-time once the analytics service ships in Phase 17.
-          </p>
-        </div>
-        <Badge tone="accent" icon={<ShieldCheck className="h-3 w-3" />}>
-          Compliance checks passing
-        </Badge>
+      <header className="flex flex-col gap-1.5">
+        <p className="text-2xs font-semibold uppercase tracking-wider text-moss-600">
+          {formatTodayLabel(now)}
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+          {greetingFor(now)}, {ctx.dispensary.name}
+        </h1>
+        <p className="text-sm text-muted">
+          Today's numbers, your live queue, and what's next — all from the same server-authoritative
+          data the rest of the portal runs on.
+        </p>
       </header>
 
-      <section
-        aria-label="Key performance indicators"
-        className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
-      >
-        <StatCard
-          label="Revenue"
-          value="$12,486"
-          delta="+8.2% vs yesterday"
-          trend="up"
-          icon={<DollarSign className="h-4 w-4" />}
-          highlight
-        />
-        <StatCard
-          label="Orders in flight"
-          value="14"
-          suffix="of 47 today"
-          icon={<PackageCheck className="h-4 w-4" />}
-        />
-        <StatCard
-          label="Avg basket"
-          value="$73.40"
-          delta="+$2.18 vs last week"
-          trend="up"
-          icon={<TrendingUp className="h-4 w-4" />}
-        />
-        <StatCard
-          label="ID-scan pass rate"
-          value="99.4%"
-          delta="—"
-          trend="flat"
-          icon={<ShieldCheck className="h-4 w-4" />}
-        />
-      </section>
+      <DashboardKpis sales={sales} active={active} />
 
-      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <div className="space-y-0.5">
-              <CardTitle>Recent activity</CardTitle>
-              <CardSubtitle>Last 12 minutes — live in Phase 17.</CardSubtitle>
-            </div>
-            <Badge tone="info" icon={<Clock className="h-3 w-3" />}>
-              Preview
-            </Badge>
-          </CardHeader>
-          <ul className="divide-y divide-outline-subtle">
-            {ACTIVITY.map((row) => (
-              <li key={row.id} className="flex items-start gap-4 px-6 py-4">
-                <span
-                  aria-hidden="true"
-                  className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-lg bg-moss-50 text-moss-700"
-                >
-                  <row.icon className="h-4 w-4" />
-                </span>
-                <div className="flex-1 space-y-0.5">
-                  <p className="text-sm font-medium text-foreground">{row.title}</p>
-                  <p className="text-xs text-muted">{row.detail}</p>
-                </div>
-                <div className="flex flex-col items-end gap-1 font-tabular">
-                  <span className="text-sm font-medium text-foreground">{row.amount}</span>
-                  <span className="text-2xs text-muted">{row.at}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <div className="space-y-0.5">
-              <CardTitle>Today's checklist</CardTitle>
-              <CardSubtitle>Compliance + ops, server-verified.</CardSubtitle>
-            </div>
-          </CardHeader>
-          <CardBody className="space-y-3">
-            {CHECKLIST.map((item) => (
-              <div key={item.id} className="flex items-start gap-3">
-                <span
-                  aria-hidden="true"
-                  className={
-                    item.done
-                      ? 'mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-moss-500 text-on-primary'
-                      : 'mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-outline bg-surface'
-                  }
-                >
-                  {item.done ? <CheckCircle2 className="h-3 w-3" /> : null}
-                </span>
-                <div className="flex-1 space-y-0.5">
-                  <p
-                    className={
-                      item.done ? 'text-sm text-muted line-through' : 'text-sm text-foreground'
-                    }
-                  >
-                    {item.title}
-                  </p>
-                  <p className="text-xs text-muted">{item.detail}</p>
-                </div>
-              </div>
-            ))}
-            <div className="rounded-xl border border-moss-100 bg-moss-50 p-4">
-              <div className="flex items-center gap-2 text-moss-800">
-                <Leaf className="h-4 w-4" />
-                <p className="text-sm font-medium">Catalog within MN limits</p>
-              </div>
-              <p className="mt-1 text-xs text-moss-700">
-                All 142 listings re-checked at 8:00 AM CT against Minn. Stat. § 342.27.
-              </p>
-              <a
-                href="/settings/compliance"
-                className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-moss-700 hover:text-moss-800"
-              >
-                View report
-                <ArrowUpRight aria-hidden="true" className="h-3 w-3" />
-              </a>
-            </div>
-          </CardBody>
-        </Card>
-      </section>
+      {showFinancials ? (
+        <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <RecentOrdersCard orders={recent} now={now} className="lg:col-span-2" />
+          <div className="flex flex-col gap-6">
+            {settingsResult?.status === 'fulfilled' ? (
+              <StoreStatusCard settings={settingsResult.value} now={now} />
+            ) : (
+              <CardLoadError title="Store status" />
+            )}
+            {payoutsResult?.status === 'fulfilled' ? (
+              <PayoutSnapshotCard snapshot={selectPayoutSnapshot(payoutsResult.value.payouts)} />
+            ) : (
+              <CardLoadError title="Payouts" />
+            )}
+          </div>
+        </section>
+      ) : (
+        <RecentOrdersCard orders={recent} now={now} />
+      )}
     </div>
   );
 }
 
-const ACTIVITY = [
-  {
-    id: 'ord_8421',
-    icon: PackageCheck,
-    title: 'Order #8421 delivered',
-    detail: 'Driver Sam · 2.1 mi · 24 min total',
-    amount: '$82.40',
-    at: '2 min ago',
-  },
-  {
-    id: 'ord_8420',
-    icon: Leaf,
-    title: 'New order from Mia R.',
-    detail: 'Sunset OG 3.5g · Live Resin Vape · 1 more',
-    amount: '$108.00',
-    at: '4 min ago',
-  },
-  {
-    id: 'ord_8419',
-    icon: ShieldCheck,
-    title: 'ID scan verified',
-    detail: 'Order #8419 · 26 y/o · MN ID',
-    amount: '—',
-    at: '7 min ago',
-  },
-  {
-    id: 'ord_8418',
-    icon: PackageCheck,
-    title: 'Order #8418 picked up',
-    detail: 'Driver Avery · ETA 8 min',
-    amount: '$54.20',
-    at: '11 min ago',
-  },
-] as const;
+function formatTodayLabel(now: Date): string {
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    timeZone: STORE_TIMEZONE,
+  }).format(now);
+}
 
-const CHECKLIST = [
-  {
-    id: 'open-til',
-    title: 'Open till — North Loop',
-    detail: 'Opened 8:03 AM by Avery Stone',
-    done: true,
-  },
-  {
-    id: 'coa-fresh',
-    title: 'COAs current for all listed batches',
-    detail: 'Last sync: 7:58 AM',
-    done: true,
-  },
-  {
-    id: 'driver-checkin',
-    title: 'Driver check-ins',
-    detail: '3 of 4 on shift — Jamie expected 10:30 AM',
-    done: false,
-  },
-] as const;
+function CardLoadError({ title }: { readonly title: string }): ReactNode {
+  return (
+    <Card>
+      <CardBody className="space-y-1.5 text-center">
+        <div className="mx-auto flex h-9 w-9 items-center justify-center rounded-xl bg-warning-soft text-warning">
+          <AlertTriangle aria-hidden="true" className="h-4 w-4" />
+        </div>
+        <p className="text-sm font-medium text-secondary">{title} unavailable</p>
+        <p className="text-xs text-muted">Refresh to try again.</p>
+      </CardBody>
+    </Card>
+  );
+}
+
+function NoDispensaryContext(): ReactNode {
+  return (
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
+      <Card>
+        <CardBody className="space-y-3 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-warning-soft text-warning">
+            <AlertTriangle aria-hidden="true" className="h-5 w-5" />
+          </div>
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
+            No dispensary context
+          </h2>
+          <p className="text-sm text-muted">
+            Your account isn't yet linked to an active dispensary. Accept your invitation or contact
+            your owner to grant access — your dashboard will appear here once a membership is
+            active.
+          </p>
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
+function DashboardFetchError({
+  storeName,
+  error,
+}: {
+  readonly storeName: string;
+  readonly error: unknown;
+}): ReactNode {
+  // Raw error envelopes leak API internals and aren't actionable for an
+  // operator; the full context lands in server logs. Same posture as the
+  // orders and analytics pages.
+  void error;
+  return (
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 py-12">
+      <Card>
+        <CardBody className="space-y-3 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-danger-soft text-danger">
+            <AlertTriangle aria-hidden="true" className="h-5 w-5" />
+          </div>
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
+            Couldn't load your dashboard
+          </h2>
+          <p className="text-sm text-muted">
+            We couldn't load today's metrics for {storeName}. Refresh the page; if it keeps failing,
+            ping DankDash support.
+          </p>
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
