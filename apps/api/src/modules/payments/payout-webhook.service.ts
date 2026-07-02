@@ -30,7 +30,7 @@
  * against the ledger is a separate reporting concern, not a state change
  * here.
  */
-import { type Payout, type PayoutsRepository } from '@dankdash/db';
+import { resolvePayoutTerminalTransition, type Payout, type PayoutsRepository } from '@dankdash/db';
 import { Injectable, Logger } from '@nestjs/common';
 
 @Injectable()
@@ -45,8 +45,9 @@ export class PayoutWebhookService {
       this.logger.warn(`payout.paid for unknown aeropay_payout_ref=${aeropayPayoutRef} — ignoring`);
       return;
     }
-    if (payout.status === 'completed') return; // replay
-    if (payout.status !== 'processing') {
+    const resolution = resolvePayoutTerminalTransition(payout.status, 'completed');
+    if (resolution.kind === 'replay') return;
+    if (resolution.kind === 'conflict') {
       this.logUnexpected('payout.paid', payout);
       return;
     }
@@ -64,8 +65,9 @@ export class PayoutWebhookService {
       );
       return;
     }
-    if (payout.status === 'failed') return; // replay
-    if (payout.status !== 'processing') {
+    const resolution = resolvePayoutTerminalTransition(payout.status, 'failed');
+    if (resolution.kind === 'replay') return;
+    if (resolution.kind === 'conflict') {
       this.logUnexpected('payout.failed', payout);
       return;
     }
