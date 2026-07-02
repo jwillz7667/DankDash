@@ -322,6 +322,32 @@ export class DriversRepository extends BaseRepository {
   }
 
   /**
+   * Fold one post-delivery rating into the running driver aggregate. Keyed
+   * on `user_id` because `orders.driver_id` references the *user* row (the
+   * driver's identity), not `drivers.id` — the aggregate lives on the
+   * matching drivers row. The new average is computed on the row itself in
+   * a single UPDATE — `newAvg = (avg * count + rating) / (count + 1)` —
+   * never read-modify-written in JS, so concurrent ratings for the same
+   * driver serialise on the row lock and no increment is lost. Arithmetic
+   * runs in Postgres `numeric` (rating_avg is `NUMERIC(3,2)`, count is
+   * `integer`) with `round(…, 2)` pinning the stored scale — no float math.
+   * Feeds `drivers.rating_avg`/`rating_count`, the confidence-weighted
+   * quality term in the dispatch scorer. Callers must scope this to one
+   * rating per order (the `rated_at` one-shot guard) so no rating is folded
+   * twice. A driver_id with no matching drivers row is a no-op (0 rows).
+   */
+  async applyRatingByUserId(userId: string, rating: number): Promise<void> {
+    await this.db
+      .update(drivers)
+      .set({
+        ratingAvg: sql`round((coalesce(${drivers.ratingAvg}, 0) * ${drivers.ratingCount} + ${rating}) / (${drivers.ratingCount} + 1), 2)`,
+        ratingCount: sql`${drivers.ratingCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(drivers.userId, userId));
+  }
+
+  /**
    * Find online drivers within `maxRadiusMeters` of the dispensary,
    * with their beeline distance and last-delivery timestamp attached.
    * Used by the dispatch worker — the worker hands the rows straight

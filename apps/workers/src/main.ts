@@ -185,8 +185,10 @@ async function main(): Promise<void> {
       ...DEFAULT_SCORING_PARAMS,
       maxRadiusMeters: env.DISPATCH_RADIUS_MILES * 1609.344,
     },
-    publish: publishRealtime,
-    idGen: uuidv7,
+    offerPublisher: {
+      publish: publishRealtime,
+      idGen: uuidv7,
+    },
   });
   const offerExpiryTask = scheduleOfferExpiryJob({
     dispatchOffers,
@@ -264,7 +266,8 @@ async function main(): Promise<void> {
   // a slow cache round-trip never stalls an XADD or vice versa. The XADD
   // side rides `realtimePublishRedis` (created above).
   // `family: 0` is required for Railway private networking — see the
-  // commentary on apps/api/src/infrastructure/redis.module.ts.
+  // commentary on apps/api/src/infrastructure/redis.module.ts. The XADD
+  // publish path reuses `realtimePublishRedis` created above.
   const etaCacheRedis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,

@@ -18,6 +18,17 @@ export {
   type LinkAeropayResponse,
 } from './link-aeropay.dto.js';
 export {
+  DispensaryBankAccountStatusResponseSchema,
+  DispensaryBankLinkSessionSchema,
+  StartDispensaryBankLinkRequestDto,
+  StartDispensaryBankLinkRequestSchema,
+  StartDispensaryBankLinkResponseSchema,
+  type DispensaryBankAccountStatusResponse,
+  type DispensaryBankLinkSession,
+  type StartDispensaryBankLinkRequest,
+  type StartDispensaryBankLinkResponse,
+} from './dispensary-bank-link.dto.js';
+export {
   PaymentMethodEnvelopeResponseSchema,
   SetDefaultPaymentMethodRequestDto,
   SetDefaultPaymentMethodRequestSchema,

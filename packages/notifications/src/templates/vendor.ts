@@ -1,6 +1,39 @@
 import { formatUsdCents } from './format.js';
 import type { Template } from './template.js';
 
+/**
+ * New-order alert for dispensary staff. The vendor portal is web-only
+ * (no APNs variant — see `push-token.dto.ts`), so this renders email +
+ * in_app rather than push: email is the reach-when-the-tab-is-closed
+ * channel, and the in_app row is the durable per-staff record the portal
+ * surfaces. The realtime `order:created` socket event already lights up
+ * the live queue for an open tab; this template covers the staff who
+ * aren't looking.
+ */
+export const vendorNewOrderTemplate: Template<'vendor.new_order'> = (payload) => {
+  const amount = formatUsdCents(payload.totalCents);
+  const subject = `New order ${payload.shortCode} — ${amount}`;
+  const body = `You have a new ${amount} order (${payload.shortCode}) at ${payload.dispensaryName}. Open the vendor portal to accept it before it times out.`;
+  const text = `Hi,\n\nA new order just came in for ${payload.dispensaryName}.\n\nOrder: ${payload.shortCode}\nTotal: ${amount}\n\nOpen the vendor portal → Orders to accept it. Orders that aren't accepted promptly are surfaced to the customer as delayed, so please review it soon.\n\n— DankDash`;
+  return [
+    {
+      channel: 'email',
+      subject,
+      text,
+    },
+    {
+      channel: 'in_app',
+      title: 'New order',
+      body,
+      data: {
+        templateKey: 'vendor.new_order',
+        orderId: payload.orderId,
+        shortCode: payload.shortCode,
+      },
+    },
+  ];
+};
+
 export const vendorPayoutCompletedTemplate: Template<'vendor.payout.completed'> = (payload) => {
   const amount = formatUsdCents(payload.amountCents);
   const subject = `Payout of ${amount} sent for period ending ${payload.periodEnd}`;

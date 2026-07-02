@@ -32,7 +32,6 @@
  */
 import { type Logger } from '@dankdash/config';
 import {
-  type DispatchOffer,
   type DispatchOffersRepository,
   type DriversRepository,
   type Order,
@@ -51,9 +50,19 @@ import {
 import { nextOrderState, OrderError } from '@dankdash/orders';
 import { type PublishRealtimeEventInput } from '@dankdash/realtime-events';
 import { RepositoryError } from '@dankdash/types';
-import { uuidv7 } from 'uuidv7';
 
 const METERS_PER_MILE = 1609.344;
+
+/**
+ * Publishes an `offer:new` realtime envelope onto `dankdash:realtime`.
+ * Wraps `publishRealtimeEvent(redis, …)` at the composition root so the
+ * job stays Redis-free and testable. Optional: when omitted (e.g. in the
+ * targeting unit tests) the tick issues offers without a realtime push.
+ */
+export interface DispatchOfferPublisher {
+  readonly publish: (input: PublishRealtimeEventInput) => Promise<string>;
+  readonly idGen: () => string;
+}
 
 export interface DispatchJobDeps {
   readonly orders: OrdersRepository;
@@ -79,19 +88,14 @@ export interface DispatchJobDeps {
    */
   readonly openPoolEnabled?: boolean;
   /**
-   * Publishes an `offer:new` realtime envelope the instant a targeted
-   * offer row is inserted, so the driver's app surfaces it via the
-   * `/driver` socket within ms rather than on its next 10s poll. Wraps
-   * `publishRealtimeEvent(redis, …)` at the composition root (the job
-   * stays Redis-free for tests). Optional: when omitted the offer is
-   * still persisted, no event is emitted — the driver app then falls
-   * back to its poll. Only the legacy targeted path issues offers; the
-   * open pool has none to announce (it uses the `delivery:claimed`
-   * board fan-out instead).
+   * Realtime publisher for `offer:new`. When set, a targeted offer INSERT
+   * also emits an `offer:new` envelope so the realtime service can push
+   * the offer to the driver's socket (the DankDasher app's offer feed).
+   * Best-effort — a publish failure is logged and never aborts the tick,
+   * since the offer row is already durable and the driver app polls as a
+   * fallback. Open-pool mode issues no offers, so this is never called there.
    */
-  readonly publish?: (input: PublishRealtimeEventInput) => Promise<string>;
-  /** Test seam — defaults to uuidv7 in production wiring. */
-  readonly idGen?: () => string;
+  readonly offerPublisher?: DispatchOfferPublisher;
 }
 
 export interface DispatchJobInput {
@@ -344,7 +348,8 @@ async function persistOffer(
       { driverId, candidateCount: candidates.length },
     );
   }
-  const distanceMiles = (candidate.distanceMeters / METERS_PER_MILE).toFixed(2);
+  const distanceMilesNum = Number((candidate.distanceMeters / METERS_PER_MILE).toFixed(2));
+  const distanceMiles = distanceMilesNum.toFixed(2);
 
   // Phase 8.3 estimate: delivery fee + tip. The actual payout (Phase 6.6
   // ledger) layers on per-mile reimbursement computed from the real
@@ -369,53 +374,57 @@ async function persistOffer(
     'dispatch: offer issued',
   );
 
-  await publishOfferNew(offer, now, deps);
+  await publishOfferNew(
+    offer.id,
+    order,
+    driverId,
+    expiresAt,
+    payoutEstimateCents,
+    distanceMilesNum,
+    now,
+    deps,
+  );
 }
 
 /**
- * Announce a freshly-inserted offer to its targeted driver over the
- * `/driver` realtime namespace. A publish failure is logged and
- * swallowed — the offer row is already committed and the driver app's
- * 10s poll re-surfaces it, so a lost push is UX latency, not a lost
- * offer. Never rethrows into the per-order tick.
+ * Best-effort `offer:new` realtime push. The offer row is already committed
+ * when this runs, so a Redis failure is logged and swallowed — the driver
+ * app polls the offer feed as a fallback and never misses the job.
  */
 async function publishOfferNew(
-  offer: DispatchOffer,
+  offerId: string,
+  order: Order,
+  driverId: string,
+  expiresAt: Date,
+  payoutEstimateCents: number,
+  distanceMiles: number,
   now: Date,
   deps: DispatchJobDeps,
 ): Promise<void> {
-  const publish = deps.publish;
-  if (publish === undefined) return;
-  const idGen = deps.idGen ?? uuidv7;
-
+  const publisher = deps.offerPublisher;
+  if (publisher === undefined) return;
   try {
-    await publish({
-      id: idGen(),
+    await publisher.publish({
+      id: publisher.idGen(),
       emittedAt: now.toISOString(),
       source: 'workers',
       event: {
         type: 'offer:new',
         payload: {
-          offerId: offer.id,
-          orderId: offer.orderId,
-          driverId: offer.driverId,
-          expiresAt: offer.expiresAt.toISOString(),
-          payoutEstimateCents: offer.payoutEstimateCents,
-          // NUMERIC(6,2) comes back as a string from Drizzle — coerce so
-          // the realtime schema's `distanceMiles: number` validator passes.
-          distanceMiles: Number(offer.distanceMiles),
+          offerId,
+          orderId: order.id,
+          driverId,
+          expiresAt: expiresAt.toISOString(),
+          payoutEstimateCents,
+          distanceMiles,
         },
       },
     });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     deps.logger.warn(
-      {
-        event: 'dispatch.offer_new_publish_failed',
-        offerId: offer.id,
-        orderId: offer.orderId,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      'dispatch: offer:new publish failed — driver app falls back to poll',
+      { orderId: order.id, driverId, offerId, err: message },
+      'dispatch: offer:new realtime publish failed — offer is durable, driver app will poll',
     );
   }
 }

@@ -10,6 +10,7 @@ export type OrderErrorCode =
   | 'ORDER_ACTOR_FORBIDDEN'
   | 'ORDER_CANCEL_TOO_LATE'
   | 'ORDER_RATE_NOT_DELIVERED'
+  | 'ORDER_ALREADY_RATED'
   | 'ORDER_RATING_OUT_OF_RANGE'
   | 'ORDER_INVARIANT_BROKEN';
 
@@ -17,7 +18,8 @@ export type OrderErrorCode =
  * Stable HTTP mapping for every order-domain error. 422 covers business-rule
  * failures the caller can correct (illegal transition, cancel-too-late);
  * 403 covers actor-authorization failures (vendor B trying to accept
- * dispensary A's order); 404 covers missing rows; 500 covers programmer
+ * dispensary A's order); 404 covers missing rows; 409 covers idempotency
+ * conflicts (re-rating an already-rated order); 500 covers programmer
  * bugs where the DB enum and state machine have drifted out of sync.
  */
 const ORDER_STATUS_CODES: Readonly<Record<OrderErrorCode, number>> = {
@@ -28,6 +30,7 @@ const ORDER_STATUS_CODES: Readonly<Record<OrderErrorCode, number>> = {
   ORDER_ACTOR_FORBIDDEN: 403,
   ORDER_CANCEL_TOO_LATE: 422,
   ORDER_RATE_NOT_DELIVERED: 422,
+  ORDER_ALREADY_RATED: 409,
   ORDER_RATING_OUT_OF_RANGE: 422,
   ORDER_INVARIANT_BROKEN: 500,
 };
@@ -88,6 +91,17 @@ export class OrderError extends DomainError {
       `Ratings can only be recorded after delivery; order is in '${state}'`,
       { state },
     );
+  }
+
+  /**
+   * The customer has already rated this order. Rating is one-shot: the
+   * write amends the delivered order once and feeds the driver/dispensary
+   * rating aggregates exactly once, so a second attempt is rejected with
+   * 409 rather than silently re-stamping `rated_at` and double-counting
+   * the aggregate.
+   */
+  static alreadyRated(orderId: string): OrderError {
+    return new OrderError('ORDER_ALREADY_RATED', 'order has already been rated', { orderId });
   }
 
   static ratingOutOfRange(field: string, value: number): OrderError {
