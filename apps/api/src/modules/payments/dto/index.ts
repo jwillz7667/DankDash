@@ -29,6 +29,17 @@ export {
   type StartDispensaryBankLinkResponse,
 } from './dispensary-bank-link.dto.js';
 export {
+  DriverBankAccountStatusResponseSchema,
+  DriverBankLinkSessionSchema,
+  StartDriverBankLinkRequestDto,
+  StartDriverBankLinkRequestSchema,
+  StartDriverBankLinkResponseSchema,
+  type DriverBankAccountStatusResponse,
+  type DriverBankLinkSession,
+  type StartDriverBankLinkRequest,
+  type StartDriverBankLinkResponse,
+} from './driver-bank-link.dto.js';
+export {
   PaymentMethodEnvelopeResponseSchema,
   SetDefaultPaymentMethodRequestDto,
   SetDefaultPaymentMethodRequestSchema,

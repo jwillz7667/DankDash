@@ -48,6 +48,19 @@ public struct DriverEarningsFeature: Sendable {
     /// accepts an explicit dismiss action for the manual swipe-down.
     public var cashoutToast: String?
 
+    /// Whether the driver has a linked Aeropay bank account. `nil` until the
+    /// status endpoint answers (or is inferred from a cashout failure). The
+    /// view shows the "link bank account" affordance when this is `false`.
+    public var isBankLinked: Bool?
+
+    /// Hosted Aeropay bank-link session in flight. Non-nil drives the Safari
+    /// sheet in the view; cleared when the sheet dismisses.
+    public var bankLinkSession: AeropayLinkSession?
+
+    /// True while `POST .../bank-account/link` is in flight — disables the
+    /// link CTA so a double-tap can't mint two sessions.
+    public var isStartingBankLink: Bool
+
     public init(
       period: EarningsPeriod = .today,
       earnings: DriverEarnings? = nil,
@@ -58,7 +71,10 @@ public struct DriverEarningsFeature: Sendable {
       isRefreshing: Bool = false,
       errorBanner: String? = nil,
       cashoutSheet: CashoutSheetState? = nil,
-      cashoutToast: String? = nil
+      cashoutToast: String? = nil,
+      isBankLinked: Bool? = nil,
+      bankLinkSession: AeropayLinkSession? = nil,
+      isStartingBankLink: Bool = false
     ) {
       self.period = period
       self.earnings = earnings
@@ -70,6 +86,16 @@ public struct DriverEarningsFeature: Sendable {
       self.errorBanner = errorBanner
       self.cashoutSheet = cashoutSheet
       self.cashoutToast = cashoutToast
+      self.isBankLinked = isBankLinked
+      self.bankLinkSession = bankLinkSession
+      self.isStartingBankLink = isStartingBankLink
+    }
+
+    /// True when the driver is known to have no linked bank account — the
+    /// view renders the "link bank account" CTA. `nil` (unknown) does not
+    /// show it, so the CTA never flashes before the status resolves.
+    public var needsBankLink: Bool {
+      isBankLinked == false
     }
 
     /// True while the initial fetch is in flight and we have no
@@ -140,6 +166,11 @@ public struct DriverEarningsFeature: Sendable {
     case cashoutSheetDismissed
     case cashoutToastDismissed
 
+    case bankLinkStatusResponse(Result<Bool, EarningsErrorBox>)
+    case linkBankTapped
+    case bankLinkStarted(Result<AeropayLinkSession, EarningsErrorBox>)
+    case bankLinkSheetDismissed
+
     case delegate(Delegate)
 
     @CasePathable
@@ -154,6 +185,7 @@ public struct DriverEarningsFeature: Sendable {
 
   @Dependency(\.driverAppAPIClient) var driverAppAPI
   @Dependency(\.driverCashoutAPIClient) var cashoutAPI
+  @Dependency(\.driverPayoutAccountAPIClient) var payoutAccountAPI
 
   public init() {}
 
@@ -161,6 +193,8 @@ public struct DriverEarningsFeature: Sendable {
     case earnings
     case shifts
     case cashout
+    case bankStatus
+    case bankLink
   }
 
   public var body: some ReducerOf<Self> {
@@ -173,7 +207,11 @@ public struct DriverEarningsFeature: Sendable {
               !state.isLoadingEarnings, !state.isLoadingShifts else {
           return .none
         }
-        return startLoad(state: &state)
+        // Bank-link status loads alongside the first earnings fetch so the
+        // "link bank account" CTA can render before the driver ever taps
+        // Cashout. It's a boolean, cheap, and non-blocking — a failure here
+        // is swallowed (the CTA simply stays hidden) rather than banner-ed.
+        return .merge(startLoad(state: &state), loadBankStatus())
 
       case .periodChanged(let next):
         guard next != state.period else { return .none }
@@ -192,7 +230,7 @@ public struct DriverEarningsFeature: Sendable {
         }
         state.isRefreshing = true
         state.errorBanner = nil
-        return loadConcurrently(period: state.period)
+        return .merge(loadConcurrently(period: state.period), loadBankStatus())
 
       case .retryTapped:
         guard state.errorBanner != nil else { return .none }
@@ -286,10 +324,61 @@ public struct DriverEarningsFeature: Sendable {
         )
 
       case .cashoutResponse(.failure(let box)):
+        // A "bank not linked" refusal isn't an in-sheet retry situation —
+        // the driver has to go link a bank first. Close the cashout sheet,
+        // flip the known-unlinked flag so the link CTA appears, and surface
+        // the guidance as a page banner.
+        if box.isBankNotLinked {
+          state.cashoutSheet = nil
+          state.isBankLinked = false
+          state.errorBanner = box.userFacingMessage()
+          return .none
+        }
         guard state.cashoutSheet != nil else { return .none }
         state.cashoutSheet?.isSubmitting = false
         state.cashoutSheet?.errorMessage = box.userFacingMessage()
         return .none
+
+      case .bankLinkStatusResponse(.success(let linked)):
+        state.isBankLinked = linked
+        return .none
+
+      case .bankLinkStatusResponse(.failure):
+        // Status is best-effort — a failure leaves `isBankLinked` unknown
+        // (CTA hidden). The cashout attempt still surfaces the not-linked
+        // error if the driver taps through, so we don't banner this.
+        return .none
+
+      case .linkBankTapped:
+        guard !state.isStartingBankLink, state.bankLinkSession == nil else { return .none }
+        state.isStartingBankLink = true
+        state.errorBanner = nil
+        return .run { [payoutAccountAPI] send in
+          do {
+            let session = try await payoutAccountAPI.startLink()
+            await send(.bankLinkStarted(.success(session)))
+          } catch {
+            await send(.bankLinkStarted(.failure(EarningsErrorBox(error))))
+          }
+        }
+        .cancellable(id: CancelID.bankLink, cancelInFlight: true)
+
+      case .bankLinkStarted(.success(let session)):
+        state.isStartingBankLink = false
+        state.bankLinkSession = session
+        return .none
+
+      case .bankLinkStarted(.failure(let box)):
+        state.isStartingBankLink = false
+        state.errorBanner = box.userFacingMessage()
+        return .none
+
+      case .bankLinkSheetDismissed:
+        // The driver closed the Safari sheet. We don't know the outcome
+        // synchronously — the bank_account.linked webhook lands server-side
+        // — so re-query status to refresh the CTA + gate.
+        state.bankLinkSession = nil
+        return loadBankStatus()
 
       case .cashoutSheetDismissed:
         // Cancel any in-flight POST so the driver isn't surprised by a
@@ -335,6 +424,18 @@ public struct DriverEarningsFeature: Sendable {
         }
       }.cancellable(id: CancelID.shifts, cancelInFlight: true)
     )
+  }
+
+  private func loadBankStatus() -> Effect<Action> {
+    .run { [payoutAccountAPI] send in
+      do {
+        let linked = try await payoutAccountAPI.getStatus()
+        await send(.bankLinkStatusResponse(.success(linked)))
+      } catch {
+        await send(.bankLinkStatusResponse(.failure(EarningsErrorBox(error))))
+      }
+    }
+    .cancellable(id: CancelID.bankStatus, cancelInFlight: true)
   }
 }
 
@@ -410,6 +511,10 @@ public struct EarningsErrorBox: Error, Equatable, Sendable {
 public struct CashoutErrorBox: Error, Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     case insufficientFunds(availableCents: Int?)
+    /// The driver has no linked Aeropay bank account — the live payout
+    /// gateway refuses with 422 `PAYMENT_METHOD_INVALID`. The view uses this
+    /// to surface the "link your bank" affordance instead of a dead error.
+    case bankNotLinked
     case malformed(String)
     case transport
     case server(message: String)
@@ -433,6 +538,10 @@ public struct CashoutErrorBox: Error, Equatable, Sendable {
       case .server(let status, let envelope):
         if status == 422, envelope.error.code == "PAYMENT_AMOUNT_MISMATCH" {
           self.kind = .insufficientFunds(availableCents: Self.extractAvailableCents(envelope.error.details))
+        } else if status == 422, envelope.error.code == "PAYMENT_METHOD_INVALID" {
+          // The only cashout path that yields PAYMENT_METHOD_INVALID is the
+          // live gateway's not-linked guard — map it to the bank-link CTA.
+          self.kind = .bankNotLinked
         } else {
           self.kind = .server(message: envelope.error.message)
         }
@@ -453,6 +562,13 @@ public struct CashoutErrorBox: Error, Equatable, Sendable {
     return false
   }
 
+  /// True when the cashout was refused because the driver has not linked a
+  /// bank account yet (422 PAYMENT_METHOD_INVALID).
+  public var isBankNotLinked: Bool {
+    if case .bankNotLinked = kind { return true }
+    return false
+  }
+
   public func userFacingMessage() -> String {
     switch kind {
     case .insufficientFunds(let availableCents):
@@ -460,6 +576,7 @@ public struct CashoutErrorBox: Error, Equatable, Sendable {
         return "Not enough available. You have \(Self.formatDollars(cents)) to cash out."
       }
       return "Not enough available to cash out that amount."
+    case .bankNotLinked: return "Link a bank account to cash out your earnings."
     case .malformed: return "Couldn't read the response. We'll try again."
     case .transport: return "Couldn't reach DankDash. Check your connection."
     case .server(let message): return message

@@ -3,10 +3,10 @@
  *
  * Scheduled at 03:00 America/Chicago (see payout.scheduler.ts). Walks the
  * previous Central calendar day's ledger, computes per-recipient net
- * earnings, and issues an Aeropay payout for each dispensary that has a
- * bank account on file. Driver payouts are recorded in the same shape
- * but Aeropay dispatch waits until the driver-bank-onboarding work in
- * Phase 8 lands the column.
+ * earnings, and issues an Aeropay payout for each dispensary AND driver that
+ * has a linked bank account on file. Drivers without a linked
+ * `aeropay_account_ref` keep their earnings recorded as a `pending` payout
+ * (owed, not lost) for instant cashout or out-of-band reconciliation.
  *
  * Why drive the math from the ledger and not from orders:
  *   - Ledger entries are written *only* on payment.settled, so they
@@ -45,6 +45,7 @@ import { type AeropayClient, type AeropayPayout } from '@dankdash/aeropay';
 import { type Logger } from '@dankdash/config';
 import {
   type DispensariesRepository,
+  type DriversRepository,
   type LedgerEntriesRepository,
   type Payout,
   type PayoutsRepository,
@@ -53,6 +54,7 @@ import { computePayoutPeriod, type PayoutPeriod } from './payout.period.js';
 
 export interface PayoutJobDeps {
   readonly dispensaries: DispensariesRepository;
+  readonly drivers: Pick<DriversRepository, 'findByUserId'>;
   readonly payouts: PayoutsRepository;
   readonly ledger: LedgerEntriesRepository;
   readonly aeropay: Pick<AeropayClient, 'createPayout'>;
@@ -77,6 +79,8 @@ export interface PayoutJobSummary {
   readonly driversSkippedNoEarnings: number;
   readonly driversPendingBank: number;
   readonly driversAlreadyPaid: number;
+  readonly driversDispatched: number;
+  readonly driversFailed: number;
 }
 
 export async function runPayoutJob(input: PayoutJobInput): Promise<PayoutJobSummary> {
@@ -242,6 +246,8 @@ interface DriverSummary {
   readonly driversSkippedNoEarnings: number;
   readonly driversPendingBank: number;
   readonly driversAlreadyPaid: number;
+  readonly driversDispatched: number;
+  readonly driversFailed: number;
 }
 
 async function runDriverPayouts(
@@ -249,6 +255,10 @@ async function runDriverPayouts(
   period: PayoutPeriod,
   log: Logger,
 ): Promise<DriverSummary> {
+  // `orders.driver_id` references `users.id`, and the settlement ledger
+  // credits the `driver` account with that same id, so `row.accountRef` here
+  // is a driver's `users.id` — exactly the key `drivers.findByUserId` and the
+  // `driver:<userId>` recipient ref use.
   const driverRows = await deps.ledger.netByAccountRefInWindow(
     'driver',
     period.periodStartUtc,
@@ -259,6 +269,8 @@ async function runDriverPayouts(
   let skippedNoEarnings = 0;
   let pendingBank = 0;
   let alreadyPaid = 0;
+  let dispatched = 0;
+  let failed = 0;
 
   for (const row of driverRows) {
     if (row.netCents <= 0) {
@@ -267,11 +279,6 @@ async function runDriverPayouts(
     }
     processed += 1;
 
-    // Drivers don't have an aeropay_account_ref column yet — Phase 8.
-    // Record the obligation as a `pending` payout so we don't lose it,
-    // and let an out-of-band reconciliation flip them to dispatched once
-    // the bank linkage exists. Uniqueness prevents tomorrow's run from
-    // duplicating.
     const { payout, created } = await deps.payouts.createIfAbsent({
       recipientType: 'driver',
       recipientId: row.accountRef,
@@ -288,16 +295,32 @@ async function runDriverPayouts(
       alreadyPaid += 1;
       log.info(
         { driverId: row.accountRef, payoutId: payout.id, status: payout.status },
-        'driver payout already exists — skipping',
+        'driver payout already exists — skipping dispatch',
       );
       continue;
     }
 
-    pendingBank += 1;
-    log.info(
-      { driverId: row.accountRef, payoutId: payout.id, netCents: row.netCents },
-      'driver payout recorded pending — awaiting bank linkage (Phase 8)',
-    );
+    // A driver without a linked Aeropay bank account keeps the row `pending`
+    // (not `failed`): the earnings are real and owed — the driver can link a
+    // bank and instant-cash-out, or an out-of-band reconciliation dispatches
+    // it later. Uniqueness prevents tomorrow's run from duplicating.
+    const driver = await deps.drivers.findByUserId(row.accountRef);
+    const bankAccountRef = driver?.aeropayAccountRef ?? null;
+    if (bankAccountRef === null) {
+      pendingBank += 1;
+      log.info(
+        { driverId: row.accountRef, payoutId: payout.id, netCents: row.netCents },
+        'driver payout recorded pending — no Aeropay account on file',
+      );
+      continue;
+    }
+
+    const dispatchOutcome = await dispatchPayout(deps, payout, period, bankAccountRef);
+    if (dispatchOutcome === 'ok') {
+      dispatched += 1;
+    } else {
+      failed += 1;
+    }
   }
 
   return {
@@ -305,6 +328,8 @@ async function runDriverPayouts(
     driversSkippedNoEarnings: skippedNoEarnings,
     driversPendingBank: pendingBank,
     driversAlreadyPaid: alreadyPaid,
+    driversDispatched: dispatched,
+    driversFailed: failed,
   };
 }
 

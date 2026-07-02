@@ -30,6 +30,7 @@ describe('schedulePayoutJob', () => {
 
     const deps = {
       dispensaries: {} as never,
+      drivers: {} as never,
       ledger: {} as never,
       payouts: {} as never,
       aeropay: {} as never,

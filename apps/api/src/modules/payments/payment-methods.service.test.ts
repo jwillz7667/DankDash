@@ -46,6 +46,7 @@ import {
 } from './payment-methods.service.js';
 import type { AeropayClientLike } from './tokens.js';
 import type { DispensaryBankLinkService } from './dispensary-bank-link.service.js';
+import type { DriverBankLinkService } from './driver-bank-link.service.js';
 import type { PayoutWebhookService } from './payout-webhook.service.js';
 import type {
   OrderTransitionService,
@@ -482,6 +483,20 @@ class FakeDispensaryBankLinkService {
   };
 }
 
+class FakeDriverBankLinkService {
+  linkedCalls: Array<{ driverUserId: string; bankAccountId: string }> = [];
+  failedCalls: string[] = [];
+
+  applyBankLinked = (driverUserId: string, bankAccountId: string): Promise<void> => {
+    this.linkedCalls.push({ driverUserId, bankAccountId });
+    return Promise.resolve();
+  };
+
+  applyBankFailed = (driverUserId: string): void => {
+    this.failedCalls.push(driverUserId);
+  };
+}
+
 class FakePayoutWebhookService {
   paidCalls: Array<{ ref: string; occurredAt: Date }> = [];
   failedCalls: Array<{ ref: string; raw: Readonly<Record<string, unknown>> }> = [];
@@ -506,6 +521,7 @@ function build(): {
   ledgerRepo: FakeLedgerEntriesRepo;
   aeropay: FakeAeropayClient;
   dispensaryBankLink: FakeDispensaryBankLinkService;
+  driverBankLink: FakeDriverBankLinkService;
   payoutWebhooks: FakePayoutWebhookService;
 } {
   const repo = new FakePaymentMethodsRepo();
@@ -515,6 +531,7 @@ function build(): {
   const ledgerRepo = new FakeLedgerEntriesRepo();
   const aeropay = new FakeAeropayClient();
   const dispensaryBankLink = new FakeDispensaryBankLinkService();
+  const driverBankLink = new FakeDriverBankLinkService();
   const payoutWebhooks = new FakePayoutWebhookService();
   // The settlement path opens a single transaction. The fake just hands the
   // service back the same singleton repos via the factory closure — there is
@@ -537,6 +554,7 @@ function build(): {
     settlementReposFor,
     aeropay,
     dispensaryBankLink as unknown as DispensaryBankLinkService,
+    driverBankLink as unknown as DriverBankLinkService,
     payoutWebhooks as unknown as PayoutWebhookService,
   );
   return {
@@ -548,6 +566,7 @@ function build(): {
     ledgerRepo,
     aeropay,
     dispensaryBankLink,
+    driverBankLink,
     payoutWebhooks,
   };
 }
@@ -1061,6 +1080,50 @@ describe('PaymentMethodsService.applyWebhook', () => {
     });
 
     expect(dispensaryBankLink.failedCalls).toEqual([DISPENSARY_ID]);
+    expect(repo.updateStatusCalls).toHaveLength(0);
+  });
+
+  it('routes a driver-namespaced bank_account.linked to the driver bank-link service', async () => {
+    const { service, repo, driverBankLink, dispensaryBankLink, aeropay } = build();
+    aeropay.bankAccountsById.set(
+      'ba_real_account_123',
+      bankAccount({ customerRef: `driver:${DRIVER_ID}` }),
+    );
+
+    await service.applyWebhook({
+      type: 'bank_account.linked',
+      eventId: 'evt_test_driver_1',
+      objectId: 'ba_real_account_123',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+
+    expect(driverBankLink.linkedCalls).toEqual([
+      { driverUserId: DRIVER_ID, bankAccountId: 'ba_real_account_123' },
+    ]);
+    // Neither the dispensary path nor the consumer payment_methods path runs.
+    expect(dispensaryBankLink.linkedCalls).toHaveLength(0);
+    expect(repo.updateBankAccountDetailsCalls).toHaveLength(0);
+    expect(aeropay.getBankAccountCalls).toEqual(['ba_real_account_123']);
+  });
+
+  it('routes a driver-namespaced bank_account.failed to the driver bank-link service', async () => {
+    const { service, repo, driverBankLink, dispensaryBankLink, aeropay } = build();
+    aeropay.bankAccountsById.set(
+      'ba_real_account_123',
+      bankAccount({ customerRef: `driver:${DRIVER_ID}`, status: 'failed' }),
+    );
+
+    await service.applyWebhook({
+      type: 'bank_account.failed',
+      eventId: 'evt_test_driver_2',
+      objectId: 'ba_real_account_123',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+
+    expect(driverBankLink.failedCalls).toEqual([DRIVER_ID]);
+    expect(dispensaryBankLink.failedCalls).toHaveLength(0);
     expect(repo.updateStatusCalls).toHaveLength(0);
   });
 });

@@ -197,6 +197,7 @@ function buildDriver(overrides: Partial<Driver> = {}): Driver {
     insuranceExpiresAt: null,
     backgroundCheckPassedAt: null,
     backgroundCheckProviderRef: null,
+    aeropayAccountRef: null,
     currentStatus: 'online',
     lastStatusChangeAt: CREATED_AT,
     currentLocation: null,

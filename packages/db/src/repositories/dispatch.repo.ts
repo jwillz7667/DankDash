@@ -151,6 +151,7 @@ const DRIVER_COLUMNS = {
   insuranceExpiresAt: drivers.insuranceExpiresAt,
   backgroundCheckPassedAt: drivers.backgroundCheckPassedAt,
   backgroundCheckProviderRef: drivers.backgroundCheckProviderRef,
+  aeropayAccountRef: drivers.aeropayAccountRef,
   currentStatus: drivers.currentStatus,
   lastStatusChangeAt: drivers.lastStatusChangeAt,
   currentLocation: CURRENT_LOCATION_SQL,

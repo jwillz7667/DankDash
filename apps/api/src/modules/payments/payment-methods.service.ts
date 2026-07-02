@@ -51,6 +51,7 @@ import {
   DispensaryBankLinkService,
   parseDispensaryCustomerRef,
 } from './dispensary-bank-link.service.js';
+import { DriverBankLinkService, parseDriverCustomerRef } from './driver-bank-link.service.js';
 import { PayoutWebhookService } from './payout-webhook.service.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
 import type {
@@ -85,6 +86,7 @@ export class PaymentMethodsService {
     private readonly settlementReposFor: SettlementScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
     private readonly dispensaryBankLink: DispensaryBankLinkService,
+    private readonly driverBankLink: DriverBankLinkService,
     private readonly payoutWebhooks: PayoutWebhookService,
   ) {}
 
@@ -226,13 +228,14 @@ export class PaymentMethodsService {
    *                                 `customer_ref`: a `dispensary:<id>` ref
    *                                 persists the confirmed bank-account id
    *                                 onto the dispensary (payout linking); a
-   *                                 bare consumer ref flips the pending
-   *                                 payment_methods row to `active`, enriches
-   *                                 with bank metadata, and rewrites
-   *                                 `aeropay_payment_method_ref` to the
-   *                                 upstream bank-account id.
-   *   - `bank_account.failed`    → dispensary ref → logged, ref untouched;
-   *                                 consumer ref → flip the pending
+   *                                 `driver:<userId>` ref persists it onto the
+   *                                 driver (payout linking); a bare consumer
+   *                                 ref flips the pending payment_methods row
+   *                                 to `active`, enriches with bank metadata,
+   *                                 and rewrites `aeropay_payment_method_ref`
+   *                                 to the upstream bank-account id.
+   *   - `bank_account.failed`    → dispensary / driver ref → logged, ref
+   *                                 untouched; consumer ref → flip the pending
    *                                 payment_methods row to `failed` so the
    *                                 iOS UI can show a retry CTA.
    *   - `payout.paid`            → move the matching `payouts` row
@@ -286,11 +289,17 @@ export class PaymentMethodsService {
   async applyWebhook(outcome: AeropayWebhookOutcome): Promise<void> {
     if (outcome.type === 'bank_account.linked') {
       // Resolve the account once; `customer_ref` tells us whether this is a
-      // dispensary payout link (`dispensary:<id>`) or a bare consumer link.
+      // dispensary payout link (`dispensary:<id>`), a driver payout link
+      // (`driver:<userId>`), or a bare consumer link.
       const account = await this.aeropay.getBankAccount(outcome.objectId);
       const dispensaryId = parseDispensaryCustomerRef(account.customerRef);
       if (dispensaryId !== null) {
         await this.dispensaryBankLink.applyBankLinked(dispensaryId, account.id);
+        return;
+      }
+      const driverUserId = parseDriverCustomerRef(account.customerRef);
+      if (driverUserId !== null) {
+        await this.driverBankLink.applyBankLinked(driverUserId, account.id);
         return;
       }
       await this.handleBankAccountLinked(account);
@@ -301,6 +310,11 @@ export class PaymentMethodsService {
       const dispensaryId = parseDispensaryCustomerRef(account.customerRef);
       if (dispensaryId !== null) {
         this.dispensaryBankLink.applyBankFailed(dispensaryId);
+        return;
+      }
+      const driverUserId = parseDriverCustomerRef(account.customerRef);
+      if (driverUserId !== null) {
+        this.driverBankLink.applyBankFailed(driverUserId);
         return;
       }
       await this.handleBankAccountFailed(account);
