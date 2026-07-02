@@ -24,6 +24,7 @@ export {
 export {
   type AvailableDeliveryRow,
   type DispatchCandidateRow,
+  type ExpiredOffer,
   DispatchOffersRepository,
   DriverLocationHistoryRepository,
   DriverShiftsRepository,

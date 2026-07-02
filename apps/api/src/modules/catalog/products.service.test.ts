@@ -11,16 +11,23 @@
  *   - 404 paths   → missing row, soft-deleted row, and inactive row all
  *                   surface as NotFoundError so a customer cannot probe the
  *                   tombstone surface.
+ *   - getListings → gates on the same 404 semantics, then projects the
+ *                   cross-dispensary listing set (id → listingId, store name
+ *                   resolved, internal columns dropped) and echoes the
+ *                   request's limit/offset in the page envelope.
  */
 import {
+  type DispensaryListing,
   type Product,
   type ProductLabResult,
   type ProductLabResultsRepository,
   type ProductsRepository,
+  type DispensaryListingsRepository,
 } from '@dankdash/db';
 import { NotFoundError } from '@dankdash/types';
 import { describe, expect, it } from 'vitest';
 import { ProductsService } from './products.service.js';
+import type { ProductListingsQuery } from './dto/index.js';
 
 function makeProduct(overrides: Partial<Product> = {}): Product {
   const now = new Date('2026-05-01T12:00:00.000Z');
@@ -66,6 +73,38 @@ function makeLabResult(overrides: Partial<ProductLabResult> = {}): ProductLabRes
   };
 }
 
+function makeListing(overrides: Partial<DispensaryListing> = {}): DispensaryListing {
+  const now = new Date('2026-05-01T12:00:00.000Z');
+  return {
+    id: '01935f3d-0000-7000-8000-0000000000c1',
+    dispensaryId: '01935f3d-0000-7000-8000-000000000fa1',
+    productId: '01935f3d-0000-7000-8000-000000000001',
+    sku: 'SS-ST-35',
+    priceCents: 4500,
+    compareAtPriceCents: null,
+    quantityAvailable: 7,
+    imageKeys: [],
+    isActive: true,
+    lastSyncedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  } as DispensaryListing;
+}
+
+interface FakeListingInput {
+  readonly limit: number;
+  readonly offset: number;
+}
+
+interface FakeListingPage {
+  readonly results: readonly {
+    readonly listing: DispensaryListing;
+    readonly dispensaryName: string;
+  }[];
+  readonly total: number;
+}
+
 class FakeProductsRepo implements Pick<ProductsRepository, 'findById'> {
   public readonly rows = new Map<string, Product>();
 
@@ -90,21 +129,36 @@ class FakeLabResultsRepo implements Pick<ProductLabResultsRepository, 'listForPr
   }
 }
 
+class FakeListingsRepo implements Pick<DispensaryListingsRepository, 'listAvailableForProduct'> {
+  public calls: { readonly productId: string; readonly input: FakeListingInput }[] = [];
+  public next: FakeListingPage = { results: [], total: 0 };
+
+  listAvailableForProduct(productId: string, input: FakeListingInput): Promise<FakeListingPage> {
+    this.calls.push({ productId, input });
+    return Promise.resolve(this.next);
+  }
+}
+
 interface TestRig {
   readonly service: ProductsService;
   readonly products: FakeProductsRepo;
   readonly labResults: FakeLabResultsRepo;
+  readonly listings: FakeListingsRepo;
 }
 
 function makeRig(): TestRig {
   const products = new FakeProductsRepo();
   const labResults = new FakeLabResultsRepo();
+  const listings = new FakeListingsRepo();
   const service = new ProductsService(
     products as unknown as ProductsRepository,
     labResults as unknown as ProductLabResultsRepository,
+    listings as unknown as DispensaryListingsRepository,
   );
-  return { service, products, labResults };
+  return { service, products, labResults, listings };
 }
+
+const DEFAULT_LISTINGS_QUERY: ProductListingsQuery = { limit: 24, offset: 0 };
 
 describe('ProductsService.getById', () => {
   it('projects a complete product row + lab results into ProductResponse', async () => {
@@ -212,5 +266,108 @@ describe('ProductsService.getById', () => {
     const rig = makeRig();
     rig.products.seed(makeProduct({ id: 'p1', isActive: false }));
     await expect(rig.service.getById('p1')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('ProductsService.getListings', () => {
+  it('404s before touching the listings repo when the product is missing', async () => {
+    const rig = makeRig();
+
+    await expect(rig.service.getListings('ghost', DEFAULT_LISTINGS_QUERY)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    expect(rig.listings.calls).toHaveLength(0);
+  });
+
+  it('404s a soft-deleted product', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct({ id: 'p1', deletedAt: new Date('2026-05-15T00:00:00.000Z') }));
+
+    await expect(rig.service.getListings('p1', DEFAULT_LISTINGS_QUERY)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  it('404s an inactive product', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct({ id: 'p1', isActive: false }));
+
+    await expect(rig.service.getListings('p1', DEFAULT_LISTINGS_QUERY)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  it('projects listing rows into the public row shape and resolves the store name', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct());
+    rig.listings.next = {
+      results: [
+        {
+          listing: makeListing({
+            id: '01935f3d-0000-7000-8000-0000000000c1',
+            dispensaryId: '01935f3d-0000-7000-8000-000000000fa1',
+            sku: 'SS-ST-35',
+            priceCents: 4500,
+            compareAtPriceCents: 5000,
+            quantityAvailable: 7,
+          }),
+          dispensaryName: 'The Grove',
+        },
+      ],
+      total: 1,
+    };
+
+    const res = await rig.service.getListings(
+      '01935f3d-0000-7000-8000-000000000001',
+      DEFAULT_LISTINGS_QUERY,
+    );
+
+    expect(res.listings).toEqual([
+      {
+        listingId: '01935f3d-0000-7000-8000-0000000000c1',
+        dispensaryId: '01935f3d-0000-7000-8000-000000000fa1',
+        dispensaryName: 'The Grove',
+        sku: 'SS-ST-35',
+        priceCents: 4500,
+        compareAtPriceCents: 5000,
+        quantityAvailable: 7,
+      },
+    ]);
+
+    // Internal listing columns never leak into the projection.
+    const projected = res.listings[0] as Record<string, unknown>;
+    expect(projected['productId']).toBeUndefined();
+    expect(projected['isActive']).toBeUndefined();
+    expect(projected['imageKeys']).toBeUndefined();
+  });
+
+  it('passes limit/offset to the repo and echoes them plus the repo total in the page', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct());
+    rig.listings.next = { results: [], total: 42 };
+
+    const res = await rig.service.getListings('01935f3d-0000-7000-8000-000000000001', {
+      limit: 10,
+      offset: 20,
+    });
+
+    expect(rig.listings.calls[0]).toEqual({
+      productId: '01935f3d-0000-7000-8000-000000000001',
+      input: { limit: 10, offset: 20 },
+    });
+    expect(res.page).toEqual({ limit: 10, offset: 20, total: 42 });
+  });
+
+  it('returns an empty listing page for a live-but-uncarried product', async () => {
+    const rig = makeRig();
+    rig.products.seed(makeProduct());
+    rig.listings.next = { results: [], total: 0 };
+
+    const res = await rig.service.getListings(
+      '01935f3d-0000-7000-8000-000000000001',
+      DEFAULT_LISTINGS_QUERY,
+    );
+
+    expect(res).toEqual({ listings: [], page: { limit: 24, offset: 0, total: 0 } });
   });
 });

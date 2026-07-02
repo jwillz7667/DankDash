@@ -111,6 +111,11 @@ struct ProductDetailView: View {
       Text(displayName)
         .font(DankFont.title)
         .foregroundStyle(DankColor.Text.primary)
+      if let dispensaryName = store.dispensaryName, !dispensaryName.isEmpty {
+        Text("Sold by \(dispensaryName)")
+          .font(DankFont.bodySmall)
+          .foregroundStyle(DankColor.Text.secondary)
+      }
       HStack(alignment: .firstTextBaseline, spacing: DankSpacing.sm) {
         Text(Self.formatPrice(store.priceCents))
           .font(DankFont.headline)

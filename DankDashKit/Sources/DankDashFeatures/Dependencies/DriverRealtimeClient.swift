@@ -38,6 +38,15 @@ public struct DriverRealtimeClient: Sendable {
   /// the subscriber but leaves the socket up for the location publisher.
   public var events: @Sendable () async -> AsyncStream<DriverOrderStatusChange>
 
+  /// Stream of dispatch-board events for this driver: a new targeted
+  /// offer (`offer:new`), an offer that timed out (`offer:expired`), and
+  /// the namespace-wide "someone claimed this open-pool order"
+  /// (`delivery:claimed`). Opening the stream connects the socket if it
+  /// isn't already up. The consumer reacts by fetching the authoritative
+  /// pending list, dismissing a matching offer sheet, or dropping a
+  /// claimed pin — see ``DriverShiftFeature``.
+  public var dispatchEvents: @Sendable () async -> AsyncStream<DriverDispatchEvent>
+
   /// Tears the connection down and finishes every active event stream.
   /// Called on route teardown / delivery completion.
   public var disconnect: @Sendable () async -> Void
@@ -45,12 +54,30 @@ public struct DriverRealtimeClient: Sendable {
   public init(
     publishLocation: @Sendable @escaping (Coordinate) async -> Void,
     events: @Sendable @escaping () async -> AsyncStream<DriverOrderStatusChange>,
-    disconnect: @Sendable @escaping () async -> Void
+    disconnect: @Sendable @escaping () async -> Void,
+    // Defaulted so existing call sites (and TestStore fixtures that only
+    // exercise the status/location halves) compile unchanged: a client
+    // that doesn't opt in simply never yields a dispatch event.
+    dispatchEvents: @Sendable @escaping () async -> AsyncStream<DriverDispatchEvent> = {
+      AsyncStream { $0.finish() }
+    }
   ) {
     self.publishLocation = publishLocation
     self.events = events
+    self.dispatchEvents = dispatchEvents
     self.disconnect = disconnect
   }
+}
+
+/// A dispatch-board event observed on the `/driver` socket. Kept as a
+/// coarse enum (ids only) because the reducer does not trust the pushed
+/// summary: `offerNew` triggers an authoritative pending-offers fetch,
+/// `offerExpired` dismisses a matching sheet, and `deliveryClaimed`
+/// removes a claimed pin.
+public enum DriverDispatchEvent: Sendable, Equatable {
+  case offerNew(offerId: UUID)
+  case offerExpired(offerId: UUID)
+  case deliveryClaimed(orderId: UUID)
 }
 
 /// A status change observed on the `/driver` socket. The reducer maps
@@ -85,17 +112,19 @@ public extension DriverRealtimeClient {
     return DriverRealtimeClient(
       publishLocation: { coordinate in await connection.publishLocation(coordinate) },
       events: { await connection.events() },
-      disconnect: { await connection.shutdown() }
+      disconnect: { await connection.shutdown() },
+      dispatchEvents: { await connection.dispatchEvents() }
     )
   }
 
-  /// Test/preview fixture — publishing is a no-op and the event stream
-  /// finishes immediately, so a TestStore that forgets to drive status
-  /// changes simply observes nothing rather than hanging.
+  /// Test/preview fixture — publishing is a no-op and every event stream
+  /// finishes immediately, so a TestStore that forgets to drive events
+  /// simply observes nothing rather than hanging.
   static let unimplemented = DriverRealtimeClient(
     publishLocation: { _ in },
     events: { AsyncStream { $0.finish() } },
-    disconnect: { }
+    disconnect: { },
+    dispatchEvents: { AsyncStream { $0.finish() } }
   )
 }
 
@@ -127,6 +156,11 @@ actor DriverRealtimeConnection {
   /// opens exactly one, but the map keeps the actor honest if a view
   /// re-subscribes before the prior stream finishes.
   private var eventContinuations: [UUID: AsyncStream<DriverOrderStatusChange>.Continuation] = [:]
+
+  /// Open dispatch-board subscribers, keyed like ``eventContinuations``.
+  /// Separate map so the shift home can observe offers/claims independently
+  /// of any active-route status subscription.
+  private var dispatchContinuations: [UUID: AsyncStream<DriverDispatchEvent>.Continuation] = [:]
 
   /// Client-side publish throttle. The server enforces ~1/sec too, but
   /// dropping here avoids burning the token bucket and the radio.
@@ -177,11 +211,30 @@ actor DriverRealtimeConnection {
     }
   }
 
+  func dispatchEvents() -> AsyncStream<DriverDispatchEvent> {
+    AsyncStream { [weak self] continuation in
+      guard let self else {
+        continuation.finish()
+        return
+      }
+      let token = UUID()
+      Task { await self.storeDispatchContinuation(token: token, continuation: continuation) }
+      continuation.onTermination = { [weak self] _ in
+        guard let self else { return }
+        Task { await self.removeDispatchContinuation(token: token) }
+      }
+    }
+  }
+
   func shutdown() {
     for (_, continuation) in eventContinuations {
       continuation.finish()
     }
     eventContinuations.removeAll()
+    for (_, continuation) in dispatchContinuations {
+      continuation.finish()
+    }
+    dispatchContinuations.removeAll()
     socket?.disconnect()
     socket = nil
     manager = nil
@@ -200,6 +253,18 @@ actor DriverRealtimeConnection {
 
   private func removeEventContinuation(token: UUID) {
     eventContinuations.removeValue(forKey: token)
+  }
+
+  private func storeDispatchContinuation(
+    token: UUID,
+    continuation: AsyncStream<DriverDispatchEvent>.Continuation
+  ) {
+    dispatchContinuations[token] = continuation
+    ensureConnected()
+  }
+
+  private func removeDispatchContinuation(token: UUID) {
+    dispatchContinuations.removeValue(forKey: token)
   }
 
   // MARK: - SocketIO lifecycle
@@ -302,11 +367,21 @@ actor DriverRealtimeConnection {
       continuation.finish()
     }
     eventContinuations.removeAll()
+    for (_, continuation) in dispatchContinuations {
+      continuation.finish()
+    }
+    dispatchContinuations.removeAll()
   }
 
   private func broadcast(_ change: DriverOrderStatusChange) {
     for (_, continuation) in eventContinuations {
       continuation.yield(change)
+    }
+  }
+
+  private func broadcastDispatch(_ event: DriverDispatchEvent) {
+    for (_, continuation) in dispatchContinuations {
+      continuation.yield(event)
     }
   }
 
@@ -328,6 +403,18 @@ actor DriverRealtimeConnection {
     socket.on("order:status_changed") { [weak self] data, _ in
       self?.handleStatusChanged(data: data)
     }
+    // Dispatch-board fan-out. `offer:new` / `offer:expired` land in this
+    // driver's room; `delivery:claimed` is a namespace-wide broadcast to
+    // every dasher (drop the claimed pin). All three carry ids only.
+    socket.on("offer:new") { [weak self] data, _ in
+      self?.handleOfferNew(data: data)
+    }
+    socket.on("offer:expired") { [weak self] data, _ in
+      self?.handleOfferExpired(data: data)
+    }
+    socket.on("delivery:claimed") { [weak self] data, _ in
+      self?.handleDeliveryClaimed(data: data)
+    }
   }
 
   private nonisolated func handleStatusChanged(data: [Any]) {
@@ -341,5 +428,30 @@ actor DriverRealtimeConnection {
     guard case let .statusChanged(orderId, status, occurredAt) = event else { return }
     let change = DriverOrderStatusChange(orderId: orderId, status: status, occurredAt: occurredAt)
     Task { [weak self] in await self?.broadcast(change) }
+  }
+
+  private nonisolated func handleOfferNew(data: [Any]) {
+    guard let dict = data.first as? [String: Any],
+          let offerId = Self.uuidField(dict, "offerId") else { return }
+    Task { [weak self] in await self?.broadcastDispatch(.offerNew(offerId: offerId)) }
+  }
+
+  private nonisolated func handleOfferExpired(data: [Any]) {
+    guard let dict = data.first as? [String: Any],
+          let offerId = Self.uuidField(dict, "offerId") else { return }
+    Task { [weak self] in await self?.broadcastDispatch(.offerExpired(offerId: offerId)) }
+  }
+
+  private nonisolated func handleDeliveryClaimed(data: [Any]) {
+    guard let dict = data.first as? [String: Any],
+          let orderId = Self.uuidField(dict, "orderId") else { return }
+    Task { [weak self] in await self?.broadcastDispatch(.deliveryClaimed(orderId: orderId)) }
+  }
+
+  /// Pull a UUID out of a socket payload field, tolerating a malformed or
+  /// absent value (returns nil → the handler drops the event rather than
+  /// crashing the socket callback).
+  private nonisolated static func uuidField(_ dict: [String: Any], _ key: String) -> UUID? {
+    (dict[key] as? String).flatMap(UUID.init(uuidString:))
   }
 }

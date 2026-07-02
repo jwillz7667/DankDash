@@ -1311,7 +1311,11 @@ describe('repository coverage', () => {
       expect(again).toBeNull();
 
       const expired = await offers.expireStale(new Date());
-      expect(expired).toBeGreaterThanOrEqual(1);
+      expect(expired.length).toBeGreaterThanOrEqual(1);
+      // The returned rows carry who to notify for the `offer:expired` fan-out.
+      expect(expired.every((row) => row.orderId === orderId && row.driverId === driverId)).toBe(
+        true,
+      );
 
       const forOrder = await offers.listForOrder(orderId);
       expect(forOrder.length).toBeGreaterThanOrEqual(2);
