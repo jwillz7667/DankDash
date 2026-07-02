@@ -45,6 +45,8 @@ import {
   type SettlementScopedReposFactory,
 } from './payment-methods.service.js';
 import type { AeropayClientLike } from './tokens.js';
+import type { DispensaryBankLinkService } from './dispensary-bank-link.service.js';
+import type { PayoutWebhookService } from './payout-webhook.service.js';
 import type {
   OrderTransitionService,
   TransitionRequest,
@@ -460,6 +462,41 @@ class FakeLedgerEntriesRepo {
   };
 }
 
+/**
+ * Records the calls PaymentMethodsService.applyWebhook routes to the
+ * dispensary-bank-link + payout-webhook services. The routing itself is
+ * what these fakes pin here; the services' own behavior is covered by
+ * their dedicated unit suites.
+ */
+class FakeDispensaryBankLinkService {
+  linkedCalls: Array<{ dispensaryId: string; bankAccountId: string }> = [];
+  failedCalls: string[] = [];
+
+  applyBankLinked = (dispensaryId: string, bankAccountId: string): Promise<void> => {
+    this.linkedCalls.push({ dispensaryId, bankAccountId });
+    return Promise.resolve();
+  };
+
+  applyBankFailed = (dispensaryId: string): void => {
+    this.failedCalls.push(dispensaryId);
+  };
+}
+
+class FakePayoutWebhookService {
+  paidCalls: Array<{ ref: string; occurredAt: Date }> = [];
+  failedCalls: Array<{ ref: string; raw: Readonly<Record<string, unknown>> }> = [];
+
+  applyPaid = (ref: string, occurredAt: Date): Promise<void> => {
+    this.paidCalls.push({ ref, occurredAt });
+    return Promise.resolve();
+  };
+
+  applyFailed = (ref: string, raw: Readonly<Record<string, unknown>>): Promise<void> => {
+    this.failedCalls.push({ ref, raw });
+    return Promise.resolve();
+  };
+}
+
 function build(): {
   service: PaymentMethodsService;
   repo: FakePaymentMethodsRepo;
@@ -468,6 +505,8 @@ function build(): {
   orderTransitions: FakeOrderTransitionService;
   ledgerRepo: FakeLedgerEntriesRepo;
   aeropay: FakeAeropayClient;
+  dispensaryBankLink: FakeDispensaryBankLinkService;
+  payoutWebhooks: FakePayoutWebhookService;
 } {
   const repo = new FakePaymentMethodsRepo();
   const txRepo = new FakePaymentTransactionsRepo();
@@ -475,6 +514,8 @@ function build(): {
   const orderTransitions = new FakeOrderTransitionService();
   const ledgerRepo = new FakeLedgerEntriesRepo();
   const aeropay = new FakeAeropayClient();
+  const dispensaryBankLink = new FakeDispensaryBankLinkService();
+  const payoutWebhooks = new FakePayoutWebhookService();
   // The settlement path opens a single transaction. The fake just hands the
   // service back the same singleton repos via the factory closure — there is
   // no real tx isolation to model in unit tests, only the ordering guarantee
@@ -495,8 +536,20 @@ function build(): {
     fakeDb,
     settlementReposFor,
     aeropay,
+    dispensaryBankLink as unknown as DispensaryBankLinkService,
+    payoutWebhooks as unknown as PayoutWebhookService,
   );
-  return { service, repo, txRepo, ordersRepo, orderTransitions, ledgerRepo, aeropay };
+  return {
+    service,
+    repo,
+    txRepo,
+    ordersRepo,
+    orderTransitions,
+    ledgerRepo,
+    aeropay,
+    dispensaryBankLink,
+    payoutWebhooks,
+  };
 }
 
 describe('PaymentMethodsService.list', () => {
@@ -935,27 +988,80 @@ describe('PaymentMethodsService.applyWebhook', () => {
     expect(orderTransitions.calls).toHaveLength(0);
   });
 
-  it('noops on payout.* events (handled by the payouts cron in 6.6)', async () => {
-    const { service, repo, txRepo, orderTransitions } = build();
+  it('routes payout.paid to the payout webhook service with the object id + event time', async () => {
+    const { service, payoutWebhooks, txRepo, orderTransitions } = build();
+    const occurredAt = new Date('2026-05-01T00:00:00.000Z');
 
     await service.applyWebhook({
       type: 'payout.paid',
       eventId: 'evt_test_11',
       objectId: 'po_test_1',
-      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      occurredAt,
       raw: {},
     });
+
+    expect(payoutWebhooks.paidCalls).toEqual([{ ref: 'po_test_1', occurredAt }]);
+    expect(payoutWebhooks.failedCalls).toHaveLength(0);
+    expect(txRepo.findByProviderRefCalls).toHaveLength(0);
+    expect(orderTransitions.calls).toHaveLength(0);
+  });
+
+  it('routes payout.failed to the payout webhook service with the raw envelope', async () => {
+    const { service, payoutWebhooks } = build();
+    const raw = { data: { object: { failure_reason: 'bank_rejected' } } };
+
     await service.applyWebhook({
       type: 'payout.failed',
       eventId: 'evt_test_12',
       objectId: 'po_test_2',
       occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw,
+    });
+
+    expect(payoutWebhooks.failedCalls).toEqual([{ ref: 'po_test_2', raw }]);
+    expect(payoutWebhooks.paidCalls).toHaveLength(0);
+  });
+
+  it('routes a dispensary-namespaced bank_account.linked to the dispensary bank-link service', async () => {
+    const { service, repo, dispensaryBankLink, aeropay } = build();
+    aeropay.bankAccountsById.set(
+      'ba_real_account_123',
+      bankAccount({ customerRef: `dispensary:${DISPENSARY_ID}` }),
+    );
+
+    await service.applyWebhook({
+      type: 'bank_account.linked',
+      eventId: 'evt_test_disp_1',
+      objectId: 'ba_real_account_123',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
       raw: {},
     });
 
-    expect(txRepo.findByProviderRefCalls).toHaveLength(0);
+    expect(dispensaryBankLink.linkedCalls).toEqual([
+      { dispensaryId: DISPENSARY_ID, bankAccountId: 'ba_real_account_123' },
+    ]);
+    // The consumer payment_methods path must not run for a dispensary ref.
+    expect(repo.updateBankAccountDetailsCalls).toHaveLength(0);
+    expect(aeropay.getBankAccountCalls).toEqual(['ba_real_account_123']);
+  });
+
+  it('routes a dispensary-namespaced bank_account.failed to the dispensary bank-link service', async () => {
+    const { service, repo, dispensaryBankLink, aeropay } = build();
+    aeropay.bankAccountsById.set(
+      'ba_real_account_123',
+      bankAccount({ customerRef: `dispensary:${DISPENSARY_ID}`, status: 'failed' }),
+    );
+
+    await service.applyWebhook({
+      type: 'bank_account.failed',
+      eventId: 'evt_test_disp_2',
+      objectId: 'ba_real_account_123',
+      occurredAt: new Date('2026-05-01T00:00:00.000Z'),
+      raw: {},
+    });
+
+    expect(dispensaryBankLink.failedCalls).toEqual([DISPENSARY_ID]);
     expect(repo.updateStatusCalls).toHaveLength(0);
-    expect(orderTransitions.calls).toHaveLength(0);
   });
 });
 
