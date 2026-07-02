@@ -53,7 +53,7 @@ import {
   createUndiciDispatcher as createMetrcDispatcher,
 } from '@dankdash/metrc';
 import { configureRegistry } from '@dankdash/observability';
-import { publishRealtimeEvent } from '@dankdash/realtime-events';
+import { publishRealtimeEvent, type PublishRealtimeEventInput } from '@dankdash/realtime-events';
 import { R2Storage } from '@dankdash/storage';
 import { Redis } from 'ioredis';
 import { uuidv7 } from 'uuidv7';
@@ -144,6 +144,26 @@ async function main(): Promise<void> {
     http: metrcHttp,
   });
 
+  // Single publish connection for every worker-side realtime producer
+  // (dispatch offer:new, offer-expiry offer:expired, eta customer:eta_updated).
+  // Kept off the BLOCKing location-ingest connection because ioredis
+  // serialises commands per connection — an XADD must never queue behind the
+  // ingest XREADGROUP. `family: 0` is required for Railway private networking
+  // (see apps/api/src/infrastructure/redis.module.ts).
+  const realtimePublishRedis = new Redis(env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    family: 0,
+  });
+  realtimePublishRedis.on('error', (err: Error) => {
+    logger.error(
+      { event: 'workers.redis_error', connection: 'realtime-publish', err: err.message },
+      'workers: redis client error',
+    );
+  });
+  const publishRealtime = (input: PublishRealtimeEventInput): Promise<string> =>
+    publishRealtimeEvent(realtimePublishRedis, input);
+
   const payoutTask = schedulePayoutJob(
     { dispensaries, ledger, payouts, aeropay, logger },
     { cronMetrics },
@@ -165,8 +185,15 @@ async function main(): Promise<void> {
       ...DEFAULT_SCORING_PARAMS,
       maxRadiusMeters: env.DISPATCH_RADIUS_MILES * 1609.344,
     },
+    publish: publishRealtime,
+    idGen: uuidv7,
   });
-  const offerExpiryTask = scheduleOfferExpiryJob({ dispatchOffers, logger });
+  const offerExpiryTask = scheduleOfferExpiryJob({
+    dispatchOffers,
+    logger,
+    publish: publishRealtime,
+    idGen: uuidv7,
+  });
 
   // Archive bucket shares the same R2 account as the rest of the storage
   // layer. We construct a dedicated client here rather than reuse one
@@ -231,13 +258,11 @@ async function main(): Promise<void> {
       })
     : null;
 
-  // Two extra Redis connections for the ETA path:
-  //   - etaCacheRedis: GET/SETEX on the eta:v1:* keyspace, sub-second timeouts.
-  //   - etaPublishRedis: XADD to dankdash:realtime.
-  // We deliberately keep these off the location-ingest connection because
-  // ioredis serialises commands per connection and the ingest connection
-  // spends most of its time BLOCKed on XREADGROUP; any XADD/GET queued
-  // behind it would wait up to `blockMs` for no reason.
+  // Dedicated cache connection for the ETA path (GET/SETEX on the eta:v1:*
+  // keyspace, sub-second timeouts). Kept off both the BLOCKing
+  // location-ingest connection and the shared realtime-publish connection so
+  // a slow cache round-trip never stalls an XADD or vice versa. The XADD
+  // side rides `realtimePublishRedis` (created above).
   // `family: 0` is required for Railway private networking — see the
   // commentary on apps/api/src/infrastructure/redis.module.ts.
   const etaCacheRedis = new Redis(env.REDIS_URL, {
@@ -245,22 +270,12 @@ async function main(): Promise<void> {
     enableReadyCheck: true,
     family: 0,
   });
-  const etaPublishRedis = new Redis(env.REDIS_URL, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: true,
-    family: 0,
+  etaCacheRedis.on('error', (err: Error) => {
+    logger.error(
+      { event: 'workers.redis_error', connection: 'eta-cache', err: err.message },
+      'workers: redis client error',
+    );
   });
-  for (const [name, client] of [
-    ['eta-cache', etaCacheRedis],
-    ['eta-publish', etaPublishRedis],
-  ] as const) {
-    client.on('error', (err: Error) => {
-      logger.error(
-        { event: 'workers.redis_error', connection: name, err: err.message },
-        'workers: redis client error',
-      );
-    });
-  }
   const mapbox = new MapboxClient({ accessToken: env.MAPBOX_ACCESS_TOKEN });
   const etaService = new EtaService({ redis: etaCacheRedis, mapbox, logger });
 
@@ -268,7 +283,7 @@ async function main(): Promise<void> {
   const etaObserver = createEtaObserver({
     orders,
     eta: etaService,
-    publish: (input) => publishRealtimeEvent(etaPublishRedis, input),
+    publish: publishRealtime,
     logger,
     idGen: uuidv7,
   });
@@ -317,7 +332,7 @@ async function main(): Promise<void> {
     metrcReconciliationTask?.stop();
     await locationIngest.stop();
     etaCacheRedis.disconnect();
-    etaPublishRedis.disconnect();
+    realtimePublishRedis.disconnect();
     // Close the HTTP listener before flushing OTel so the final scrape
     // (if any) sees the same counters the trace exporter is about to
     // ship; then flush spans before closing the pool so any in-flight

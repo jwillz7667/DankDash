@@ -63,6 +63,18 @@ export interface AvailableDeliveryRow {
   readonly awaitingDriverAt: Date | null;
 }
 
+/**
+ * Row returned by {@link DispatchOffersRepository.expireStale} — the
+ * identifying fields a caller needs to fan an `offer:expired` realtime
+ * event to the driver whose offer just timed out. Narrow on purpose: the
+ * expiry job never needs the full offer row, only who to notify.
+ */
+export interface ExpiredOffer {
+  readonly id: string;
+  readonly orderId: string;
+  readonly driverId: string;
+}
+
 interface DriverRow extends Omit<Driver, 'currentLocation'> {
   readonly currentLocation: string | null;
 }
@@ -698,15 +710,20 @@ export class DispatchOffersRepository extends BaseRepository {
 
   /**
    * Bulk-expire offers whose `expires_at` has passed without a response. Run
-   * by a scheduled job — returns the count of expired offers for telemetry.
+   * by a scheduled job — returns the expired rows (id + order + driver) so
+   * the caller can fan an `offer:expired` realtime event to each affected
+   * driver; `rows.length` is the count for telemetry.
    */
-  async expireStale(now: Date): Promise<number> {
-    const rows = await this.db
+  async expireStale(now: Date): Promise<readonly ExpiredOffer[]> {
+    return this.db
       .update(dispatchOffers)
       .set({ status: 'expired', respondedAt: now })
       .where(and(eq(dispatchOffers.status, 'offered'), lte(dispatchOffers.expiresAt, now)))
-      .returning({ id: dispatchOffers.id });
-    return rows.length;
+      .returning({
+        id: dispatchOffers.id,
+        orderId: dispatchOffers.orderId,
+        driverId: dispatchOffers.driverId,
+      });
   }
 
   /**

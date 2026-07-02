@@ -29,6 +29,7 @@ import {
   type AttemptParams,
 } from '@dankdash/dispatch';
 import { OrderError } from '@dankdash/orders';
+import { type PublishRealtimeEventInput } from '@dankdash/realtime-events';
 import { RepositoryError } from '@dankdash/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDispatchJob } from './dispatch.job.js';
@@ -276,6 +277,82 @@ describe('runDispatchJob', () => {
       NOW.getTime() + DEFAULT_ATTEMPT_PARAMS.perDriverBudgetMs,
     );
     expect(fakes.applyTransition).not.toHaveBeenCalled();
+  });
+
+  it('publishes an offer:new envelope for the newly-created offer', async () => {
+    const order = makeOrder({ deliveryFeeCents: 800, driverTipCents: 200 });
+    const candidate = makeCandidate({ driverId: 'driver-1', distanceMeters: 1609.344 });
+    const fakes = makeFakes({ awaitingOrders: [order], candidates: [candidate] });
+    const { logger } = makeLogger();
+    const published: PublishRealtimeEventInput[] = [];
+
+    await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        publish: (input) => {
+          published.push(input);
+          return Promise.resolve('0-1');
+        },
+        idGen: () => 'envelope-1',
+      },
+    });
+
+    expect(published).toEqual([
+      {
+        id: 'envelope-1',
+        emittedAt: NOW.toISOString(),
+        source: 'workers',
+        event: {
+          type: 'offer:new',
+          payload: {
+            offerId: 'offer-new',
+            orderId: 'order-1',
+            driverId: 'driver-1',
+            expiresAt: new Date(
+              NOW.getTime() + DEFAULT_ATTEMPT_PARAMS.perDriverBudgetMs,
+            ).toISOString(),
+            payoutEstimateCents: 1000,
+            // '1.00' NUMERIC string coerced to a number for the wire schema.
+            distanceMiles: 1,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('swallows an offer:new publish failure — the offer is already persisted', async () => {
+    const order = makeOrder();
+    const candidate = makeCandidate({ driverId: 'driver-1', distanceMeters: 1609.344 });
+    const fakes = makeFakes({ awaitingOrders: [order], candidates: [candidate] });
+    const { logger, logs } = makeLogger();
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        publish: () => Promise.reject(new Error('xadd down')),
+        idGen: () => 'envelope-1',
+      },
+    });
+
+    // The offer was still created and counted; the publish failure did not
+    // abort the tick.
+    expect(summary.offered).toBe(1);
+    expect(summary.errors).toBe(0);
+    expect(fakes.createOffer).toHaveBeenCalledTimes(1);
+    const warned = logs.filter((l) => l.level === 'warn');
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.fields).toMatchObject({
+      event: 'dispatch.offer_new_publish_failed',
+      offerId: 'offer-new',
+    });
   });
 
   it('does not create a new offer when a live offer is in flight', async () => {
