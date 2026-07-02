@@ -267,15 +267,29 @@ struct CartView: View {
           .font(DankFont.headline.monospacedDigit())
           .foregroundStyle(DankColor.Text.primary)
       }
-      CheckoutCTAButton(
-        isLoading: store.isPromoting || store.isValidating,
-        isEnabled: store.canCheckout,
-        action: { store.send(.checkoutTapped) }
-      )
-      Text("Checkout opens on dankdash.com per App Store policy.")
-        .font(DankFont.caption)
-        .foregroundStyle(DankColor.Text.muted)
-        .multilineTextAlignment(.center)
+      if store.needsKYCVerification {
+        DankButton(
+          "Verify your ID to check out",
+          style: .primary,
+          size: .large,
+          isLoading: store.isValidating,
+          action: { store.send(.verifyIdentityTapped) }
+        )
+        Text("Minnesota requires a one-time ID check before your first order.")
+          .font(DankFont.caption)
+          .foregroundStyle(DankColor.Text.muted)
+          .multilineTextAlignment(.center)
+      } else {
+        CheckoutCTAButton(
+          isLoading: store.isPromoting || store.isValidating,
+          isEnabled: store.canCheckout,
+          action: { store.send(.checkoutTapped) }
+        )
+        Text("Checkout opens on dankdash.com per App Store policy.")
+          .font(DankFont.caption)
+          .foregroundStyle(DankColor.Text.muted)
+          .multilineTextAlignment(.center)
+      }
       if store.paymentBypassEnabled {
         DankButton(
           "Place test order",

@@ -141,6 +141,72 @@ final class CartFeatureTests: XCTestCase {
     XCTAssertFalse(store.state.canCheckout, "Failing evaluation must disable the CTA")
   }
 
+  // MARK: - KYC gating
+
+  func test_needsKYCVerification_trueWhenKycRuleFails() {
+    let failing = makeEvaluation(
+      passed: false,
+      rules: [
+        RuleResult(
+          rule: .kyc,
+          passed: false,
+          details: AnyValue.object(["verified": .bool(false), "verifiedAt": .null])
+        )
+      ]
+    )
+    let state = CartFeature.State(evaluation: failing)
+    XCTAssertTrue(state.needsKYCVerification)
+    XCTAssertFalse(state.canCheckout, "an unverified cart cannot check out")
+  }
+
+  func test_needsKYCVerification_falseWhenOnlyAnotherRuleFails() {
+    let failing = makeEvaluation(
+      passed: false,
+      rules: [
+        RuleResult(
+          rule: .perTransactionLimit,
+          passed: false,
+          details: AnyValue.object(["flowerGramsOver": .double(1.0)])
+        ),
+        RuleResult(rule: .kyc, passed: true, details: AnyValue.null)
+      ]
+    )
+    let state = CartFeature.State(evaluation: failing)
+    XCTAssertFalse(state.needsKYCVerification, "a passing kyc rule must not trigger the verify CTA")
+  }
+
+  func test_needsKYCVerification_falseWhenEvaluationPasses() {
+    let state = CartFeature.State(evaluation: makeEvaluation(passed: true))
+    XCTAssertFalse(state.needsKYCVerification)
+  }
+
+  func test_verifyIdentityTapped_emitsKycVerificationRequested_whenBlockedOnKyc() async {
+    let failing = makeEvaluation(
+      passed: false,
+      rules: [RuleResult(rule: .kyc, passed: false, details: AnyValue.null)]
+    )
+    let store = TestStore(initialState: CartFeature.State(evaluation: failing)) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSinceReferenceDate: 0))
+    }
+
+    await store.send(.verifyIdentityTapped)
+    await store.receive(\.delegate.kycVerificationRequested)
+  }
+
+  func test_verifyIdentityTapped_isNoop_whenNotBlockedOnKyc() async {
+    let store = TestStore(
+      initialState: CartFeature.State(evaluation: makeEvaluation(passed: true))
+    ) {
+      CartFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSinceReferenceDate: 0))
+    }
+
+    await store.send(.verifyIdentityTapped)
+  }
+
   // MARK: - Quantity stepper debounce
 
   func test_quantityStepped_debouncedPatch_singleNetworkCall() async {
