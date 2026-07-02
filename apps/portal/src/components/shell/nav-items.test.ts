@@ -14,6 +14,7 @@ describe('visibleFor', () => {
     // products (the server still enforces all compliance limits).
     expect(keys).toContain('products');
     expect(keys).not.toContain('staff');
+    expect(keys).not.toContain('promotions');
     expect(keys).not.toContain('payouts');
     expect(keys).not.toContain('settings');
   });
@@ -26,6 +27,7 @@ describe('visibleFor', () => {
       'menu',
       'products',
       'staff',
+      'promotions',
       'payouts',
       'analytics',
       'settings',
