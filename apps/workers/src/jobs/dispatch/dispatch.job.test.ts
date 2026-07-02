@@ -278,6 +278,69 @@ describe('runDispatchJob', () => {
     expect(fakes.applyTransition).not.toHaveBeenCalled();
   });
 
+  it('publishes an offer:new realtime envelope when an offerPublisher is wired', async () => {
+    const order = makeOrder({ deliveryFeeCents: 800, driverTipCents: 200 });
+    const candidate = makeCandidate({ driverId: 'driver-1', distanceMeters: 1609.344 });
+    const fakes = makeFakes({ awaitingOrders: [order], candidates: [candidate] });
+    const { logger } = makeLogger();
+    const publish = vi.fn().mockResolvedValue('1700000000000-0');
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        offerPublisher: { publish, idGen: () => 'envelope-1' },
+      },
+    });
+
+    expect(summary.offered).toBe(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0]?.[0]).toEqual({
+      id: 'envelope-1',
+      emittedAt: NOW.toISOString(),
+      source: 'workers',
+      event: {
+        type: 'offer:new',
+        payload: {
+          offerId: 'offer-new',
+          orderId: 'order-1',
+          driverId: 'driver-1',
+          expiresAt: new Date(
+            NOW.getTime() + DEFAULT_ATTEMPT_PARAMS.perDriverBudgetMs,
+          ).toISOString(),
+          payoutEstimateCents: 1000,
+          distanceMiles: 1,
+        },
+      },
+    });
+  });
+
+  it('swallows an offer:new publish failure — the offer still counts', async () => {
+    const order = makeOrder({ deliveryFeeCents: 800, driverTipCents: 200 });
+    const candidate = makeCandidate({ driverId: 'driver-1', distanceMeters: 1609.344 });
+    const fakes = makeFakes({ awaitingOrders: [order], candidates: [candidate] });
+    const { logger } = makeLogger();
+    const publish = vi.fn().mockRejectedValue(new Error('redis down'));
+
+    const summary = await runDispatchJob({
+      now: NOW,
+      deps: {
+        orders: fakes.orders,
+        drivers: fakes.drivers,
+        dispatchOffers: fakes.dispatchOffers,
+        logger: logger as never,
+        offerPublisher: { publish, idGen: () => 'envelope-1' },
+      },
+    });
+
+    expect(summary.offered).toBe(1);
+    expect(summary.errors).toBe(0);
+    expect(fakes.createOffer).toHaveBeenCalledTimes(1);
+  });
+
   it('does not create a new offer when a live offer is in flight', async () => {
     const order = makeOrder();
     const liveOffer: DispatchOffer = {
