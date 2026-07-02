@@ -14,6 +14,7 @@ import {
   type ProductCategory,
   type ProductLabResult,
 } from '../schema/catalog.js';
+import { dispensaries } from '../schema/dispensaries.js';
 import { BaseRepository, newId } from './base.js';
 import type { StrainType } from '../schema/enums.js';
 
@@ -468,6 +469,71 @@ export class DispensaryListingsRepository extends BaseRepository {
       )
       .orderBy(products.brand, products.name);
     return rows;
+  }
+
+  /**
+   * Public cross-dispensary read — every store actively carrying a given
+   * product, in-stock, joined to the store so the consumer can see (and pick)
+   * which dispensary a search hit resolves to. This is the read the consumer
+   * app issues when a product is opened from *search* (which is dispensary-
+   * agnostic): a product can be listed by many stores at different prices, so
+   * the client resolves a concrete listing before it can enqueue a cart line.
+   *
+   * Filters mirror `listMenuForDispensary` (active + in-stock listing) and add
+   * the dispensary-side gate the menu path enforces via its own `getById`
+   * pre-flight: only `active`, non-deleted stores surface, so a paused or
+   * tombstoned dispensary never leaks an addable listing.
+   *
+   * Ordered by `price_cents, id` so the "cheapest listing" default the client
+   * picks is deterministic and pagination is stable. The `product_id` filter
+   * hits `dispensary_listings_product_idx`; the join to `dispensaries` is a PK
+   * lookup — no full scan. The per-product result set is small (a handful of
+   * stores), so the price sort over the filtered rows is cheap.
+   */
+  async listAvailableForProduct(
+    productId: string,
+    input: { readonly limit: number; readonly offset: number },
+  ): Promise<{
+    readonly results: readonly {
+      readonly listing: DispensaryListing;
+      readonly dispensaryName: string;
+    }[];
+    readonly total: number;
+  }> {
+    const whereClause = and(
+      eq(dispensaryListings.productId, productId),
+      eq(dispensaryListings.isActive, true),
+      sql`${dispensaryListings.quantityAvailable} > 0`,
+      eq(dispensaries.status, 'active'),
+      isNull(dispensaries.deletedAt),
+    );
+
+    const [rows, totalRows] = await Promise.all([
+      this.db
+        .select({
+          listing: dispensaryListings,
+          dba: dispensaries.dba,
+          legalName: dispensaries.legalName,
+        })
+        .from(dispensaryListings)
+        .innerJoin(dispensaries, eq(dispensaryListings.dispensaryId, dispensaries.id))
+        .where(whereClause)
+        .orderBy(dispensaryListings.priceCents, dispensaryListings.id)
+        .limit(input.limit)
+        .offset(input.offset),
+      this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(dispensaryListings)
+        .innerJoin(dispensaries, eq(dispensaryListings.dispensaryId, dispensaries.id))
+        .where(whereClause),
+    ]);
+
+    return {
+      // The public storefront name is the DBA when present, else the legal
+      // name — same precedence the iOS `Dispensary.displayName` uses.
+      results: rows.map((r) => ({ listing: r.listing, dispensaryName: r.dba ?? r.legalName })),
+      total: totalRows[0]?.count ?? 0,
+    };
   }
 
   async create(
