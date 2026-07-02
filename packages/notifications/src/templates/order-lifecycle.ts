@@ -70,6 +70,31 @@ export const orderReadyTemplate: Template<'order.ready'> = (payload) => {
   ];
 };
 
+export const orderDriverAssignedTemplate: Template<'order.driver_assigned'> = (payload) => {
+  const short = formatOrderShort(payload.orderId);
+  const body = `${payload.driverFirstName} is on the way to pick up your order ${short}.`;
+  return [
+    {
+      channel: 'push',
+      title: 'Driver assigned',
+      body,
+      data: {
+        templateKey: 'order.driver_assigned',
+        orderId: payload.orderId,
+        driverFirstName: payload.driverFirstName,
+      },
+      contentAvailable: false,
+      collapseId: `order-${payload.orderId}`,
+    },
+    {
+      channel: 'in_app',
+      title: 'Driver assigned',
+      body,
+      data: { templateKey: 'order.driver_assigned', orderId: payload.orderId },
+    },
+  ];
+};
+
 export const orderPickedUpTemplate: Template<'order.picked_up'> = (payload) => {
   const short = formatOrderShort(payload.orderId);
   const body = `${payload.driverFirstName} picked up your order ${short} and is heading your way.`;
@@ -163,6 +188,54 @@ export const orderCompletedTemplate: Template<'order.completed'> = (payload) => 
       channel: 'email',
       subject: `Your DankDash order ${short} was delivered`,
       text: emailBody,
+    },
+  ];
+};
+
+export const orderCanceledTemplate: Template<'order.canceled'> = (payload) => {
+  const short = formatOrderShort(payload.orderId);
+  const body = `Your order ${short} was canceled. ${payload.reason}`;
+  return [
+    {
+      channel: 'push',
+      title: 'Order canceled',
+      body,
+      data: { templateKey: 'order.canceled', orderId: payload.orderId },
+      contentAvailable: false,
+      collapseId: `order-${payload.orderId}`,
+    },
+    {
+      channel: 'in_app',
+      title: 'Order canceled',
+      body,
+      data: { templateKey: 'order.canceled', orderId: payload.orderId },
+    },
+  ];
+};
+
+export const orderRejectedTemplate: Template<'order.rejected'> = (payload) => {
+  const short = formatOrderShort(payload.orderId);
+  const body = `${payload.dispensaryName} couldn't accept your order ${short}. ${payload.reason}`;
+  const emailText = `Unfortunately, ${payload.dispensaryName} was unable to accept your order ${short}.\n\nReason: ${payload.reason}\n\nIf you were charged, a full refund is on its way and will appear on your original payment method within 3–5 business days. Open the DankDash app to browse other dispensaries near you.\n\n— The DankDash team`;
+  return [
+    {
+      channel: 'push',
+      title: 'Order not accepted',
+      body,
+      data: { templateKey: 'order.rejected', orderId: payload.orderId },
+      contentAvailable: false,
+      collapseId: `order-${payload.orderId}`,
+    },
+    {
+      channel: 'in_app',
+      title: 'Order not accepted',
+      body,
+      data: { templateKey: 'order.rejected', orderId: payload.orderId },
+    },
+    {
+      channel: 'email',
+      subject: `Your DankDash order ${short} could not be accepted`,
+      text: emailText,
     },
   ];
 };

@@ -1,5 +1,5 @@
 -- ============================================================================
--- DankDash — 0016_driver_aeropay_account
+-- DankDash — 0017_driver_aeropay_account
 --
 -- Adds the driver payout bank-account column — the driver-side analogue of
 -- `dispensaries.aeropay_account_ref` (0000_init). A driver must have a linked

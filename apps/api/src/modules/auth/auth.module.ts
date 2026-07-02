@@ -14,6 +14,7 @@
 import { UsersRepository } from '@dankdash/db';
 import { Module, type FactoryProvider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AuthController } from './auth.controller.js';
 import { AuthService, type AuthServiceConfig } from './auth.service.js';
 import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
@@ -35,6 +36,7 @@ const authServiceProvider: FactoryProvider<AuthService> = {
     JwtService,
     RefreshTokenService,
     MfaService,
+    EventEmitter2,
     ConfigService,
   ],
   useFactory: (
@@ -43,12 +45,13 @@ const authServiceProvider: FactoryProvider<AuthService> = {
     jwt: JwtService,
     refresh: RefreshTokenService,
     mfa: MfaService,
+    events: EventEmitter2,
     config: ConfigService,
   ): AuthService => {
     const cfg: AuthServiceConfig = {
       accessTtlSeconds: Number(config.getOrThrow<string | number>('JWT_ACCESS_TTL_SECONDS')),
     };
-    return new AuthService(users, password, jwt, refresh, mfa, cfg);
+    return new AuthService(users, password, jwt, refresh, mfa, events, cfg);
   },
 };
 

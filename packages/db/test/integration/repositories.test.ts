@@ -587,6 +587,28 @@ describe('repository coverage', () => {
       expect(paused?.status).toBe('paused');
       await dispensaries.updateStatus(MG, 'active');
     });
+
+    it('applyRating folds one rating into the running aggregate (numeric, no float drift)', async () => {
+      const pool = getPool();
+      const dispensaries = new DispensariesRepository(pool.db);
+
+      const before = await dispensaries.findById(MG);
+      const prevAvg = Number(before!.ratingAvg);
+      const prevCount = before!.ratingCount;
+
+      await dispensaries.applyRating(MG, 5);
+
+      const after = await dispensaries.findById(MG);
+      const expectedAvg = ((prevAvg * prevCount + 5) / (prevCount + 1)).toFixed(2);
+      expect(after?.ratingAvg).toBe(expectedAvg);
+      expect(after?.ratingCount).toBe(prevCount + 1);
+
+      // Restore so the shared container stays clean for other tests.
+      await pool.sql.unsafe(
+        `UPDATE dispensaries SET rating_avg = $1, rating_count = $2 WHERE id = $3::uuid`,
+        [before!.ratingAvg, prevCount, MG],
+      );
+    });
   });
 
   describe('DispensaryStaffRepository', () => {
@@ -1145,6 +1167,38 @@ describe('repository coverage', () => {
 
       await drivers.setCurrentOrder(driverId, null);
       await drivers.setStatus(driverId, 'offline');
+    });
+
+    it('applyRatingByUserId folds ratings incrementally from an unrated start', async () => {
+      const pool = getPool();
+      const drivers = new DriversRepository(pool.db);
+      const driverUserId = stableUuid('user', 'driver-3');
+
+      const before = await drivers.findByUserId(driverUserId);
+      expect(before?.ratingAvg).toBeNull();
+      expect(before?.ratingCount).toBe(0);
+
+      // First rating from NULL/0: (0*0 + 5)/1 = 5.00, count 1.
+      await drivers.applyRatingByUserId(driverUserId, 5);
+      const one = await drivers.findByUserId(driverUserId);
+      expect(one?.ratingAvg).toBe('5.00');
+      expect(one?.ratingCount).toBe(1);
+
+      // Second rating: (5.00*1 + 2)/2 = 3.50, count 2 — numeric division,
+      // no integer truncation (would be 3 if it truncated).
+      await drivers.applyRatingByUserId(driverUserId, 2);
+      const two = await drivers.findByUserId(driverUserId);
+      expect(two?.ratingAvg).toBe('3.50');
+      expect(two?.ratingCount).toBe(2);
+
+      // A user id with no drivers row is a no-op (0 rows), not an error.
+      await drivers.applyRatingByUserId(stableUuid('user', 'customer-1'), 5);
+
+      // Restore so the shared container stays clean for other tests.
+      await pool.sql.unsafe(
+        `UPDATE drivers SET rating_avg = NULL, rating_count = 0 WHERE user_id = $1::uuid`,
+        [driverUserId],
+      );
     });
 
     it('DispatchOffersRepository: offer, respond, expireStale', async () => {

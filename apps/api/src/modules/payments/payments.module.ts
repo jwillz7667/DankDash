@@ -70,6 +70,7 @@ import {
 } from '@dankdash/db';
 import { Module, type FactoryProvider, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Redis } from 'ioredis';
 import { createDisabledFeatureProxy } from '../../common/disabled-feature.proxy.js';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
@@ -319,6 +320,7 @@ const refundsServiceProvider: FactoryProvider<RefundsService> = {
     RefundsRepository,
     DRIZZLE_DB,
     AEROPAY_CLIENT,
+    EventEmitter2,
   ],
   useFactory: (
     orders: OrdersRepository,
@@ -326,8 +328,9 @@ const refundsServiceProvider: FactoryProvider<RefundsService> = {
     refunds: RefundsRepository,
     db: Database,
     client: AeropayClient,
+    events: EventEmitter2,
   ): RefundsService =>
-    new RefundsService(orders, paymentTransactions, refunds, db, refundReposFor, client),
+    new RefundsService(orders, paymentTransactions, refunds, db, refundReposFor, client, events),
 };
 
 const providers: Provider[] = [

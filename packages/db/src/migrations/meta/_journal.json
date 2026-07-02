@@ -118,7 +118,14 @@
       "idx": 16,
       "version": "7",
       "when": 1748275200007,
-      "tag": "0016_driver_aeropay_account",
+      "tag": "0016_rating_aggregates_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1748275200008,
+      "tag": "0017_driver_aeropay_account",
       "breakpoints": true
     }
   ]

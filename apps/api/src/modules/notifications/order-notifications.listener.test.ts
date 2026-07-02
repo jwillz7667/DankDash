@@ -263,6 +263,7 @@ function buildHarness(): Harness {
 function buildEvent(
   toStatus: OrderState,
   event: OrderEventType = 'VENDOR_ACCEPT',
+  reason?: string,
 ): OrderTransitionedEvent {
   return new OrderTransitionedEvent({
     orderId: ORDER_ID,
@@ -271,6 +272,7 @@ function buildEvent(
     event,
     actor: { role: 'system' },
     occurredAt: CREATED_AT,
+    ...(reason !== undefined ? { reason } : {}),
   });
 }
 
@@ -317,6 +319,30 @@ describe('OrderNotificationsListener', () => {
     await h.listener.onOrderTransitioned(buildEvent('ready_for_pickup'));
 
     expect(h.dispatcher.calls[0]?.templateKey).toBe('order.ready');
+  });
+
+  it('routes driver_assigned → order.driver_assigned with driverFirstName from driver→user chain', async () => {
+    h.orders.rowsById.set(ORDER_ID, buildOrder({ driverId: DRIVER_ID }));
+    h.drivers.rowsById.set(DRIVER_ID, buildDriver());
+    h.users.rowsById.set(DRIVER_USER_ID, buildUser(DRIVER_USER_ID, 'Alex'));
+
+    await h.listener.onOrderTransitioned(buildEvent('driver_assigned', 'DRIVER_ASSIGNED'));
+
+    expect(h.dispatcher.calls).toEqual([
+      {
+        userId: USER_ID,
+        templateKey: 'order.driver_assigned',
+        payload: { orderId: ORDER_ID, driverFirstName: 'Alex' },
+        appVariant: 'consumer',
+        idempotencyKey: `${ORDER_ID}:driver_assigned`,
+      },
+    ]);
+  });
+
+  it('skips driver_assigned when the order has no driver (driverId null)', async () => {
+    await h.listener.onOrderTransitioned(buildEvent('driver_assigned', 'DRIVER_ASSIGNED'));
+
+    expect(h.dispatcher.calls).toEqual([]);
   });
 
   it('routes picked_up → order.picked_up with driverFirstName from driver→user chain', async () => {
@@ -402,9 +428,58 @@ describe('OrderNotificationsListener', () => {
     expect(h.dispatcher.calls).toEqual([]);
   });
 
-  it('is a silent no-op for terminal cancellation states', async () => {
-    await h.listener.onOrderTransitioned(buildEvent('canceled'));
-    await h.listener.onOrderTransitioned(buildEvent('rejected'));
+  it('routes canceled → order.canceled with the order cancelReason', async () => {
+    h.orders.rowsById.set(ORDER_ID, buildOrder({ cancelReason: 'Store ran out of stock.' }));
+
+    await h.listener.onOrderTransitioned(buildEvent('canceled', 'CUSTOMER_CANCEL'));
+
+    expect(h.dispatcher.calls).toEqual([
+      {
+        userId: USER_ID,
+        templateKey: 'order.canceled',
+        payload: { orderId: ORDER_ID, reason: 'Store ran out of stock.' },
+        appVariant: 'consumer',
+        idempotencyKey: `${ORDER_ID}:canceled`,
+      },
+    ]);
+  });
+
+  it('routes canceled → order.canceled with a default reason when cancelReason is null', async () => {
+    await h.listener.onOrderTransitioned(buildEvent('canceled', 'CUSTOMER_CANCEL'));
+
+    expect(h.dispatcher.calls[0]?.payload).toEqual({
+      orderId: ORDER_ID,
+      reason: 'Your order was canceled.',
+    });
+  });
+
+  it('routes rejected → order.rejected with the event reason and dispensary name', async () => {
+    await h.listener.onOrderTransitioned(
+      buildEvent('rejected', 'VENDOR_REJECT', 'Out of the requested strain.'),
+    );
+
+    expect(h.dispatcher.calls).toEqual([
+      {
+        userId: USER_ID,
+        templateKey: 'order.rejected',
+        payload: {
+          orderId: ORDER_ID,
+          dispensaryName: 'Green Roots',
+          reason: 'Out of the requested strain.',
+        },
+        appVariant: 'consumer',
+        idempotencyKey: `${ORDER_ID}:rejected`,
+      },
+    ]);
+  });
+
+  it('routes rejected → order.rejected with a default reason when the event carries none', async () => {
+    await h.listener.onOrderTransitioned(buildEvent('rejected', 'VENDOR_REJECT'));
+
+    expect((h.dispatcher.calls[0]?.payload as { reason: string }).reason).toMatch(/unable to/i);
+  });
+
+  it('is a silent no-op for transitions with no template (returned_to_store)', async () => {
     await h.listener.onOrderTransitioned(buildEvent('returned_to_store'));
 
     expect(h.dispatcher.calls).toEqual([]);
