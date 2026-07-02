@@ -145,7 +145,7 @@ async function main(): Promise<void> {
   });
 
   const payoutTask = schedulePayoutJob(
-    { dispensaries, ledger, payouts, aeropay, logger },
+    { dispensaries, drivers, ledger, payouts, aeropay, logger },
     { cronMetrics },
   );
   const webhookCleanupTask = scheduleWebhookEventsCleanupJob(
