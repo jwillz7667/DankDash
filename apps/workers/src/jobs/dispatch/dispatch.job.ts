@@ -48,9 +48,21 @@ import {
   type ScoringParams,
 } from '@dankdash/dispatch';
 import { nextOrderState, OrderError } from '@dankdash/orders';
+import { type PublishRealtimeEventInput } from '@dankdash/realtime-events';
 import { RepositoryError } from '@dankdash/types';
 
 const METERS_PER_MILE = 1609.344;
+
+/**
+ * Publishes an `offer:new` realtime envelope onto `dankdash:realtime`.
+ * Wraps `publishRealtimeEvent(redis, …)` at the composition root so the
+ * job stays Redis-free and testable. Optional: when omitted (e.g. in the
+ * targeting unit tests) the tick issues offers without a realtime push.
+ */
+export interface DispatchOfferPublisher {
+  readonly publish: (input: PublishRealtimeEventInput) => Promise<string>;
+  readonly idGen: () => string;
+}
 
 export interface DispatchJobDeps {
   readonly orders: OrdersRepository;
@@ -75,6 +87,15 @@ export interface DispatchJobDeps {
    * `DISPATCH_OPEN_POOL_ENABLED` (env default `true`).
    */
   readonly openPoolEnabled?: boolean;
+  /**
+   * Realtime publisher for `offer:new`. When set, a targeted offer INSERT
+   * also emits an `offer:new` envelope so the realtime service can push
+   * the offer to the driver's socket (the DankDasher app's offer feed).
+   * Best-effort — a publish failure is logged and never aborts the tick,
+   * since the offer row is already durable and the driver app polls as a
+   * fallback. Open-pool mode issues no offers, so this is never called there.
+   */
+  readonly offerPublisher?: DispatchOfferPublisher;
 }
 
 export interface DispatchJobInput {
@@ -327,7 +348,8 @@ async function persistOffer(
       { driverId, candidateCount: candidates.length },
     );
   }
-  const distanceMiles = (candidate.distanceMeters / METERS_PER_MILE).toFixed(2);
+  const distanceMilesNum = Number((candidate.distanceMeters / METERS_PER_MILE).toFixed(2));
+  const distanceMiles = distanceMilesNum.toFixed(2);
 
   // Phase 8.3 estimate: delivery fee + tip. The actual payout (Phase 6.6
   // ledger) layers on per-mile reimbursement computed from the real
@@ -337,7 +359,7 @@ async function persistOffer(
   // reads a `dispatch_offers` row.
   const payoutEstimateCents = order.deliveryFeeCents + order.driverTipCents;
 
-  await deps.dispatchOffers.create({
+  const offer = await deps.dispatchOffers.create({
     orderId: order.id,
     driverId,
     offeredAt: now,
@@ -351,6 +373,60 @@ async function persistOffer(
     { orderId: order.id, driverId, expiresAt, payoutEstimateCents, distanceMiles },
     'dispatch: offer issued',
   );
+
+  await publishOfferNew(
+    offer.id,
+    order,
+    driverId,
+    expiresAt,
+    payoutEstimateCents,
+    distanceMilesNum,
+    now,
+    deps,
+  );
+}
+
+/**
+ * Best-effort `offer:new` realtime push. The offer row is already committed
+ * when this runs, so a Redis failure is logged and swallowed — the driver
+ * app polls the offer feed as a fallback and never misses the job.
+ */
+async function publishOfferNew(
+  offerId: string,
+  order: Order,
+  driverId: string,
+  expiresAt: Date,
+  payoutEstimateCents: number,
+  distanceMiles: number,
+  now: Date,
+  deps: DispatchJobDeps,
+): Promise<void> {
+  const publisher = deps.offerPublisher;
+  if (publisher === undefined) return;
+  try {
+    await publisher.publish({
+      id: publisher.idGen(),
+      emittedAt: now.toISOString(),
+      source: 'workers',
+      event: {
+        type: 'offer:new',
+        payload: {
+          offerId,
+          orderId: order.id,
+          driverId,
+          expiresAt: expiresAt.toISOString(),
+          payoutEstimateCents,
+          distanceMiles,
+        },
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.logger.warn(
+      { orderId: order.id, driverId, offerId, err: message },
+      'dispatch: offer:new realtime publish failed — offer is durable, driver app will poll',
+    );
+  }
 }
 
 async function failOrder(

@@ -37,11 +37,13 @@
 import { UsersRepository, type User } from '@dankdash/db';
 import { AuthError, ConflictError, NotFoundError } from '@dankdash/types';
 import { Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { uuidv7 } from 'uuidv7';
 import { JwtService } from './jwt/jwt.service.js';
 import { RefreshTokenService } from './jwt/refresh-token.service.js';
 import { MfaService } from './mfa/mfa.service.js';
 import { PasswordService } from './password/password.service.js';
+import { USER_REGISTERED_EVENT, UserRegisteredEvent } from './user-registered.events.js';
 import type {
   LoginRequestDto,
   LoginResponse,
@@ -89,6 +91,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly refresh: RefreshTokenService,
     private readonly mfa: MfaService,
+    private readonly events: EventEmitter2,
     config: AuthServiceConfig,
   ) {
     this.accessTtl = config.accessTtlSeconds;
@@ -121,6 +124,14 @@ export class AuthService {
       }
       throw err;
     }
+
+    // Post-create: fire the welcome notification off the in-process bus.
+    // Emitted before token issuance so a slow/failed notifier never delays
+    // the registration response; the listener swallows its own errors.
+    this.events.emit(
+      USER_REGISTERED_EVENT,
+      new UserRegisteredEvent({ userId: created.id, firstName: input.firstName }),
+    );
 
     const tokens = await this.issueTokens(created, ctx);
     return { user: toUserSummary(created), tokens };

@@ -36,6 +36,8 @@ describe('TEMPLATES registry', () => {
         renderTemplate('order.prepping', { orderId: ORDER_ID, dispensaryName: 'Green Roots' }),
       'order.ready': () =>
         renderTemplate('order.ready', { orderId: ORDER_ID, dispensaryName: 'Green Roots' }),
+      'order.driver_assigned': () =>
+        renderTemplate('order.driver_assigned', { orderId: ORDER_ID, driverFirstName: 'Alex' }),
       'order.picked_up': () =>
         renderTemplate('order.picked_up', { orderId: ORDER_ID, driverFirstName: 'Alex' }),
       'order.arriving': () =>
@@ -48,6 +50,17 @@ describe('TEMPLATES registry', () => {
         renderTemplate('order.arrived', { orderId: ORDER_ID, driverFirstName: 'Alex' }),
       'order.completed': () =>
         renderTemplate('order.completed', { orderId: ORDER_ID, totalCents: 6_499 }),
+      'order.canceled': () =>
+        renderTemplate('order.canceled', {
+          orderId: ORDER_ID,
+          reason: 'The dispensary is closed.',
+        }),
+      'order.rejected': () =>
+        renderTemplate('order.rejected', {
+          orderId: ORDER_ID,
+          dispensaryName: 'Green Roots',
+          reason: 'An item is out of stock.',
+        }),
       'payment.failed': () =>
         renderTemplate('payment.failed', {
           orderId: ORDER_ID,
@@ -78,6 +91,13 @@ describe('TEMPLATES registry', () => {
         renderTemplate('dispatch.offer_expired', { offerId: OFFER_ID, orderId: ORDER_ID }),
       'dispatch.canceled': () =>
         renderTemplate('dispatch.canceled', { orderId: ORDER_ID, reason: 'customer canceled' }),
+      'vendor.new_order': () =>
+        renderTemplate('vendor.new_order', {
+          orderId: ORDER_ID,
+          shortCode: 'AB123',
+          dispensaryName: 'Green Roots',
+          totalCents: 6_250,
+        }),
       'vendor.payout.completed': () =>
         renderTemplate('vendor.payout.completed', {
           payoutId: PAYOUT_ID,
@@ -151,6 +171,20 @@ describe('order lifecycle templates', () => {
     expect(push.body).toContain('waiting for a driver');
   });
 
+  it('order.driver_assigned renders push + in_app with the driver first name', () => {
+    const rendered = renderTemplate('order.driver_assigned', {
+      orderId: ORDER_ID,
+      driverFirstName: 'Alex',
+    });
+    expect(rendered.map((r) => r.channel)).toEqual(['push', 'in_app']);
+    const push = rendered[0];
+    if (push?.channel !== 'push') throw new TypeError('expected push');
+    expect(push.title).toBe('Driver assigned');
+    expect(push.body).toContain('Alex is on the way to pick up');
+    expect(push.data['orderId']).toBe(ORDER_ID);
+    expect(push.data['driverFirstName']).toBe('Alex');
+  });
+
   it('order.picked_up renders push + sms (no in_app) with the driver first name', () => {
     const rendered = renderTemplate('order.picked_up', {
       orderId: ORDER_ID,
@@ -201,6 +235,36 @@ describe('order lifecycle templates', () => {
     if (email?.channel !== 'email') throw new TypeError('expected email');
     expect(email.subject).toContain('#01935F3D');
     expect(email.text).toContain('$64.99');
+  });
+
+  it('order.canceled renders push + in_app with the cancellation reason', () => {
+    const rendered = renderTemplate('order.canceled', {
+      orderId: ORDER_ID,
+      reason: 'The dispensary is closed.',
+    });
+    expect(rendered.map((r) => r.channel)).toEqual(['push', 'in_app']);
+    const push = rendered[0];
+    if (push?.channel !== 'push') throw new TypeError('expected push');
+    expect(push.title).toBe('Order canceled');
+    expect(push.body).toContain('The dispensary is closed.');
+    expect(push.body).toContain('#01935F3D');
+  });
+
+  it('order.rejected renders push + in_app + email with the dispensary name and reason', () => {
+    const rendered = renderTemplate('order.rejected', {
+      orderId: ORDER_ID,
+      dispensaryName: 'Green Roots',
+      reason: 'An item is out of stock.',
+    });
+    expect(rendered.map((r) => r.channel)).toEqual(['push', 'in_app', 'email']);
+    const push = rendered[0];
+    if (push?.channel !== 'push') throw new TypeError('expected push');
+    expect(push.body).toContain('Green Roots');
+    expect(push.body).toContain('An item is out of stock.');
+    const email = rendered[2];
+    if (email?.channel !== 'email') throw new TypeError('expected email');
+    expect(email.subject).toContain('#01935F3D');
+    expect(email.text).toContain('An item is out of stock.');
   });
 
   it('payment.failed renders push + email with the amount and reason', () => {
@@ -286,6 +350,25 @@ describe('dispatch templates', () => {
 });
 
 describe('vendor templates', () => {
+  it('vendor.new_order renders email + in_app with the short code and total', () => {
+    const rendered = renderTemplate('vendor.new_order', {
+      orderId: ORDER_ID,
+      shortCode: 'AB123',
+      dispensaryName: 'Green Roots',
+      totalCents: 6_250,
+    });
+    expect(rendered.map((r) => r.channel)).toEqual(['email', 'in_app']);
+    const email = rendered[0];
+    if (email?.channel !== 'email') throw new TypeError('expected email');
+    expect(email.subject).toContain('AB123');
+    expect(email.subject).toContain('$62.50');
+    expect(email.text).toContain('Green Roots');
+    const inApp = rendered[1];
+    if (inApp?.channel !== 'in_app') throw new TypeError('expected in_app');
+    expect(inApp.data['orderId']).toBe(ORDER_ID);
+    expect(inApp.data['shortCode']).toBe('AB123');
+  });
+
   it('vendor.payout.completed renders email-only with the amount and period', () => {
     const rendered = renderTemplate('vendor.payout.completed', {
       payoutId: PAYOUT_ID,
