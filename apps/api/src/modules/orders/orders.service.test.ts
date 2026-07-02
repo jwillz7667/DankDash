@@ -271,24 +271,57 @@ class FakeUsersRepo implements Pick<UsersRepository, 'findById'> {
   }
 }
 
-class FakeDispensariesRepo implements Pick<DispensariesRepository, 'findById'> {
+class FakeDispensariesRepo implements Pick<DispensariesRepository, 'findById' | 'applyRating'> {
   public rows = new Map<string, Dispensary>();
+  /** Every `(id, rating)` folded in, in call order — lets tests assert the
+   *  service only touches the dispensary aggregate when it should. */
+  public readonly ratingCalls: Array<{ id: string; rating: number }> = [];
   seed(row: Dispensary): void {
     this.rows.set(row.id, row);
   }
   findById(id: string): Promise<Dispensary | null> {
     return Promise.resolve(this.rows.get(id) ?? null);
   }
+  applyRating(id: string, rating: number): Promise<void> {
+    this.ratingCalls.push({ id, rating });
+    const row = this.rows.get(id);
+    if (row !== undefined) this.rows.set(id, foldRating(row, rating));
+    return Promise.resolve();
+  }
 }
 
-class FakeDriversRepo implements Pick<DriversRepository, 'findByUserId'> {
+class FakeDriversRepo implements Pick<DriversRepository, 'findByUserId' | 'applyRatingByUserId'> {
   public rows = new Map<string, Driver>();
+  /** Every `(userId, rating)` folded in, in call order. */
+  public readonly ratingCalls: Array<{ userId: string; rating: number }> = [];
   seed(row: Driver): void {
     this.rows.set(row.userId, row);
   }
   findByUserId(userId: string): Promise<Driver | null> {
     return Promise.resolve(this.rows.get(userId) ?? null);
   }
+  applyRatingByUserId(userId: string, rating: number): Promise<void> {
+    this.ratingCalls.push({ userId, rating });
+    const row = this.rows.get(userId);
+    if (row !== undefined) this.rows.set(userId, foldRating(row, rating));
+    return Promise.resolve();
+  }
+}
+
+/**
+ * Mirrors the repo's incremental `(avg*count + rating)/(count+1)` fold so the
+ * fakes reflect the same aggregate the real SQL produces. `NUMERIC(3,2)` is
+ * modelled as a 2-decimal string, matching how Drizzle inflates the column.
+ */
+function foldRating<T extends { ratingAvg: string | null; ratingCount: number }>(
+  row: T,
+  rating: number,
+): T {
+  const prevCount = row.ratingCount;
+  const prevAvg = row.ratingAvg === null ? 0 : Number(row.ratingAvg);
+  const nextCount = prevCount + 1;
+  const nextAvg = (prevAvg * prevCount + rating) / nextCount;
+  return { ...row, ratingAvg: nextAvg.toFixed(2), ratingCount: nextCount };
 }
 
 class FakeOrdersRepo implements Pick<
@@ -765,6 +798,75 @@ describe('OrdersService', () => {
       await expect(service.recordRating(USER_ID, ORDER_ID, { rating: 5 })).rejects.toBeInstanceOf(
         OrderError,
       );
+    });
+
+    it('folds the driver and dispensary ratings into their running aggregates', async () => {
+      const rig = makeService([makeOrder({ status: 'delivered', driverId: DRIVER_USER_ID })]);
+      rig.drivers.seed(makeDriver({ ratingAvg: '4.90', ratingCount: 42 }));
+      rig.dispensaries.seed(makeDispensary({ ratingAvg: null, ratingCount: 0 }));
+
+      await rig.service.recordRating(USER_ID, ORDER_ID, { driverRating: 4, dispensaryRating: 5 });
+
+      // Driver: (4.90*42 + 4)/43 = 4.879… → 4.88 at NUMERIC(3,2).
+      expect(rig.drivers.ratingCalls).toEqual([{ userId: DRIVER_USER_ID, rating: 4 }]);
+      const driver = await rig.drivers.findByUserId(DRIVER_USER_ID);
+      expect(driver?.ratingAvg).toBe('4.88');
+      expect(driver?.ratingCount).toBe(43);
+
+      // Dispensary: first-ever rating → 5.00, count 1.
+      expect(rig.dispensaries.ratingCalls).toEqual([{ id: DISPENSARY_ID, rating: 5 }]);
+      const dispensary = await rig.dispensaries.findById(DISPENSARY_ID);
+      expect(dispensary?.ratingAvg).toBe('5.00');
+      expect(dispensary?.ratingCount).toBe(1);
+    });
+
+    it('leaves the driver aggregate untouched when only the dispensary is rated', async () => {
+      const rig = makeService([makeOrder({ status: 'delivered', driverId: DRIVER_USER_ID })]);
+      rig.drivers.seed(makeDriver({ ratingAvg: '4.90', ratingCount: 42 }));
+      rig.dispensaries.seed(makeDispensary({ ratingAvg: '4.00', ratingCount: 3 }));
+
+      await rig.service.recordRating(USER_ID, ORDER_ID, { dispensaryRating: 2 });
+
+      expect(rig.drivers.ratingCalls).toEqual([]);
+      const driver = await rig.drivers.findByUserId(DRIVER_USER_ID);
+      expect(driver?.ratingAvg).toBe('4.90');
+      expect(driver?.ratingCount).toBe(42);
+
+      // Dispensary: (4.00*3 + 2)/4 = 3.50, count 4.
+      expect(rig.dispensaries.ratingCalls).toEqual([{ id: DISPENSARY_ID, rating: 2 }]);
+      const dispensary = await rig.dispensaries.findById(DISPENSARY_ID);
+      expect(dispensary?.ratingAvg).toBe('3.50');
+      expect(dispensary?.ratingCount).toBe(4);
+    });
+
+    it('does not touch the driver aggregate when the order had no driver assigned', async () => {
+      const rig = makeService([makeOrder({ status: 'delivered', driverId: null })]);
+      rig.dispensaries.seed(makeDispensary({ ratingAvg: null, ratingCount: 0 }));
+
+      await rig.service.recordRating(USER_ID, ORDER_ID, { driverRating: 5, dispensaryRating: 4 });
+
+      expect(rig.drivers.ratingCalls).toEqual([]);
+      expect(rig.dispensaries.ratingCalls).toEqual([{ id: DISPENSARY_ID, rating: 4 }]);
+    });
+
+    it('rejects a second rating with 409 and leaves the aggregates unchanged', async () => {
+      const rig = makeService([makeOrder({ status: 'delivered', driverId: DRIVER_USER_ID })]);
+      rig.drivers.seed(makeDriver({ ratingAvg: '4.90', ratingCount: 42 }));
+      rig.dispensaries.seed(makeDispensary({ ratingAvg: null, ratingCount: 0 }));
+
+      await rig.service.recordRating(USER_ID, ORDER_ID, { driverRating: 4, dispensaryRating: 5 });
+
+      await expect(
+        rig.service.recordRating(USER_ID, ORDER_ID, { driverRating: 1, dispensaryRating: 1 }),
+      ).rejects.toMatchObject({ code: 'ORDER_ALREADY_RATED', statusCode: 409 });
+
+      // Exactly one fold per aggregate — the rejected retry never ran.
+      expect(rig.drivers.ratingCalls).toEqual([{ userId: DRIVER_USER_ID, rating: 4 }]);
+      expect(rig.dispensaries.ratingCalls).toEqual([{ id: DISPENSARY_ID, rating: 5 }]);
+      const driver = await rig.drivers.findByUserId(DRIVER_USER_ID);
+      expect(driver?.ratingCount).toBe(43);
+      const dispensary = await rig.dispensaries.findById(DISPENSARY_ID);
+      expect(dispensary?.ratingCount).toBe(1);
     });
   });
 

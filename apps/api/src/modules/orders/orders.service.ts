@@ -246,6 +246,16 @@ export class OrdersService {
    * each numeric field to 1..5 at the DTO layer; we additionally write
    * `rated_at = NOW()` so the dispute window logic in Phase 14 can
    * answer "did the customer rate before complaining?".
+   *
+   * Rating is one-shot per order: `rated_at IS NOT NULL` short-circuits
+   * with 409. This guard is what lets us fold the driver/dispensary rating
+   * into their running aggregates exactly once — the aggregate updates run
+   * in the same transaction as the order write (all-or-nothing), each as a
+   * single race-safe SQL UPDATE that computes the new average on the row.
+   * The driver aggregate is only touched when the order actually had a
+   * driver and a driver rating was submitted; likewise the dispensary
+   * aggregate only when a dispensary rating was submitted — a customer who
+   * rates just one of the two never perturbs the other.
    */
   async recordRating(userId: string, orderId: string, req: RateOrderRequest): Promise<Order> {
     return this.db.transaction(async (tx) => {
@@ -256,6 +266,9 @@ export class OrdersService {
       }
       if (order.status !== 'delivered' && order.status !== 'disputed') {
         throw OrderError.rateNotDelivered(order.status);
+      }
+      if (order.ratedAt !== null) {
+        throw OrderError.alreadyRated(orderId);
       }
 
       const patch: Partial<Order> = { ratedAt: new Date() };
@@ -270,6 +283,14 @@ export class OrdersService {
         // would be an invariant violation, not a user error.
         throw OrderError.notFound(orderId);
       }
+
+      if (req.driverRating !== undefined && order.driverId !== null) {
+        await repos.drivers.applyRatingByUserId(order.driverId, req.driverRating);
+      }
+      if (req.dispensaryRating !== undefined) {
+        await repos.dispensaries.applyRating(order.dispensaryId, req.dispensaryRating);
+      }
+
       return updated;
     });
   }
