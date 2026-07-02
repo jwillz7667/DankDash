@@ -461,6 +461,9 @@ class FakeLedgerEntriesRepo {
     this.rows.push(...materialized);
     return Promise.resolve(materialized);
   };
+
+  listForOrder = (orderId: string): Promise<readonly LedgerEntry[]> =>
+    Promise.resolve(this.rows.filter((r) => r.orderId === orderId));
 }
 
 /**
@@ -989,8 +992,8 @@ describe('PaymentMethodsService.applyWebhook', () => {
     expect(repo.updateBankAccountDetailsCalls).toHaveLength(0);
   });
 
-  it('noops on payment.refunded (handled by the refunds service in 6.5)', async () => {
-    const { service, repo, txRepo, orderTransitions, aeropay } = build();
+  it('noops on payment.refunded when no local payment transaction matches', async () => {
+    const { service, repo, txRepo, orderTransitions, ledgerRepo, aeropay } = build();
 
     await service.applyWebhook({
       type: 'payment.refunded',
@@ -1002,8 +1005,12 @@ describe('PaymentMethodsService.applyWebhook', () => {
 
     expect(aeropay.getBankAccountCalls).toHaveLength(0);
     expect(repo.updateStatusCalls).toHaveLength(0);
-    expect(txRepo.findByProviderRefCalls).toHaveLength(0);
+    // The handler resolves the payment first, then no-ops when absent.
+    expect(txRepo.findByProviderRefCalls).toEqual([
+      { provider: 'aeropay', providerRef: 'pay_test_refunded' },
+    ]);
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
     expect(orderTransitions.calls).toHaveLength(0);
   });
 
@@ -1968,5 +1975,174 @@ describe('PaymentMethodsService.applyWebhook — payment.canceled', () => {
     });
 
     expect(txRepo.updateStatusCalls).toHaveLength(0);
+  });
+});
+
+describe('PaymentMethodsService.applyWebhook — payment.refunded', () => {
+  const REFUNDED_EVENT = {
+    type: 'payment.refunded' as const,
+    eventId: 'evt_pay_refunded_1',
+    objectId: AEROPAY_PAYMENT_ID,
+    occurredAt: WEBHOOK_OCCURRED_AT,
+    raw: {},
+  };
+
+  it('is a confirmation no-op when the payment is already fully refunded', async () => {
+    // RefundsService reversed the full charge at approval time and flipped
+    // the payment row to `refunded`. The webhook only confirms — no writes.
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'refunded' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
+  it('reverses the full charge for an external/chargeback refund with no local reversal', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(1);
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    const reserveLeg = entries.find((e) => e.accountType === 'refund_reserve');
+    const customerLeg = entries.find((e) => e.accountType === 'customer');
+    expect(reserveLeg).toMatchObject({
+      accountRef: DISPENSARY_ID,
+      debitCents: SAMPLE_ORDER_TOTAL_CENTS,
+      creditCents: 0,
+    });
+    // No local refund row backs a chargeback reversal.
+    expect(reserveLeg?.refundId).toBeUndefined();
+    expect(customerLeg).toMatchObject({
+      accountRef: USER_ID,
+      debitCents: 0,
+      creditCents: SAMPLE_ORDER_TOTAL_CENTS,
+    });
+    // Balanced double-entry.
+    const debit = entries.reduce((s, e) => s + (e.debitCents ?? 0), 0);
+    const credit = entries.reduce((s, e) => s + (e.creditCents ?? 0), 0);
+    expect(debit).toBe(credit);
+    // Payment row advanced to terminal.
+    expect(txRepo.updateStatusCalls).toEqual([
+      { id: PAYMENT_TX_ID, status: 'refunded', patch: {} },
+    ]);
+  });
+
+  it('reverses only the unreversed remainder when a partial internal refund preceded it', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'partially_refunded' }));
+    // Seed a prior internal partial refund reversal of 4_000¢.
+    await ledgerRepo.recordTransaction([
+      {
+        orderId: ORDER_ID,
+        refundId: '01935f3d-0000-7000-8000-0000000000f9',
+        accountType: 'refund_reserve',
+        accountRef: DISPENSARY_ID,
+        debitCents: 4_000,
+        creditCents: 0,
+        description: 'prior partial refund (reserve)',
+      },
+      {
+        orderId: ORDER_ID,
+        refundId: '01935f3d-0000-7000-8000-0000000000f9',
+        accountType: 'customer',
+        accountRef: USER_ID,
+        debitCents: 0,
+        creditCents: 4_000,
+        description: 'prior partial refund (customer)',
+      },
+    ]);
+    ledgerRepo.recordTransactionCalls.length = 0; // ignore the seed write
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    const entries = ledgerRepo.recordTransactionCalls[0] ?? [];
+    const reserveLeg = entries.find((e) => e.accountType === 'refund_reserve');
+    expect(reserveLeg?.debitCents).toBe(SAMPLE_ORDER_TOTAL_CENTS - 4_000);
+    expect(txRepo.updateStatusCalls).toEqual([
+      { id: PAYMENT_TX_ID, status: 'refunded', patch: {} },
+    ]);
+  });
+
+  it('only advances the status (no ledger write) when the ledger is already fully reversed', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'partially_refunded' }));
+    await ledgerRepo.recordTransaction([
+      {
+        orderId: ORDER_ID,
+        accountType: 'refund_reserve',
+        accountRef: DISPENSARY_ID,
+        debitCents: SAMPLE_ORDER_TOTAL_CENTS,
+        creditCents: 0,
+        description: 'reserve fully drawn',
+      },
+      {
+        orderId: ORDER_ID,
+        accountType: 'customer',
+        accountRef: USER_ID,
+        debitCents: 0,
+        creditCents: SAMPLE_ORDER_TOTAL_CENTS,
+        description: 'customer credited',
+      },
+    ]);
+    ledgerRepo.recordTransactionCalls.length = 0;
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+    expect(txRepo.updateStatusCalls).toEqual([
+      { id: PAYMENT_TX_ID, status: 'refunded', patch: {} },
+    ]);
+  });
+
+  it('ignores a refund event for a payment that never settled', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'initiated' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+
+    expect(txRepo.updateStatusCalls).toHaveLength(0);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
+  });
+
+  it('throws when the payment row exists but its order does not (data integrity)', async () => {
+    const { service, txRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await expect(service.applyWebhook(REFUNDED_EVENT)).rejects.toThrow(/order .* missing/);
+  });
+
+  it('is idempotent across redelivery — a second event does not double-reverse', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    ordersRepo.rows.push(makeOrder());
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+
+    await service.applyWebhook(REFUNDED_EVENT);
+    // The first pass flipped the row to `refunded`; a replay short-circuits.
+    await service.applyWebhook({ ...REFUNDED_EVENT, eventId: 'evt_pay_refunded_1_replay' });
+
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(1);
+    expect(txRepo.updateStatusCalls).toHaveLength(1);
+  });
+
+  it('throws RepositoryError when the reversal UPDATE finds the row gone mid-transaction', async () => {
+    const { service, txRepo, ordersRepo, ledgerRepo } = build();
+    txRepo.rows.push(makePaymentTransaction({ status: 'settled' }));
+    ordersRepo.rows.push(makeOrder());
+    // Pre-tx read found the row, but a concurrent delete lands before the
+    // in-tx status flip, so updateStatus returns null — the throw rolls back
+    // before any reverse leg is written.
+    txRepo.updateStatus = (): Promise<PaymentTransaction | null> => Promise.resolve(null);
+
+    await expect(service.applyWebhook(REFUNDED_EVENT)).rejects.toBeInstanceOf(RepositoryError);
+    expect(ledgerRepo.recordTransactionCalls).toHaveLength(0);
   });
 });
