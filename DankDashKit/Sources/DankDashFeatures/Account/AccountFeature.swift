@@ -20,6 +20,7 @@ public struct AccountFeature: Sendable {
     public var addresses: AddressesFeature.State?
     public var paymentMethods: PaymentMethodsFeature.State?
     public var notifications: NotificationPreferencesFeature.State?
+    public var favorites: FavoritesFeature.State?
     /// Drives the destructive "Delete account?" confirmation alert.
     public var isConfirmingAccountDeletion: Bool
     /// True while the `DELETE /v1/me` request is in flight; disables the
@@ -37,6 +38,7 @@ public struct AccountFeature: Sendable {
       addresses: AddressesFeature.State? = nil,
       paymentMethods: PaymentMethodsFeature.State? = nil,
       notifications: NotificationPreferencesFeature.State? = nil,
+      favorites: FavoritesFeature.State? = nil,
       isConfirmingAccountDeletion: Bool = false,
       isDeletingAccount: Bool = false,
       deleteAccountError: String? = nil
@@ -47,6 +49,7 @@ public struct AccountFeature: Sendable {
       self.addresses = addresses
       self.paymentMethods = paymentMethods
       self.notifications = notifications
+      self.favorites = favorites
       self.isConfirmingAccountDeletion = isConfirmingAccountDeletion
       self.isDeletingAccount = isDeletingAccount
       self.deleteAccountError = deleteAccountError
@@ -64,6 +67,8 @@ public struct AccountFeature: Sendable {
     case paymentMethodsDismissed
     case manageNotificationsTapped
     case notificationsDismissed
+    case favoritesTapped
+    case favoritesDismissed
     case orderHistoryTapped
     case signOutTapped
     case deleteAccountTapped
@@ -74,6 +79,7 @@ public struct AccountFeature: Sendable {
     case addresses(AddressesFeature.Action)
     case paymentMethods(PaymentMethodsFeature.Action)
     case notifications(NotificationPreferencesFeature.Action)
+    case favorites(FavoritesFeature.Action)
     case delegate(Delegate)
 
     @CasePathable
@@ -157,6 +163,14 @@ public struct AccountFeature: Sendable {
         state.notifications = nil
         return .none
 
+      case .favoritesTapped:
+        state.favorites = FavoritesFeature.State()
+        return .none
+
+      case .favoritesDismissed:
+        state.favorites = nil
+        return .none
+
       case .orderHistoryTapped:
         return .send(.delegate(.showOrders))
 
@@ -222,6 +236,9 @@ public struct AccountFeature: Sendable {
       case .notifications:
         return .none
 
+      case .favorites:
+        return .none
+
       case .delegate:
         return .none
       }
@@ -237,6 +254,9 @@ public struct AccountFeature: Sendable {
     }
     .ifLet(\.notifications, action: \.notifications) {
       NotificationPreferencesFeature()
+    }
+    .ifLet(\.favorites, action: \.favorites) {
+      FavoritesFeature()
     }
   }
 }

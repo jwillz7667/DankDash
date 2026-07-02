@@ -20,6 +20,7 @@
 import {
   DispensariesRepository,
   DispensaryStaffRepository,
+  FavoritesRepository,
   OrdersRepository,
   PasswordResetTokensRepository,
   PaymentMethodsRepository,
@@ -99,6 +100,7 @@ const accountDeletionServiceProvider: FactoryProvider<AccountDeletionService> = 
         userAddresses: new UserAddressesRepository(scopedDb),
         paymentMethods: new PaymentMethodsRepository(scopedDb),
         orders: new OrdersRepository(scopedDb),
+        favorites: new FavoritesRepository(scopedDb),
       }),
     ),
 };

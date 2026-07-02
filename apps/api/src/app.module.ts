@@ -17,6 +17,7 @@
  *                         standalone to avoid an Auth↔Notifications cycle)
  *   - IdentityModule     (/me + Persona KYC start + webhook — mounted /v1)
  *   - IdentityVerificationModule (Veriff client for driver-handoff ID scan — /v1/webhooks/veriff)
+ *   - FavoritesModule    (consumer saved dispensaries/products — /v1/me/favorites)
  *   - DispensariesModule (public dispensary list/read + admin CRUD — /v1)
  *   - CatalogModule      (products, categories, lab results — /v1 + /v1/admin)
  *   - ListingsModule     (vendor-scoped listings with RLS — /v1/vendor)
@@ -74,6 +75,7 @@ import { CheckoutModule } from './modules/checkout/checkout.module.js';
 import { ComplianceModule } from './modules/compliance/compliance.module.js';
 import { DispensariesModule } from './modules/dispensaries/dispensaries.module.js';
 import { DriversModule } from './modules/drivers/drivers.module.js';
+import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { IdentityVerificationModule } from './modules/identity-verification/identity-verification.module.js';
@@ -117,6 +119,7 @@ import { StaffModule } from './modules/staff/staff.module.js';
     PasswordResetModule,
     IdentityModule,
     IdentityVerificationModule,
+    FavoritesModule,
     DispensariesModule,
     CatalogModule,
     VendorCatalogModule,

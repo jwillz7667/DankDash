@@ -110,7 +110,13 @@ export class DispensariesService {
   }
 }
 
-function projectDispensary(row: Dispensary, now: Date): DispensaryResponse {
+/**
+ * Projects a raw dispensary row into the public `DispensaryResponse`, computing
+ * the live `isOpenNow` / `opensAt` in the store's local zone. Exported so the
+ * favorites feed renders saved dispensaries through the exact same projection
+ * as the discovery list — one source of truth for the card's open/closed state.
+ */
+export function projectDispensary(row: Dispensary, now: Date): DispensaryResponse {
   const hours = row.hoursJson as HoursSchedule;
   const timezone = MN_DEFAULT_TIMEZONE;
   const openNow = isOpenAt(hours, now, timezone, MN_SALES_HOURS);

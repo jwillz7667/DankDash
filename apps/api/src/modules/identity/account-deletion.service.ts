@@ -31,6 +31,7 @@
  */
 import {
   type Database,
+  type FavoritesRepository,
   type OrdersRepository,
   type PasswordResetTokensRepository,
   type PaymentMethodsRepository,
@@ -49,6 +50,7 @@ export interface AccountDeletionScopedRepos {
   readonly userAddresses: UserAddressesRepository;
   readonly paymentMethods: PaymentMethodsRepository;
   readonly orders: OrdersRepository;
+  readonly favorites: FavoritesRepository;
 }
 
 export type AccountDeletionScopedReposFactory = (db: Database) => AccountDeletionScopedRepos;
@@ -92,6 +94,9 @@ export class AccountDeletionService {
       // PII teardown on the user's owned, non-statutory records.
       await repos.userAddresses.softDeleteAllForUser(userId);
       await repos.paymentMethods.softDeleteAllForUser(userId);
+      // Favorites carry no statutory retention and no PII — hard-delete them
+      // outright so nothing dangles for the anonymized shell.
+      await repos.favorites.deleteAllForUser(userId);
 
       // Anonymize the identity root + soft-delete. The repo's `deleted_at IS
       // NULL` guard returns null if a concurrent delete won the race → abort

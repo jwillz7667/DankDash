@@ -501,6 +501,84 @@ final class DispensaryFeedFeatureTests: XCTestCase {
 
   // MARK: - Helpers
 
+  // MARK: - Favorites
+
+  func test_favoritesLoaded_populatesFavoritedSet() async {
+    let idA = UUID()
+    let idB = UUID()
+    let store = TestStore(initialState: DispensaryFeedFeature.State()) {
+      DispensaryFeedFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 1_780_000_000))
+    }
+
+    await store.send(.favoritesLoaded([idA, idB])) {
+      $0.favoritedDispensaryIDs = [idA, idB]
+    }
+  }
+
+  func test_favoriteToggled_savesOptimistically_thenConfirms() async {
+    let id = UUID()
+    let saved = LockIsolated<[UUID]>([])
+    var favorites = FavoritesAPIClient.unimplemented
+    favorites.addDispensary = { id in saved.withValue { $0.append(id) } }
+
+    let store = TestStore(initialState: DispensaryFeedFeature.State()) {
+      DispensaryFeedFeature()
+    } withDependencies: {
+      $0.favoritesAPIClient = favorites
+      $0.date = .constant(Date(timeIntervalSince1970: 1_780_000_000))
+    }
+
+    await store.send(.favoriteToggled(id: id)) {
+      $0.favoritedDispensaryIDs = [id]
+    }
+    await store.receive(\.favoriteToggleResponse)
+    XCTAssertEqual(saved.value, [id])
+  }
+
+  func test_favoriteToggled_unsavesWhenAlreadyFavorited() async {
+    let id = UUID()
+    let removed = LockIsolated<[UUID]>([])
+    var favorites = FavoritesAPIClient.unimplemented
+    favorites.removeDispensary = { id in removed.withValue { $0.append(id) } }
+
+    let store = TestStore(
+      initialState: DispensaryFeedFeature.State(favoritedDispensaryIDs: [id])
+    ) {
+      DispensaryFeedFeature()
+    } withDependencies: {
+      $0.favoritesAPIClient = favorites
+      $0.date = .constant(Date(timeIntervalSince1970: 1_780_000_000))
+    }
+
+    await store.send(.favoriteToggled(id: id)) {
+      $0.favoritedDispensaryIDs = []
+    }
+    await store.receive(\.favoriteToggleResponse)
+    XCTAssertEqual(removed.value, [id])
+  }
+
+  func test_favoriteToggled_saveFailure_revertsOptimisticFlip() async {
+    let id = UUID()
+    var favorites = FavoritesAPIClient.unimplemented
+    favorites.addDispensary = { _ in throw FavoritesAPIError.unimplemented("addDispensary") }
+
+    let store = TestStore(initialState: DispensaryFeedFeature.State()) {
+      DispensaryFeedFeature()
+    } withDependencies: {
+      $0.favoritesAPIClient = favorites
+      $0.date = .constant(Date(timeIntervalSince1970: 1_780_000_000))
+    }
+
+    await store.send(.favoriteToggled(id: id)) {
+      $0.favoritedDispensaryIDs = [id]
+    }
+    await store.receive(\.favoriteToggleResponse) {
+      $0.favoritedDispensaryIDs = []
+    }
+  }
+
   static func makeDispensary(
     legalName: String,
     isOpenNow: Bool = false,

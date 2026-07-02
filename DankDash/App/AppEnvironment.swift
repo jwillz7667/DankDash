@@ -79,6 +79,7 @@ struct AppEnvironment {
     dependencies.ordersAPIClient = .live(apiClient: apiClient)
     dependencies.meAPIClient = .live(apiClient: apiClient)
     dependencies.addressAPIClient = .live(apiClient: apiClient)
+    dependencies.favoritesAPIClient = .live(apiClient: apiClient)
     dependencies.paymentMethodAPIClient = .live(
       apiClient: apiClient,
       returnURL: Self.resolvedPaymentLinkReturnURL()

@@ -628,4 +628,75 @@ final class ProductDetailFeatureTests: XCTestCase {
   nonisolated static func page(total: Int = 0) -> SearchPage {
     SearchPage(limit: 8, offset: 0, total: total)
   }
+
+  // MARK: - Favorites
+
+  func test_favoriteStatusLoaded_setsFlag() async {
+    let store = TestStore(
+      initialState: ProductDetailFeature.State(
+        productId: UUID(),
+        listingId: UUID(),
+        dispensaryId: UUID(),
+        priceCents: 3000,
+        maxAvailable: 5,
+        productName: "Initial",
+        brand: "Brand"
+      )
+    ) {
+      ProductDetailFeature()
+    }
+
+    await store.send(.favoriteStatusLoaded(true)) { $0.isFavorite = true }
+  }
+
+  func test_favoriteToggled_savesOptimistically_thenConfirms() async {
+    let productId = UUID()
+    let saved = LockIsolated<[UUID]>([])
+    var favorites = FavoritesAPIClient.unimplemented
+    favorites.addProduct = { id in saved.withValue { $0.append(id) } }
+
+    let store = TestStore(
+      initialState: ProductDetailFeature.State(
+        productId: productId,
+        listingId: UUID(),
+        dispensaryId: UUID(),
+        priceCents: 3000,
+        maxAvailable: 5,
+        productName: "Initial",
+        brand: "Brand"
+      )
+    ) {
+      ProductDetailFeature()
+    } withDependencies: {
+      $0.favoritesAPIClient = favorites
+    }
+
+    await store.send(.favoriteToggled) { $0.isFavorite = true }
+    await store.receive(\.favoriteToggleResponse)
+    XCTAssertEqual(saved.value, [productId])
+  }
+
+  func test_favoriteToggled_saveFailure_reverts() async {
+    var favorites = FavoritesAPIClient.unimplemented
+    favorites.addProduct = { _ in throw FavoritesAPIError.unimplemented("addProduct") }
+
+    let store = TestStore(
+      initialState: ProductDetailFeature.State(
+        productId: UUID(),
+        listingId: UUID(),
+        dispensaryId: UUID(),
+        priceCents: 3000,
+        maxAvailable: 5,
+        productName: "Initial",
+        brand: "Brand"
+      )
+    ) {
+      ProductDetailFeature()
+    } withDependencies: {
+      $0.favoritesAPIClient = favorites
+    }
+
+    await store.send(.favoriteToggled) { $0.isFavorite = true }
+    await store.receive(\.favoriteToggleResponse) { $0.isFavorite = false }
+  }
 }

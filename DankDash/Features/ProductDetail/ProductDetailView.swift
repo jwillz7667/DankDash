@@ -34,6 +34,15 @@ struct ProductDetailView: View {
     .navigationTitle(displayName)
     .navigationBarTitleDisplayMode(.inline)
     .background(DankColor.cream.ignoresSafeArea())
+    .toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+        FavoriteButton(
+          isFavorite: store.isFavorite,
+          overImagery: false,
+          action: { store.send(.favoriteToggled) }
+        )
+      }
+    }
     .task {
       store.send(.task)
     }

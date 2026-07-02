@@ -42,6 +42,11 @@ public struct DispensaryFeedFeature: Sendable {
     public var isShowingFromCache: Bool
     public var error: String?
     public var hasAttemptedFetch: Bool
+    /// The dispensaries the user has saved. Loaded best-effort on `.task`
+    /// (a favorites failure never blocks the feed) and mutated optimistically
+    /// by the heart toggle, so a card renders its filled/outline state without
+    /// a per-card round-trip.
+    public var favoritedDispensaryIDs: Set<UUID>
 
     public init(
       authorizationStatus: LocationAuthorizationStatus = .notDetermined,
@@ -50,7 +55,8 @@ public struct DispensaryFeedFeature: Sendable {
       isLoading: Bool = false,
       isShowingFromCache: Bool = false,
       error: String? = nil,
-      hasAttemptedFetch: Bool = false
+      hasAttemptedFetch: Bool = false,
+      favoritedDispensaryIDs: Set<UUID> = []
     ) {
       self.authorizationStatus = authorizationStatus
       self.coordinate = coordinate
@@ -59,6 +65,7 @@ public struct DispensaryFeedFeature: Sendable {
       self.isShowingFromCache = isShowingFromCache
       self.error = error
       self.hasAttemptedFetch = hasAttemptedFetch
+      self.favoritedDispensaryIDs = favoritedDispensaryIDs
     }
 
     public var sections: [DispensaryFeedSection] {
@@ -84,6 +91,14 @@ public struct DispensaryFeedFeature: Sendable {
     case fetchResponse(Result<[Dispensary], FeedError>)
     case pullToRefresh
     case dispensaryTapped(UUID)
+    /// Best-effort favorites hydration completed — the set of saved
+    /// dispensary ids on the first page.
+    case favoritesLoaded(Set<UUID>)
+    /// Heart tapped on a dispensary card. Flips membership optimistically,
+    /// then fires the save/unsave.
+    case favoriteToggled(id: UUID)
+    /// Save/unsave settled. On failure the optimistic flip is reverted.
+    case favoriteToggleResponse(id: UUID, wasFavoriting: Bool, didSucceed: Bool)
     case delegate(Delegate)
 
     @CasePathable
@@ -104,7 +119,13 @@ public struct DispensaryFeedFeature: Sendable {
   @Dependency(\.locationClient) var location
   @Dependency(\.catalogAPIClient) var api
   @Dependency(\.catalogCacheClient) var cache
+  @Dependency(\.favoritesAPIClient) var favoritesClient
   @Dependency(\.date.now) var now
+
+  /// Favorites hydration reads the first page only; a shopper never saves
+  /// enough stores for a card's heart to depend on page 2, and the toggle
+  /// is idempotent server-side regardless.
+  static let favoritesPageSize = 50
 
   public init() {}
 
@@ -117,6 +138,13 @@ public struct DispensaryFeedFeature: Sendable {
           await send(.cacheLoaded(snapshot: snapshot))
           let status = location.authorizationStatus()
           await send(.authorizationStatusResolved(status))
+          // Best-effort — a favorites failure must not block discovery.
+          if let page = try? await favoritesClient.list(Self.favoritesPageSize, 0) {
+            let ids = page.items.reduce(into: Set<UUID>()) { acc, item in
+              if case let .dispensary(_, dispensary) = item { acc.insert(dispensary.id) }
+            }
+            await send(.favoritesLoaded(ids))
+          }
         }
 
       case .cacheLoaded(let snapshot):
@@ -222,6 +250,42 @@ public struct DispensaryFeedFeature: Sendable {
 
       case .dispensaryTapped(let id):
         return .send(.delegate(.openDispensary(id: id)))
+
+      case .favoritesLoaded(let ids):
+        state.favoritedDispensaryIDs = ids
+        return .none
+
+      case .favoriteToggled(let id):
+        let wasFavoriting = !state.favoritedDispensaryIDs.contains(id)
+        if wasFavoriting {
+          state.favoritedDispensaryIDs.insert(id)
+        } else {
+          state.favoritedDispensaryIDs.remove(id)
+        }
+        return .run { send in
+          do {
+            if wasFavoriting {
+              try await favoritesClient.addDispensary(id)
+            } else {
+              try await favoritesClient.removeDispensary(id)
+            }
+            await send(.favoriteToggleResponse(id: id, wasFavoriting: wasFavoriting, didSucceed: true))
+          } catch {
+            await send(.favoriteToggleResponse(id: id, wasFavoriting: wasFavoriting, didSucceed: false))
+          }
+        }
+
+      case let .favoriteToggleResponse(id, wasFavoriting, didSucceed):
+        // Success needs no work — state already reflects the flip. On failure
+        // revert to the pre-tap membership so the heart matches the server.
+        if !didSucceed {
+          if wasFavoriting {
+            state.favoritedDispensaryIDs.remove(id)
+          } else {
+            state.favoritedDispensaryIDs.insert(id)
+          }
+        }
+        return .none
 
       case .delegate:
         return .none

@@ -1,5 +1,5 @@
 import { RepositoryError } from '@dankdash/types';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { type GeoPoint, type GeoPolygon } from '../schema/custom-types.js';
 import {
   dispensaries,
@@ -119,6 +119,20 @@ export class DispensariesRepository extends BaseRepository {
       .select(SELECT_COLUMNS)
       .from(dispensaries)
       .where(and(eq(dispensaries.status, 'active'), isNull(dispensaries.deletedAt)));
+    return rows.map((row) => inflateDispensary(row));
+  }
+
+  /**
+   * Bulk lookup by id — hydrates a favorites page (or any id set) in one round
+   * trip rather than N `findById` calls. Returns rows regardless of status /
+   * tombstone; the caller applies the same active-only filter `getById` uses.
+   */
+  async findManyByIds(ids: readonly string[]): Promise<readonly Dispensary[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.db
+      .select(SELECT_COLUMNS)
+      .from(dispensaries)
+      .where(inArray(dispensaries.id, ids));
     return rows.map((row) => inflateDispensary(row));
   }
 

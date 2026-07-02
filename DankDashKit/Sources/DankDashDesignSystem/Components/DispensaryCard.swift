@@ -10,17 +10,27 @@ public struct DispensaryCard: View {
   private let dispensary: Dispensary
   private let cdnBaseURL: URL?
   private let etaHint: String?
+  private let isFavorite: Bool?
+  private let favoriteAction: (() -> Void)?
   private let action: () -> Void
 
+  /// - Parameters:
+  ///   - isFavorite / favoriteAction: when both are supplied, a heart toggle
+  ///     is overlaid on the top-trailing corner. Pass `nil` (the default) on
+  ///     surfaces that don't offer saving, and the heart is omitted entirely.
   public init(
     dispensary: Dispensary,
     cdnBaseURL: URL?,
     etaHint: String? = nil,
+    isFavorite: Bool? = nil,
+    favoriteAction: (() -> Void)? = nil,
     action: @escaping () -> Void
   ) {
     self.dispensary = dispensary
     self.cdnBaseURL = cdnBaseURL
     self.etaHint = etaHint
+    self.isFavorite = isFavorite
+    self.favoriteAction = favoriteAction
     self.action = action
   }
 
@@ -92,6 +102,14 @@ public struct DispensaryCard: View {
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
     .accessibilityAddTraits(.isButton)
+    // Heart lives as a sibling overlay (not inside the card Button) so its
+    // tap toggles the favorite without also triggering navigation.
+    .overlay(alignment: .topTrailing) {
+      if let isFavorite, let favoriteAction {
+        FavoriteButton(isFavorite: isFavorite, action: favoriteAction)
+          .padding(DankSpacing.xs)
+      }
+    }
   }
 
   @ViewBuilder private var statusBadge: some View {
