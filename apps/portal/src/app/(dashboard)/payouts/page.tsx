@@ -2,10 +2,18 @@ import { AlertTriangle } from 'lucide-react';
 import { type Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { type ReactNode } from 'react';
+import { BankAccountPanel } from '../../../components/payouts/bank-account-panel.js';
 import { PayoutsListTable } from '../../../components/payouts/payouts-list-table.js';
 import { Card, CardBody } from '../../../components/ui/card.js';
 import { buildServerApiClient } from '../../../lib/api/server-client.js';
-import { listVendorPayouts, type VendorPayoutListResult } from '../../../lib/api/vendor-payouts.js';
+import {
+  getVendorBankAccountStatus,
+  listVendorPayouts,
+  type DispensaryBankAccountStatus,
+  type VendorPayoutListResult,
+} from '../../../lib/api/vendor-payouts.js';
+import { startBankLinkAction } from '../../../lib/payouts/actions.js';
+import type { PayoutBankActions } from '../../../lib/payouts/payouts-actions.js';
 
 export const metadata: Metadata = {
   title: 'Payouts — DankDash for Business',
@@ -38,11 +46,17 @@ export default async function PayoutsPage(): Promise<ReactNode> {
   }
 
   let result: VendorPayoutListResult;
+  let bankStatus: DispensaryBankAccountStatus;
   try {
-    result = await listVendorPayouts(ctx.client);
+    [result, bankStatus] = await Promise.all([
+      listVendorPayouts(ctx.client),
+      getVendorBankAccountStatus(ctx.client),
+    ]);
   } catch (error) {
     return <PayoutsFetchError storeName={ctx.dispensary.name} error={error} />;
   }
+
+  const bankActions: PayoutBankActions = { startLink: startBankLinkAction };
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
@@ -53,6 +67,7 @@ export default async function PayoutsPage(): Promise<ReactNode> {
           payout.
         </p>
       </header>
+      <BankAccountPanel linked={bankStatus.linked} actions={bankActions} />
       <PayoutsListTable payouts={result.payouts} />
     </div>
   );

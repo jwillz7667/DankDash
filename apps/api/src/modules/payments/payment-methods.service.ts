@@ -47,6 +47,11 @@ import { computePlatformFeeCents } from '@dankdash/pricing';
 import { ConflictError, NotFoundError, PaymentError, RepositoryError } from '@dankdash/types';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { OrderTransitionService } from '../orders/order-transition.service.js';
+import {
+  DispensaryBankLinkService,
+  parseDispensaryCustomerRef,
+} from './dispensary-bank-link.service.js';
+import { PayoutWebhookService } from './payout-webhook.service.js';
 import { AEROPAY_CLIENT, type AeropayClientLike } from './tokens.js';
 import type {
   LinkAeropayResponse,
@@ -79,6 +84,8 @@ export class PaymentMethodsService {
     private readonly db: Database,
     private readonly settlementReposFor: SettlementScopedReposFactory,
     @Inject(AEROPAY_CLIENT) private readonly aeropay: AeropayClientLike,
+    private readonly dispensaryBankLink: DispensaryBankLinkService,
+    private readonly payoutWebhooks: PayoutWebhookService,
   ) {}
 
   async list(userId: string): Promise<ListPaymentMethodsResponse> {
@@ -215,14 +222,26 @@ export class PaymentMethodsService {
    * good, and we trust the typed outcome.
    *
    * Behavior matrix:
-   *   - `bank_account.linked`    → flip the pending payment_methods row
-   *                                 to `active`, enrich with bank
-   *                                 metadata, and rewrite
+   *   - `bank_account.linked`    → resolve the account and branch on its
+   *                                 `customer_ref`: a `dispensary:<id>` ref
+   *                                 persists the confirmed bank-account id
+   *                                 onto the dispensary (payout linking); a
+   *                                 bare consumer ref flips the pending
+   *                                 payment_methods row to `active`, enriches
+   *                                 with bank metadata, and rewrites
    *                                 `aeropay_payment_method_ref` to the
    *                                 upstream bank-account id.
-   *   - `bank_account.failed`    → flip the pending payment_methods row
-   *                                 to `failed` so the iOS UI can show a
-   *                                 retry CTA.
+   *   - `bank_account.failed`    → dispensary ref → logged, ref untouched;
+   *                                 consumer ref → flip the pending
+   *                                 payment_methods row to `failed` so the
+   *                                 iOS UI can show a retry CTA.
+   *   - `payout.paid`            → move the matching `payouts` row
+   *                                 `processing` → `completed` (stamps
+   *                                 `completed_at`). Keyed by
+   *                                 `aeropay_payout_ref`.
+   *   - `payout.failed`          → move the matching `payouts` row
+   *                                 `processing` → `failed` with the upstream
+   *                                 failure reason.
    *   - `payment.authorized`     → flip the payment_transactions row to
    *                                 `authorized` and stamp authorizedAt.
    *                                 Unlocks vendor-accept on the order.
@@ -240,10 +259,9 @@ export class PaymentMethodsService {
    *                                 order stays in `placed` — explicit
    *                                 order cancellation is a separate
    *                                 flow with its own auditing.
-   *   - `payment.refunded` / `payout.*` → noop here. Phase 6.5 / 6.6
-   *                                 handle refunds and payouts on their
-   *                                 dedicated controllers. The 204 the
-   *                                 controller still returns drains
+   *   - `payment.refunded`       → noop here. Phase 6.5 handles refunds on
+   *                                 its dedicated admin-gated controller. The
+   *                                 204 the controller still returns drains
    *                                 Aeropay's retry queue.
    *   - `ignored` / unknown      → noop.
    *
@@ -267,11 +285,33 @@ export class PaymentMethodsService {
    */
   async applyWebhook(outcome: AeropayWebhookOutcome): Promise<void> {
     if (outcome.type === 'bank_account.linked') {
-      await this.handleBankAccountLinked(outcome.objectId);
+      // Resolve the account once; `customer_ref` tells us whether this is a
+      // dispensary payout link (`dispensary:<id>`) or a bare consumer link.
+      const account = await this.aeropay.getBankAccount(outcome.objectId);
+      const dispensaryId = parseDispensaryCustomerRef(account.customerRef);
+      if (dispensaryId !== null) {
+        await this.dispensaryBankLink.applyBankLinked(dispensaryId, account.id);
+        return;
+      }
+      await this.handleBankAccountLinked(account);
       return;
     }
     if (outcome.type === 'bank_account.failed') {
-      await this.handleBankAccountFailed(outcome.objectId);
+      const account = await this.aeropay.getBankAccount(outcome.objectId);
+      const dispensaryId = parseDispensaryCustomerRef(account.customerRef);
+      if (dispensaryId !== null) {
+        this.dispensaryBankLink.applyBankFailed(dispensaryId);
+        return;
+      }
+      await this.handleBankAccountFailed(account);
+      return;
+    }
+    if (outcome.type === 'payout.paid') {
+      await this.payoutWebhooks.applyPaid(outcome.objectId, outcome.occurredAt);
+      return;
+    }
+    if (outcome.type === 'payout.failed') {
+      await this.payoutWebhooks.applyFailed(outcome.objectId, outcome.raw);
       return;
     }
     if (outcome.type === 'payment.authorized') {
@@ -290,14 +330,13 @@ export class PaymentMethodsService {
       await this.handlePaymentCanceled(outcome.objectId, outcome.occurredAt);
       return;
     }
-    // payment.refunded, payout.* and `ignored` land here as a noop.
-    // Refunds get their own admin-gated controller in Phase 6.5; payouts
-    // get a cron job in 6.6. Returning silently lets the controller 204
-    // so Aeropay drains its retry queue.
+    // payment.refunded and `ignored` land here as a noop. Refunds get their
+    // own admin-gated controller in Phase 6.5. Returning silently lets the
+    // controller 204 so Aeropay drains its retry queue.
   }
 
-  private async handleBankAccountLinked(bankAccountId: string): Promise<void> {
-    const account = await this.aeropay.getBankAccount(bankAccountId);
+  private async handleBankAccountLinked(account: AeropayBankAccount): Promise<void> {
+    const bankAccountId = account.id;
     const pending = await this.findPendingForCustomer(account);
     if (pending === null) {
       // Nothing pending and no existing record — race with a deleted
@@ -327,11 +366,7 @@ export class PaymentMethodsService {
     }
   }
 
-  private async handleBankAccountFailed(bankAccountId: string): Promise<void> {
-    // The failed-link webhook carries the bank account id even though the
-    // bank account was never fully created upstream; pull customer_ref
-    // out of the same `getBankAccount` lookup we use on success.
-    const account = await this.aeropay.getBankAccount(bankAccountId);
+  private async handleBankAccountFailed(account: AeropayBankAccount): Promise<void> {
     const pending = await this.findPendingForCustomer(account);
     if (pending === null) return;
     if (pending.status === 'failed') return;

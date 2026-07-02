@@ -359,6 +359,21 @@ export class PayoutsRepository extends BaseRepository {
       .limit(limit);
   }
 
+  /**
+   * Resolve a payout by the Aeropay-issued payout id the dispatch step
+   * persisted in `aeropay_payout_ref`. Backs the `payout.paid` /
+   * `payout.failed` webhook handlers, which key off the upstream object id.
+   * The ref is unique per upstream payout, so a single row (or none) matches.
+   */
+  async findByAeropayPayoutRef(aeropayPayoutRef: string): Promise<Payout | null> {
+    const [row] = await this.db
+      .select()
+      .from(payouts)
+      .where(eq(payouts.aeropayPayoutRef, aeropayPayoutRef))
+      .limit(1);
+    return row ?? null;
+  }
+
   async listByStatus(status: PayoutStatus, limit = 200): Promise<readonly Payout[]> {
     return this.db
       .select()

@@ -989,8 +989,19 @@ describe('repository coverage', () => {
 
       const initiated = await payouts.updateStatus(created.id, 'processing', {
         initiatedAt: new Date('2026-05-05T09:00:00Z'),
+        aeropayPayoutRef: 'po_aeropay_int_1',
       });
       expect(initiated?.status).toBe('processing');
+
+      const byRef = await payouts.findByAeropayPayoutRef('po_aeropay_int_1');
+      expect(byRef?.id).toBe(created.id);
+      expect(await payouts.findByAeropayPayoutRef('po_aeropay_missing')).toBeNull();
+
+      const completed = await payouts.updateStatus(created.id, 'completed', {
+        completedAt: new Date('2026-05-07T12:00:00Z'),
+      });
+      expect(completed?.status).toBe('completed');
+      expect(completed?.completedAt?.toISOString()).toBe('2026-05-07T12:00:00.000Z');
     });
   });
 

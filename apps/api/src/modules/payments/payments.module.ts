@@ -7,11 +7,21 @@
  *   AeropayAuth                      (token-cache + HTTP + client creds)
  *      └──► AeropayClient            (REST surface used by service + Phase 6.3 checkout)
  *      └──► AeropayWebhookVerifier   (HMAC verifier used by the webhook controller)
- *      └──► PaymentMethodsService    (link, delete, webhook → ledger)
+ *      └──► PaymentMethodsService    (link, delete, webhook → ledger;
+ *                                      also routes dispensary bank + payout
+ *                                      webhook events to the two services below)
+ *      └──► DispensaryBankLinkService (vendor bank link start/status +
+ *                                      bank_account.* → dispensaries.aeropay_account_ref)
+ *      └──► PayoutWebhookService     (payout.paid/failed → payouts row completion)
  *      └──► RefundsService           (vendor initiate, admin approve,
  *                                      Aeropay reverse-ACH, reverse ledger)
  *      └──► PaymentMethodsController + AeropayWebhookController
- *      └──► VendorRefundsController  + AdminRefundsController
+ *      └──► VendorRefundsController  + VendorPayoutAccountController
+ *      └──► AdminRefundsController
+ *
+ * DispensariesModule additionally exports DispensariesRepository, which
+ * DispensaryBankLinkService injects to persist the confirmed payout bank
+ * account ref onto the dispensary.
  *
  * The undici dispatcher, ioredis-backed token cache, and HttpClient are
  * built once per process (no Scope.REQUEST) — Aeropay tokens are
@@ -47,10 +57,12 @@ import {
   type TokenCache,
 } from '@dankdash/aeropay';
 import {
+  DispensariesRepository,
   LedgerEntriesRepository,
   OrdersRepository,
   PaymentMethodsRepository,
   PaymentTransactionsRepository,
+  PayoutsRepository,
   RefundsRepository,
   WebhookEventsProcessedRepository,
   type Database,
@@ -69,12 +81,14 @@ import { OrderTransitionService } from '../orders/order-transition.service.js';
 import { OrdersModule } from '../orders/orders.module.js';
 import { AdminRefundsController } from './admin-refunds.controller.js';
 import { AeropayWebhookController } from './aeropay-webhook.controller.js';
+import { DispensaryBankLinkService } from './dispensary-bank-link.service.js';
 import { PaymentMethodsController } from './payment-methods.controller.js';
 import {
   PaymentMethodsService,
   type SettlementScopedRepos,
   type SettlementScopedReposFactory,
 } from './payment-methods.service.js';
+import { PayoutWebhookService } from './payout-webhook.service.js';
 import { RedisTokenCache } from './redis-token-cache.js';
 import {
   RefundsService,
@@ -82,6 +96,7 @@ import {
   type RefundScopedReposFactory,
 } from './refunds.service.js';
 import { AEROPAY_CLIENT, AEROPAY_WEBHOOK_VERIFIER } from './tokens.js';
+import { VendorPayoutAccountController } from './vendor-payout-account.controller.js';
 import { VendorRefundsController } from './vendor-refunds.controller.js';
 
 const TOKEN_CACHE = Symbol.for('AEROPAY_TOKEN_CACHE');
@@ -173,6 +188,32 @@ const ordersRepoProvider: FactoryProvider<OrdersRepository> = {
   useFactory: (db: Database): OrdersRepository => new OrdersRepository(db),
 };
 
+const payoutsRepoProvider: FactoryProvider<PayoutsRepository> = {
+  provide: PayoutsRepository,
+  inject: [DRIZZLE_DB],
+  useFactory: (db: Database): PayoutsRepository => new PayoutsRepository(db),
+};
+
+// DispensaryBankLinkService writes `aeropay_account_ref` on the dispensary
+// (payout linking). It reuses the DispensariesRepository singleton exported
+// by DispensariesModule (already imported for the VendorContextGuard) so the
+// vendor bank-link surface and the admin dispensary surface share one repo.
+const dispensaryBankLinkServiceProvider: FactoryProvider<DispensaryBankLinkService> = {
+  provide: DispensaryBankLinkService,
+  inject: [DispensariesRepository, AEROPAY_CLIENT],
+  useFactory: (
+    dispensaries: DispensariesRepository,
+    client: AeropayClient,
+  ): DispensaryBankLinkService => new DispensaryBankLinkService(dispensaries, client),
+};
+
+const payoutWebhookServiceProvider: FactoryProvider<PayoutWebhookService> = {
+  provide: PayoutWebhookService,
+  inject: [PayoutsRepository],
+  useFactory: (payouts: PayoutsRepository): PayoutWebhookService =>
+    new PayoutWebhookService(payouts),
+};
+
 // Closure factory used by PaymentMethodsService.handlePaymentSettled to
 // re-bind the write repos to the transactional handle. Stateless — the
 // same closure is reused for every webhook invocation; only the `db`
@@ -205,6 +246,8 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     OrderTransitionService,
     DRIZZLE_DB,
     AEROPAY_CLIENT,
+    DispensaryBankLinkService,
+    PayoutWebhookService,
   ],
   useFactory: (
     repo: PaymentMethodsRepository,
@@ -213,6 +256,8 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
     orderTransitions: OrderTransitionService,
     db: Database,
     client: AeropayClient,
+    dispensaryBankLink: DispensaryBankLinkService,
+    payoutWebhooks: PayoutWebhookService,
   ): PaymentMethodsService =>
     new PaymentMethodsService(
       repo,
@@ -222,6 +267,8 @@ const serviceProvider: FactoryProvider<PaymentMethodsService> = {
       db,
       settlementReposFor,
       client,
+      dispensaryBankLink,
+      payoutWebhooks,
     ),
 };
 
@@ -268,9 +315,12 @@ const providers: Provider[] = [
   paymentMethodsRepoProvider,
   paymentTransactionsRepoProvider,
   ordersRepoProvider,
+  payoutsRepoProvider,
   refundsRepoProvider,
   webhookEventsRepoProvider,
   VendorContextGuard,
+  dispensaryBankLinkServiceProvider,
+  payoutWebhookServiceProvider,
   serviceProvider,
   refundsServiceProvider,
 ];
@@ -281,6 +331,7 @@ const providers: Provider[] = [
     PaymentMethodsController,
     AeropayWebhookController,
     VendorRefundsController,
+    VendorPayoutAccountController,
     AdminRefundsController,
   ],
   providers,
