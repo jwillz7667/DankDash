@@ -56,6 +56,7 @@ import twilio from 'twilio';
 import { DRIZZLE_DB } from '../../infrastructure/drizzle.module.js';
 import { REDIS_CLIENT } from '../../infrastructure/redis.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { AuthNotificationsListener } from './auth-notifications.listener.js';
 import {
   RedisNotificationDedupeStore,
   type NotificationDedupeStore,
@@ -274,6 +275,13 @@ const orderListenerProvider: FactoryProvider<OrderNotificationsListener> = {
     new OrderNotificationsListener({ dispatcher, orders, dispensaries, drivers, users }),
 };
 
+const authListenerProvider: FactoryProvider<AuthNotificationsListener> = {
+  provide: AuthNotificationsListener,
+  inject: [NotificationDispatcher],
+  useFactory: (dispatcher: NotificationDispatcher): AuthNotificationsListener =>
+    new AuthNotificationsListener({ dispatcher }),
+};
+
 const refundListenerProvider: FactoryProvider<RefundNotificationsListener> = {
   provide: RefundNotificationsListener,
   inject: [NotificationDispatcher],
@@ -309,6 +317,7 @@ const providers: Provider[] = [
   emailProviderFactory,
   dispatcherProvider,
   orderListenerProvider,
+  authListenerProvider,
   refundListenerProvider,
   vendorOrderListenerProvider,
 ];
