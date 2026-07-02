@@ -106,6 +106,9 @@ importers:
       '@dankdash/pricing':
         specifier: workspace:*
         version: link:../../packages/pricing
+      '@dankdash/promotions':
+        specifier: workspace:*
+        version: link:../../packages/promotions
       '@dankdash/realtime-events':
         specifier: workspace:*
         version: link:../../packages/realtime-events
