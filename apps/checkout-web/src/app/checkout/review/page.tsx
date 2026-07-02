@@ -82,7 +82,12 @@ export default async function ReviewPage(props: {
       <ComplianceSummary compliance={compliance} />
 
       {compliance.passed ? (
-        <ReviewForm subtotalCents={cart.subtotalCents} action={placeOrder} />
+        <ReviewForm
+          subtotalCents={cart.subtotalCents}
+          promoCode={cart.promoCode}
+          discountCents={cart.discountCents}
+          action={placeOrder}
+        />
       ) : (
         <Link className="btn btn-ghost" href="/checkout/error?reason=compliance">
           Return to the app
